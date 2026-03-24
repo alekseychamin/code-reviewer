@@ -9,10 +9,11 @@ public sealed class ReviewRequestValidator : IReviewRequestValidator
     public IReadOnlyDictionary<string, string[]> Validate(StartPullRequestReviewRequest request)
     {
         var errors = new Dictionary<string, string[]>();
+        var resolvedToken = ResolveAzureDevOpsToken(request.AzureDevOpsAccessToken);
 
-        if (request.PublishMode != PublishMode.None && string.IsNullOrWhiteSpace(request.AzureDevOpsAccessToken))
+        if (request.PublishMode != PublishMode.None && string.IsNullOrWhiteSpace(resolvedToken))
         {
-            errors["azureDevOpsAccessToken"] = ["Publishing requires an Azure DevOps/TFS access token."];
+            errors["azureDevOpsAccessToken"] = ["Publishing requires an Azure DevOps/TFS access token in the request or AZURE_DEVOPS_TOKEN environment variable."];
         }
 
         if (request.LocalOnlyMode && !string.IsNullOrWhiteSpace(request.ProviderProfileId) &&
@@ -39,5 +40,12 @@ public sealed class ReviewRequestValidator : IReviewRequestValidator
         }
 
         return errors;
+    }
+
+    private static string? ResolveAzureDevOpsToken(string? requestToken)
+    {
+        return !string.IsNullOrWhiteSpace(requestToken)
+            ? requestToken
+            : Environment.GetEnvironmentVariable("AZURE_DEVOPS_TOKEN");
     }
 }

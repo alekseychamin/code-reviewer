@@ -48,7 +48,7 @@ Production-oriented AI code review platform built around:
 3. Start the stack:
    `docker compose up --build`
 
-`docker-compose.yml` now uses `env_file: .env`, so the same local file can hold LLM API keys, Azure DevOps/TFS tokens, and frontend runtime settings for local development.
+`docker-compose.yml` now uses `env_file: .env`, so the same local file can hold LLM API keys, Azure DevOps/TFS tokens, and frontend runtime settings for local development. In compose mode the frontend uses same-origin `/api` requests and Vite proxies them to the `api` service, which is more reliable than calling `localhost:8080` directly from the browser. The pull request flow now reads Azure DevOps/TFS PAT from `AZURE_DEVOPS_TOKEN` on the backend, so the token no longer needs to be entered in the UI.
 
 ## Notes
 

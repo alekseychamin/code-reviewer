@@ -38,7 +38,7 @@ public sealed class ReviewOrchestrator(
             ProviderProfileId = request.ProviderProfileId,
             LocalOnlyMode = request.LocalOnlyMode,
             PublishMode = request.PublishMode,
-            AzureDevOpsAccessToken = request.AzureDevOpsAccessToken,
+            AzureDevOpsAccessToken = ResolveAzureDevOpsToken(request.AzureDevOpsAccessToken),
             StageOverrides = request.StageOverrides
         };
 
@@ -103,5 +103,12 @@ public sealed class ReviewOrchestrator(
         }
 
         throw new InvalidOperationException(string.Join("; ", errors.SelectMany(item => item.Value.Select(message => $"{item.Key}: {message}"))));
+    }
+
+    private static string? ResolveAzureDevOpsToken(string? requestToken)
+    {
+        return !string.IsNullOrWhiteSpace(requestToken)
+            ? requestToken
+            : Environment.GetEnvironmentVariable("AZURE_DEVOPS_TOKEN");
     }
 }

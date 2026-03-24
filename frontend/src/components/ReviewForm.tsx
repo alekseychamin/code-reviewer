@@ -26,7 +26,6 @@ export function ReviewForm({
   const [localOnlyMode, setLocalOnlyMode] = useState(false);
   const [publishMode, setPublishMode] = useState<PublishMode>('SummaryOnly');
   const [pullRequestUrl, setPullRequestUrl] = useState('');
-  const [azureDevOpsAccessToken, setAzureDevOpsAccessToken] = useState('');
   const [repositoryPath, setRepositoryPath] = useState('');
   const [repositoryName, setRepositoryName] = useState('');
   const [targetBranch, setTargetBranch] = useState('main');
@@ -42,10 +41,6 @@ export function ReviewForm({
     if (mode === 'pullRequest') {
       if (!pullRequestUrl.trim()) {
         return 'Enter a pull request URL.';
-      }
-
-      if (!localOnlyMode && publishMode !== 'None' && !azureDevOpsAccessToken.trim()) {
-        return 'Azure DevOps/TFS PAT is required when publish mode is enabled.';
       }
 
       return null;
@@ -83,7 +78,6 @@ export function ReviewForm({
           providerProfileId: providerProfileId || undefined,
           localOnlyMode,
           publishMode,
-          azureDevOpsAccessToken: azureDevOpsAccessToken || undefined,
           stageOverrides: []
         });
       } else {
@@ -139,15 +133,6 @@ export function ReviewForm({
                 value={pullRequestUrl}
                 onChange={(event) => setPullRequestUrl(event.target.value)}
                 placeholder="https://tfs.example.local/.../_git/repo/pullrequest/42"
-              />
-            </label>
-            <label>
-              Azure DevOps/TFS PAT
-              <input
-                value={azureDevOpsAccessToken}
-                onChange={(event) => setAzureDevOpsAccessToken(event.target.value)}
-                type="password"
-                placeholder="Used for diff acquisition and comment publishing"
               />
             </label>
           </>
@@ -225,7 +210,8 @@ export function ReviewForm({
       <div className="panel-footer">
         <p>
           Thin controllers, stage-based LLM routing, in-memory persistence, SSE progress, and Azure DevOps/TFS
-          publishing are wired from the same API.
+          publishing are wired from the same API. Azure DevOps/TFS PAT is read by the backend from
+          `AZURE_DEVOPS_TOKEN` in `.env`.
         </p>
         <button className="primary" disabled={isSubmitting} onClick={() => void handleSubmit()} type="button">
           {isSubmitting ? 'Starting review...' : 'Start review run'}

@@ -5,13 +5,13 @@ import type {
   ReviewRun
 } from './types';
 
-const apiBaseUrl = import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:8080';
+const apiBaseUrl = normalizeBaseUrl(import.meta.env.VITE_API_BASE_URL);
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   let response: Response;
 
   try {
-    response = await fetch(`${apiBaseUrl}${path}`, {
+    response = await fetch(buildUrl(path), {
       ...init,
       headers: {
         'Content-Type': 'application/json',
@@ -32,6 +32,18 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   }
 
   return (await response.json()) as T;
+}
+
+function normalizeBaseUrl(raw: string | undefined): string {
+  if (!raw || !raw.trim()) {
+    return '';
+  }
+
+  return raw.trim().replace(/\/+$/, '');
+}
+
+function buildUrl(path: string): string {
+  return apiBaseUrl ? `${apiBaseUrl}${path}` : path;
 }
 
 function extractApiErrorMessage(raw: string, status: number): string {
@@ -93,5 +105,5 @@ export async function getReviewRun(runId: string): Promise<ReviewRun> {
 }
 
 export function buildEventsUrl(runId: string): string {
-  return `${apiBaseUrl}/api/reviews/${runId}/events`;
+  return buildUrl(`/api/reviews/${runId}/events`);
 }

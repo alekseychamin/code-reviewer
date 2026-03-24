@@ -66,7 +66,6 @@ export interface PullRequestReviewPayload {
   providerProfileId?: string;
   localOnlyMode: boolean;
   publishMode: PublishMode;
-  azureDevOpsAccessToken?: string;
   stageOverrides: Array<{ stage: string; profileId: string; model?: string; temperature?: number }>;
 }
 
