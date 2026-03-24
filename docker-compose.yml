@@ -3,9 +3,12 @@ services:
     build:
       context: .
       dockerfile: src/TfsReviewPlatform.Api/Dockerfile
+    env_file:
+      - .env
     environment:
       - ASPNETCORE_URLS=http://+:8080
       - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - AZURE_DEVOPS_TOKEN=${AZURE_DEVOPS_TOKEN:-}
     ports:
       - "8080:8080"
 
@@ -13,8 +16,10 @@ services:
     build:
       context: .
       dockerfile: frontend/Dockerfile
+    env_file:
+      - .env
     environment:
-      - VITE_API_BASE_URL=http://localhost:8080
+      - VITE_API_BASE_URL=${VITE_API_BASE_URL:-http://localhost:8080}
     ports:
       - "5173:5173"
     depends_on:
@@ -22,6 +27,8 @@ services:
 
   ollama:
     image: ollama/ollama:latest
+    env_file:
+      - .env
     ports:
       - "11434:11434"
     profiles:

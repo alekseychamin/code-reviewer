@@ -40,6 +40,16 @@ Production-oriented AI code review platform built around:
 - `GET /api/reviews/{runId}/events`
 - `GET /api/provider-profiles`
 
+## Docker Compose
+
+1. Create a local secrets file:
+   `cp .env.example .env`
+2. Fill in the values you need in `.env`, for example `OPENAI_API_KEY` and `AZURE_DEVOPS_TOKEN`.
+3. Start the stack:
+   `docker compose up --build`
+
+`docker-compose.yml` now uses `env_file: .env`, so the same local file can hold LLM API keys, Azure DevOps/TFS tokens, and frontend runtime settings for local development.
+
 ## Notes
 
 - `appsettings.json` seeds provider profiles and default stage routing.
