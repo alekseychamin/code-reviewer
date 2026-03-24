@@ -55,13 +55,24 @@ export default function App() {
       eventSource.close();
     };
 
-    eventSource.addEventListener('progress', onProgress as EventListener);
-    eventSource.addEventListener('completed', onCompleted as EventListener);
+    const progressListener: EventListener = (event) => {
+      void onProgress(event as MessageEvent<string>);
+    };
+    const completedListener: EventListener = (event) => {
+      void onCompleted(event as MessageEvent<string>);
+    };
+
+    eventSource.addEventListener('progress', progressListener);
+    eventSource.addEventListener('completed', completedListener);
     eventSource.onerror = () => {
       eventSource.close();
     };
 
-    return () => eventSource.close();
+    return () => {
+      eventSource.removeEventListener('progress', progressListener);
+      eventSource.removeEventListener('completed', completedListener);
+      eventSource.close();
+    };
   }, [currentRun?.id]);
 
   async function handleStartPullRequestReview(payload: PullRequestReviewPayload): Promise<void> {

@@ -32,13 +32,49 @@ export function ReviewForm({
   const [targetBranch, setTargetBranch] = useState('main');
   const [sourceBranch, setSourceBranch] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [submitError, setSubmitError] = useState<string | null>(null);
 
   const filteredProfiles = localOnlyMode
     ? profiles.filter((profile) => profile.localOnly)
     : profiles;
 
+  function validate(): string | null {
+    if (mode === 'pullRequest') {
+      if (!pullRequestUrl.trim()) {
+        return 'Enter a pull request URL.';
+      }
+
+      if (!localOnlyMode && publishMode !== 'None' && !azureDevOpsAccessToken.trim()) {
+        return 'Azure DevOps/TFS PAT is required when publish mode is enabled.';
+      }
+
+      return null;
+    }
+
+    if (!repositoryPath.trim()) {
+      return 'Enter an absolute repository path for branch comparison.';
+    }
+
+    if (!sourceBranch.trim()) {
+      return 'Enter the source branch to compare.';
+    }
+
+    if (!targetBranch.trim()) {
+      return 'Enter the target branch to compare against.';
+    }
+
+    return null;
+  }
+
   async function handleSubmit(): Promise<void> {
+    const validationError = validate();
+    if (validationError) {
+      setSubmitError(validationError);
+      return;
+    }
+
     setIsSubmitting(true);
+    setSubmitError(null);
 
     try {
       if (mode === 'pullRequest') {
@@ -62,6 +98,8 @@ export function ReviewForm({
           stageOverrides: []
         });
       }
+    } catch (error) {
+      setSubmitError(error instanceof Error ? error.message : String(error));
     } finally {
       setIsSubmitting(false);
     }
@@ -193,6 +231,8 @@ export function ReviewForm({
           {isSubmitting ? 'Starting review...' : 'Start review run'}
         </button>
       </div>
+
+      {submitError ? <div className="inline-error">{submitError}</div> : null}
     </section>
   );
 }
