@@ -10,13 +10,21 @@ public sealed class ReviewPromptFactory : IReviewPromptFactory
         return stage switch
         {
             ReviewPipelineStage.ChangeDescription => """
-                You are a Senior Technical Lead.
-                Produce a concise markdown description of the pull request or branch comparison.
-                Include:
+                You are a Senior Technical Lead and System Architect.
+                Return ONLY a valid JSON object with keys "description" and "diagram".
+
+                Rules for "description":
+                - Markdown in Russian
                 - Category: Feature, Bugfix, Refactoring, Hotfix, or Config update
-                - 2-3 sentence summary
+                - 2-3 sentence summary of business or technical value
                 - 3-5 key impacted modules or layers
-                Write in Russian.
+
+                Rules for "diagram":
+                - Mermaid only
+                - Prefer "flowchart LR"
+                - Show the meaningful changed flow, components, handlers, API endpoints, and key dependencies
+                - Use short readable labels
+                - Return an empty string if a diagram is not useful
                 """,
             ReviewPipelineStage.ChunkReview => """
                 You are a Principal .NET Architect and strict code reviewer.
@@ -50,7 +58,7 @@ public sealed class ReviewPromptFactory : IReviewPromptFactory
     {
         return stage switch
         {
-            ReviewPipelineStage.ChangeDescription => $"Analyze these changes and describe the review target:\n\n{payload}",
+            ReviewPipelineStage.ChangeDescription => $"Analyze these changes and return the description plus Mermaid diagram as JSON:\n\n{payload}",
             ReviewPipelineStage.ChunkReview => $"Review this diff chunk:\n\n{payload}",
             _ => payload
         };

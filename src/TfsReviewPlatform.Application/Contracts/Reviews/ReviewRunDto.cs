@@ -30,6 +30,8 @@ public sealed class ReviewRunDto
 
     public string ChangeDescription { get; init; } = string.Empty;
 
+    public string? ChangeDiagramMermaid { get; init; }
+
     public string MarkdownReport { get; init; } = string.Empty;
 
     public string SummaryComment { get; init; } = string.Empty;

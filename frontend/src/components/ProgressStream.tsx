@@ -6,6 +6,9 @@ interface ProgressStreamProps {
 }
 
 export function ProgressStream({ run, events }: ProgressStreamProps) {
+  const statusLabel = typeof run?.status === 'string' ? run.status : String(run?.status ?? '');
+  const statusClass = statusLabel ? statusLabel.toLowerCase() : 'unknown';
+
   return (
     <section className="panel">
       <div className="panel-header">
@@ -13,7 +16,7 @@ export function ProgressStream({ run, events }: ProgressStreamProps) {
           <p className="eyebrow">Progress</p>
           <h2>Live pipeline telemetry</h2>
         </div>
-        {run ? <span className={`status-pill status-${run.status.toLowerCase()}`}>{run.status}</span> : null}
+        {run ? <span className={`status-pill status-${statusClass}`}>{statusLabel}</span> : null}
       </div>
 
       <div className="progress-shell">

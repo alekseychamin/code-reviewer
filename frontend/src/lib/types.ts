@@ -43,6 +43,7 @@ export interface ReviewRun {
   createdAt: string;
   updatedAt: string;
   changeDescription: string;
+  changeDiagramMermaid?: string;
   markdownReport: string;
   summaryComment: string;
   publishSucceeded: boolean;

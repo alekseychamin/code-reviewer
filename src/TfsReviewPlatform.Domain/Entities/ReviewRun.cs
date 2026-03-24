@@ -73,6 +73,24 @@ public sealed class ReviewRun
         }
     }
 
+    public void UpdateArtifacts(ReviewArtifacts artifacts)
+    {
+        lock (_gate)
+        {
+            Artifacts = artifacts;
+            UpdatedAt = DateTimeOffset.UtcNow;
+        }
+    }
+
+    public void UpdateFindings(IReadOnlyList<ReviewFinding> findings)
+    {
+        lock (_gate)
+        {
+            Findings = findings;
+            UpdatedAt = DateTimeOffset.UtcNow;
+        }
+    }
+
     public void Complete(
         ReviewArtifacts artifacts,
         IReadOnlyList<ReviewFinding> findings,

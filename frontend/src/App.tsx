@@ -23,6 +23,14 @@ export default function App() {
   const [events, setEvents] = useState<ReviewProgressEvent[]>([]);
   const [error, setError] = useState<string | null>(null);
 
+  async function refreshRun(runId: string): Promise<void> {
+    try {
+      const run = await getReviewRun(runId);
+      setCurrentRun(run);
+    } catch {
+    }
+  }
+
   useEffect(() => {
     void fetchProviderProfiles()
       .then(setProfiles)
@@ -42,16 +50,28 @@ export default function App() {
       setEvents([]);
     });
 
-    const onProgress = (event: MessageEvent<string>) => {
+    const onProgress = async (event: MessageEvent<string>) => {
       const progressEvent = JSON.parse(event.data) as ReviewProgressEvent;
       setEvents((existing) => [...existing, progressEvent]);
+      setCurrentRun((existing) =>
+        existing
+          ? {
+              ...existing,
+              status: progressEvent.status,
+              currentStage: progressEvent.stage,
+              progressPercent: progressEvent.progressPercent,
+              currentMessage: progressEvent.message,
+              updatedAt: progressEvent.timestamp
+            }
+          : existing
+      );
+      await refreshRun(progressEvent.runId);
     };
 
     const onCompleted = async (event: MessageEvent<string>) => {
       const progressEvent = JSON.parse(event.data) as ReviewProgressEvent;
       setEvents((existing) => [...existing, progressEvent]);
-      const run = await getReviewRun(currentRun.id);
-      setCurrentRun(run);
+      await refreshRun(progressEvent.runId);
       eventSource.close();
     };
 

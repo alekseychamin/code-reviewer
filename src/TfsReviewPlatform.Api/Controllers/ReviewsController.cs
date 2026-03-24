@@ -1,4 +1,5 @@
 using System.Text.Json;
+using Microsoft.Extensions.Options;
 using Microsoft.AspNetCore.Mvc;
 using TfsReviewPlatform.Application.Abstractions;
 using TfsReviewPlatform.Application.Contracts.Reviews;
@@ -10,7 +11,8 @@ namespace TfsReviewPlatform.Api.Controllers;
 [Route("api/reviews")]
 public sealed class ReviewsController(
     IReviewOrchestrator reviewOrchestrator,
-    IReviewProgressStore reviewProgressStore)
+    IReviewProgressStore reviewProgressStore,
+    IOptions<JsonOptions> jsonOptions)
     : ControllerBase
 {
     [HttpPost("pull-requests")]
@@ -93,7 +95,7 @@ public sealed class ReviewsController(
 
     private async Task WriteEventAsync(string eventName, object payload, CancellationToken cancellationToken)
     {
-        var json = JsonSerializer.Serialize(payload);
+        var json = JsonSerializer.Serialize(payload, jsonOptions.Value.JsonSerializerOptions);
         await Response.WriteAsync($"event: {eventName}\n", cancellationToken);
         await Response.WriteAsync($"data: {json}\n\n", cancellationToken);
         await Response.Body.FlushAsync(cancellationToken);

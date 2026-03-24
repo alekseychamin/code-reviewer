@@ -1,4 +1,5 @@
 using Microsoft.Extensions.Logging;
+using System.Text.Json;
 using TfsReviewPlatform.Application.Abstractions;
 using TfsReviewPlatform.Application.Models;
 using TfsReviewPlatform.Domain.Entities;
@@ -35,6 +36,12 @@ public sealed class ReviewRunExecutor(
             await PersistAndPublishAsync(run, "Diff acquired", ReviewPipelineStage.Preprocessing, 15, cancellationToken);
 
             var preprocessed = diffPreprocessor.Process(diffResult.DiffText);
+            run.UpdateArtifacts(new ReviewArtifacts
+            {
+                DiffText = preprocessed.FilteredDiffText,
+                ChangedFiles = preprocessed.ChangedFiles
+            });
+            await reviewRunRepository.UpdateAsync(run, cancellationToken);
             await PersistAndPublishAsync(
                 run,
                 $"Prepared {preprocessed.ChangedFiles.Count} changed files across {preprocessed.Chunks.Count} chunks",
@@ -42,18 +49,41 @@ public sealed class ReviewRunExecutor(
                 30,
                 cancellationToken);
 
-            var description = await GenerateChangeDescriptionAsync(run.Target.Title, preprocessed, request, cancellationToken);
+            var changeSummary = await GenerateChangeSummaryAsync(run.Target.Title, preprocessed, request, cancellationToken);
+            var description = changeSummary.Description;
+            run.UpdateArtifacts(new ReviewArtifacts
+            {
+                DiffText = preprocessed.FilteredDiffText,
+                ChangedFiles = preprocessed.ChangedFiles,
+                ChangeDescription = changeSummary.Description,
+                ChangeDiagramMermaid = changeSummary.DiagramMermaid
+            });
+            await reviewRunRepository.UpdateAsync(run, cancellationToken);
             await PersistAndPublishAsync(run, "Change description generated", ReviewPipelineStage.ChunkReview, 45, cancellationToken);
 
             var rawFindings = await ReviewChunksAsync(description, preprocessed.Chunks, request, run, cancellationToken);
             await PersistAndPublishAsync(run, "Raw findings collected", ReviewPipelineStage.FindingsNormalization, 75, cancellationToken);
 
             var findings = findingsNormalizer.Normalize(rawFindings);
+            run.UpdateFindings(findings);
+            await reviewRunRepository.UpdateAsync(run, cancellationToken);
             await PersistAndPublishAsync(run, $"Normalized {findings.Count} findings", ReviewPipelineStage.FinalSynthesis, 87, cancellationToken);
 
             var fullReport = markdownReportBuilder.BuildFullReport(run.Target.Title, description, findings);
             var summaryComment = markdownReportBuilder.BuildSummaryComment(run.Target.Title, description, findings);
             var inlineComments = markdownReportBuilder.BuildInlineComments(findings, preprocessed.FilteredDiffText);
+            run.UpdateArtifacts(new ReviewArtifacts
+            {
+                DiffText = preprocessed.FilteredDiffText,
+                ChangedFiles = preprocessed.ChangedFiles,
+                ChangeDescription = changeSummary.Description,
+                ChangeDiagramMermaid = changeSummary.DiagramMermaid,
+                MarkdownReport = fullReport,
+                SummaryComment = summaryComment,
+                InlineComments = inlineComments
+            });
+            await reviewRunRepository.UpdateAsync(run, cancellationToken);
+            await PersistAndPublishAsync(run, "Final report generated", ReviewPipelineStage.FinalSynthesis, 93, cancellationToken);
 
             var publishSucceeded = false;
             if (request.PublishMode != PublishMode.None &&
@@ -76,6 +106,7 @@ public sealed class ReviewRunExecutor(
                 DiffText = preprocessed.FilteredDiffText,
                 ChangedFiles = preprocessed.ChangedFiles,
                 ChangeDescription = description,
+                ChangeDiagramMermaid = changeSummary.DiagramMermaid,
                 MarkdownReport = fullReport,
                 SummaryComment = summaryComment,
                 InlineComments = inlineComments
@@ -123,7 +154,7 @@ public sealed class ReviewRunExecutor(
         };
     }
 
-    private async Task<string> GenerateChangeDescriptionAsync(
+    private async Task<ChangeSummaryResult> GenerateChangeSummaryAsync(
         string reviewTitle,
         PreprocessedDiff preprocessed,
         ReviewExecutionRequest request,
@@ -141,18 +172,148 @@ public sealed class ReviewRunExecutor(
             ? preprocessed.FilteredDiffText[..24000]
             : preprocessed.FilteredDiffText;
 
-        return await llmCompletionService.CompleteAsync(
+        var response = await llmCompletionService.CompleteAsync(
             selection.Profile,
             new LlmChatRequest
             {
                 Model = selection.Model,
                 Temperature = selection.Temperature,
+                ExpectJson = true,
                 SystemPrompt = reviewPromptFactory.BuildSystemPrompt(ReviewPipelineStage.ChangeDescription, reviewTitle),
                 UserPrompt = reviewPromptFactory.BuildUserPrompt(
                     ReviewPipelineStage.ChangeDescription,
                     $"Changed files:\n{fileList}\n\nDiff snippet:\n{diffSnippet}")
             },
             cancellationToken);
+
+        var parsed = ParseChangeSummary(response);
+        if (!string.IsNullOrWhiteSpace(parsed.DiagramMermaid))
+        {
+            return parsed;
+        }
+
+        var diagram = await GenerateChangeDiagramAsync(selection.Profile, selection.Model, selection.Temperature, preprocessed, parsed.Description, cancellationToken);
+        return new ChangeSummaryResult
+        {
+            Description = parsed.Description,
+            DiagramMermaid = diagram
+        };
+    }
+
+    private static ChangeSummaryResult ParseChangeSummary(string response)
+    {
+        if (string.IsNullOrWhiteSpace(response))
+        {
+            return new ChangeSummaryResult
+            {
+                Description = "Автоматическое описание изменений недоступно."
+            };
+        }
+
+        var payload = response.Trim();
+        if (payload.StartsWith("```", StringComparison.Ordinal))
+        {
+            payload = payload
+                .Replace("```json", string.Empty, StringComparison.OrdinalIgnoreCase)
+                .Replace("```", string.Empty, StringComparison.OrdinalIgnoreCase)
+                .Trim();
+        }
+
+        try
+        {
+            using var document = JsonDocument.Parse(payload);
+            var root = document.RootElement;
+            var description = root.TryGetProperty("description", out var descriptionNode)
+                ? descriptionNode.GetString()
+                : null;
+            var diagram = root.TryGetProperty("diagram", out var diagramNode)
+                ? diagramNode.GetString()
+                : null;
+
+            if (!string.IsNullOrWhiteSpace(description))
+            {
+                return new ChangeSummaryResult
+                {
+                    Description = description,
+                    DiagramMermaid = NormalizeMermaidCode(diagram)
+                };
+            }
+        }
+        catch (JsonException)
+        {
+        }
+
+        return new ChangeSummaryResult
+        {
+            Description = response
+        };
+    }
+
+    private static string? NormalizeMermaidCode(string? content)
+    {
+        if (string.IsNullOrWhiteSpace(content))
+        {
+            return null;
+        }
+
+        var normalized = content.Trim();
+        if (normalized.StartsWith("```", StringComparison.Ordinal))
+        {
+            normalized = normalized
+                .Replace("```mermaid", string.Empty, StringComparison.OrdinalIgnoreCase)
+                .Replace("```", string.Empty, StringComparison.OrdinalIgnoreCase)
+                .Trim();
+        }
+
+        var graphIndex = normalized.IndexOf("graph", StringComparison.OrdinalIgnoreCase);
+        var flowchartIndex = normalized.IndexOf("flowchart", StringComparison.OrdinalIgnoreCase);
+        var startIndex = graphIndex >= 0 && flowchartIndex >= 0
+            ? Math.Min(graphIndex, flowchartIndex)
+            : Math.Max(graphIndex, flowchartIndex);
+
+        if (startIndex > 0)
+        {
+            normalized = normalized[startIndex..].Trim();
+        }
+
+        return normalized.StartsWith("graph", StringComparison.OrdinalIgnoreCase) ||
+               normalized.StartsWith("flowchart", StringComparison.OrdinalIgnoreCase)
+            ? normalized
+            : null;
+    }
+
+    private async Task<string?> GenerateChangeDiagramAsync(
+        ProviderProfile profile,
+        string model,
+        double temperature,
+        PreprocessedDiff preprocessed,
+        string description,
+        CancellationToken cancellationToken)
+    {
+        var fileList = string.Join('\n', preprocessed.ChangedFiles.Take(100));
+        var diffSnippet = preprocessed.FilteredDiffText.Length > 18000
+            ? preprocessed.FilteredDiffText[..18000]
+            : preprocessed.FilteredDiffText;
+
+        var response = await llmCompletionService.CompleteAsync(
+            profile,
+            new LlmChatRequest
+            {
+                Model = model,
+                Temperature = temperature,
+                SystemPrompt = """
+                    You are a Lead System Architect.
+                    Produce only Mermaid code for a concise semantic change diagram.
+                    Prefer "flowchart LR".
+                    Show only meaningful changed components, handlers, endpoints, and dependencies.
+                    Return an empty response if a diagram is not useful.
+                    """,
+                UserPrompt =
+                    $"Description:\n{description}\n\nChanged files:\n{fileList}\n\nDiff snippet:\n{diffSnippet}"
+            },
+            cancellationToken);
+
+        return NormalizeMermaidCode(response);
     }
 
     private async Task<IReadOnlyList<string>> ReviewChunksAsync(

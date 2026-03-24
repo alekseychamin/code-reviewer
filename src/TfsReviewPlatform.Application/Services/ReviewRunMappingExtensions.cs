@@ -22,6 +22,7 @@ public static class ReviewRunMappingExtensions
             CreatedAt = run.CreatedAt,
             UpdatedAt = run.UpdatedAt,
             ChangeDescription = run.Artifacts.ChangeDescription,
+            ChangeDiagramMermaid = run.Artifacts.ChangeDiagramMermaid,
             MarkdownReport = run.Artifacts.MarkdownReport,
             SummaryComment = run.Artifacts.SummaryComment,
             PublishSucceeded = run.PublishSucceeded,

@@ -1,3 +1,5 @@
+import { MarkdownBlock } from './MarkdownBlock';
+import { MermaidDiagram } from './MermaidDiagram';
 import type { ReviewRun } from '../lib/types';
 
 interface RunDetailsProps {
@@ -32,18 +34,38 @@ export function RunDetails({ run }: RunDetailsProps) {
       <div className="results-grid">
         <article className="result-card">
           <h3>Change description</h3>
-          <pre>{run.changeDescription || 'Description will appear here once phase 3 completes.'}</pre>
+          <MarkdownBlock
+            content={run.changeDescription}
+            emptyText="Description will appear here once phase 1 completes."
+          />
         </article>
 
         <article className="result-card">
           <h3>Summary comment draft</h3>
-          <pre>{run.summaryComment || 'Summary comment draft will appear here.'}</pre>
+          <MarkdownBlock
+            content={run.summaryComment}
+            emptyText="Summary comment draft will appear here."
+          />
         </article>
 
         <article className="result-card span-2">
           <h3>Markdown report</h3>
-          <pre>{run.markdownReport || 'Final synthesized report will appear here.'}</pre>
+          <MarkdownBlock
+            content={run.markdownReport}
+            emptyText="Final synthesized report will appear here."
+          />
         </article>
+      </div>
+
+      <div className="subsection">
+        <h3>Change mindmap</h3>
+        {run.changeDiagramMermaid ? (
+          <div className="diagram-card">
+            <MermaidDiagram chart={run.changeDiagramMermaid} />
+          </div>
+        ) : (
+          <div className="empty-state">Mindmap will appear here when phase 1 returns a Mermaid diagram.</div>
+        )}
       </div>
 
       <div className="subsection">
@@ -70,7 +92,7 @@ export function RunDetails({ run }: RunDetailsProps) {
                   <strong>{finding.title}</strong>
                   <code>{finding.file}</code>
                 </header>
-                <p>{finding.description}</p>
+                <MarkdownBlock content={finding.description} emptyText="" />
                 <small>
                   {finding.category} · {finding.lineHint}
                 </small>
@@ -92,7 +114,7 @@ export function RunDetails({ run }: RunDetailsProps) {
                   <span className="secondary-chip">Line {comment.lineNumber}</span>
                   <code>{comment.filePath}</code>
                 </header>
-                <pre>{comment.content}</pre>
+                <MarkdownBlock content={comment.content} emptyText="" />
               </article>
             ))
           )}
