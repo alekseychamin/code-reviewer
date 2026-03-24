@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.ComponentModel;
 
 namespace TfsReviewPlatform.Integrations.Git;
 
@@ -22,7 +23,16 @@ public sealed class ShellGitCommandRunner
         }
 
         using var process = new Process { StartInfo = startInfo };
-        process.Start();
+        try
+        {
+            process.Start();
+        }
+        catch (Win32Exception exception)
+        {
+            throw new InvalidOperationException(
+                $"Unable to start git in '{workingDirectory}'. Ensure git is installed in the runtime environment. Original error: {exception.Message}",
+                exception);
+        }
 
         var stdout = process.StandardOutput.ReadToEndAsync(cancellationToken);
         var stderr = process.StandardError.ReadToEndAsync(cancellationToken);

@@ -11,6 +11,8 @@ namespace TfsReviewPlatform.Integrations.AzureDevOps;
 
 public sealed class AzureDevOpsReviewPublisher(IHttpClientFactory httpClientFactory) : IReviewPublisher
 {
+    private const string ApiVersion = "6.0";
+
     public async Task<bool> PublishAsync(
         string pullRequestUrl,
         string accessToken,
@@ -25,7 +27,7 @@ public sealed class AzureDevOpsReviewPublisher(IHttpClientFactory httpClientFact
 
         var summarySucceeded = await PostThreadAsync(
             client,
-            reference.BuildThreadsApiUrl(),
+            reference.BuildThreadsApiUrl(ApiVersion),
             new
             {
                 comments = new[]
@@ -51,7 +53,7 @@ public sealed class AzureDevOpsReviewPublisher(IHttpClientFactory httpClientFact
         {
             var success = await PostThreadAsync(
                 client,
-                reference.BuildThreadsApiUrl(),
+                reference.BuildThreadsApiUrl(ApiVersion),
                 new
                 {
                     comments = new[]

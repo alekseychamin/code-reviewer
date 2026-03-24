@@ -30,9 +30,9 @@ public sealed record AzureDevOpsPullRequestRef(
     string RepositoryName,
     string PullRequestId)
 {
-    public string BuildPullRequestApiUrl()
-        => $"{HostRoot}/{ProjectPath}/_apis/git/repositories/{RepositoryName}/pullRequests/{PullRequestId}?api-version=7.0";
+    public string BuildPullRequestApiUrl(string apiVersion)
+        => $"{HostRoot}/{ProjectPath}/_apis/git/repositories/{Uri.EscapeDataString(RepositoryName)}/pullRequests/{Uri.EscapeDataString(PullRequestId)}?api-version={Uri.EscapeDataString(apiVersion)}";
 
-    public string BuildThreadsApiUrl()
-        => $"{HostRoot}/{ProjectPath}/_apis/git/repositories/{RepositoryName}/pullRequests/{PullRequestId}/threads?api-version=7.0";
+    public string BuildThreadsApiUrl(string apiVersion)
+        => $"{HostRoot}/{ProjectPath}/_apis/git/repositories/{Uri.EscapeDataString(RepositoryName)}/pullRequests/{Uri.EscapeDataString(PullRequestId)}/threads?api-version={Uri.EscapeDataString(apiVersion)}";
 }
