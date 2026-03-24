@@ -1,0 +1,6 @@
+@TfsReviewPlatform.Api_HostAddress = http://localhost:0
+
+GET {{TfsReviewPlatform.Api_HostAddress}}/weatherforecast/
+Accept: application/json
+
+###

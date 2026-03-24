@@ -1,0 +1,10 @@
+bin/
+obj/
+.idea/
+.vscode/
+node_modules/
+dist/
+.DS_Store
+.env
+frontend/.vite/
+reports/
