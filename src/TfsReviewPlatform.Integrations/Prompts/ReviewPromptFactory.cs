@@ -24,6 +24,10 @@ public sealed class ReviewPromptFactory : IReviewPromptFactory
                 - Prefer "flowchart LR"
                 - Show the meaningful changed flow, components, handlers, API endpoints, and key dependencies
                 - Use short readable labels
+                - Always declare nodes as ID["Label text"]
+                - Do not use HTML tags except <br/>
+                - Do not put [] inside labels; use () instead
+                - Quote labels that contain spaces, slashes, parentheses, or Russian text
                 - Return an empty string if a diagram is not useful
                 """,
             ReviewPipelineStage.ChunkReview => """
