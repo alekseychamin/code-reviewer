@@ -32,7 +32,11 @@ public sealed class ReviewRunDto
 
     public string? ChangeDiagramMermaid { get; init; }
 
+    public bool HasDiffArtifact { get; init; }
+
     public string MarkdownReport { get; init; } = string.Empty;
+
+    public bool HasMarkdownReportArtifact { get; init; }
 
     public string SummaryComment { get; init; } = string.Empty;
 
@@ -43,4 +47,6 @@ public sealed class ReviewRunDto
     public IReadOnlyList<ReviewFindingDto> Findings { get; init; } = [];
 
     public IReadOnlyList<InlineCommentDto> InlineComments { get; init; } = [];
+
+    public IReadOnlyList<ReviewedFileDto> ReviewedFiles { get; init; } = [];
 }

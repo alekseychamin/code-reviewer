@@ -51,34 +51,24 @@ public sealed class AzureDevOpsReviewPublisher(IHttpClientFactory httpClientFact
         var inlineSucceeded = true;
         foreach (var inlineComment in inlineComments)
         {
-            var success = await PostThreadAsync(
-                client,
-                reference.BuildThreadsApiUrl(ApiVersion),
-                new
-                {
-                    comments = new[]
-                    {
-                        new
-                        {
-                            parentCommentId = 0,
-                            content = inlineComment.Content,
-                            commentType = 1
-                        }
-                    },
-                    status = 1,
-                    threadContext = new
-                    {
-                        filePath = inlineComment.FilePath,
-                        rightFileStart = new { line = inlineComment.LineNumber, offset = 1 },
-                        rightFileEnd = new { line = inlineComment.LineNumber, offset = 1 }
-                    }
-                },
-                cancellationToken);
+            var success = await PostInlineThreadAsync(client, reference.BuildThreadsApiUrl(ApiVersion), inlineComment, cancellationToken);
 
             inlineSucceeded &= success;
         }
 
         return inlineSucceeded;
+    }
+
+    public async Task<bool> PublishInlineCommentAsync(
+        string pullRequestUrl,
+        string accessToken,
+        InlineCommentDraft inlineComment,
+        CancellationToken cancellationToken)
+    {
+        var reference = AzureDevOpsUrlParser.Parse(pullRequestUrl);
+        var client = httpClientFactory.CreateClient(HttpClientNames.AzureDevOps);
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Basic", EncodePat(accessToken));
+        return await PostInlineThreadAsync(client, reference.BuildThreadsApiUrl(ApiVersion), inlineComment, cancellationToken);
     }
 
     private static async Task<bool> PostThreadAsync(
@@ -89,6 +79,37 @@ public sealed class AzureDevOpsReviewPublisher(IHttpClientFactory httpClientFact
     {
         using var response = await client.PostAsJsonAsync(url, payload, cancellationToken);
         return response.IsSuccessStatusCode;
+    }
+
+    private static Task<bool> PostInlineThreadAsync(
+        HttpClient client,
+        string url,
+        InlineCommentDraft inlineComment,
+        CancellationToken cancellationToken)
+    {
+        return PostThreadAsync(
+            client,
+            url,
+            new
+            {
+                comments = new[]
+                {
+                    new
+                    {
+                        parentCommentId = 0,
+                        content = inlineComment.Content,
+                        commentType = 1
+                    }
+                },
+                status = 1,
+                threadContext = new
+                {
+                    filePath = inlineComment.FilePath,
+                    rightFileStart = new { line = inlineComment.LineNumber, offset = 1 },
+                    rightFileEnd = new { line = inlineComment.LineNumber, offset = 1 }
+                }
+            },
+            cancellationToken);
     }
 
     private static string EncodePat(string accessToken)

@@ -40,50 +40,42 @@ public sealed class PullRequestDiffService(
         var tempDirectory = Path.Combine(Path.GetTempPath(), "tfs-review-platform", Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(tempDirectory);
 
-        try
+        await gitCommandRunner.RunAsync(tempDirectory, ["init"], cancellationToken);
+        await gitCommandRunner.RunAsync(tempDirectory, ["remote", "add", "origin", remoteUrl], cancellationToken);
+        await gitCommandRunner.RunAsync(
+            tempDirectory,
+            ["config", "http.extraHeader", $"Authorization: Basic {EncodePat(accessToken)}"],
+            cancellationToken);
+
+        if (azureDevOpsOptions.Value.SkipCertificateValidation)
         {
-            await gitCommandRunner.RunAsync(tempDirectory, ["init"], cancellationToken);
-            await gitCommandRunner.RunAsync(tempDirectory, ["remote", "add", "origin", remoteUrl], cancellationToken);
-            await gitCommandRunner.RunAsync(
-                tempDirectory,
-                ["config", "http.extraHeader", $"Authorization: Basic {EncodePat(accessToken)}"],
-                cancellationToken);
-
-            if (azureDevOpsOptions.Value.SkipCertificateValidation)
-            {
-                await gitCommandRunner.RunAsync(tempDirectory, ["config", "http.sslVerify", "false"], cancellationToken);
-            }
-
-            await gitCommandRunner.RunAsync(
-                tempDirectory,
-                ["fetch", "origin", $"{targetRef}:refs/remotes/origin/__target__", "--depth=100"],
-                cancellationToken);
-            await gitCommandRunner.RunAsync(
-                tempDirectory,
-                ["fetch", "origin", $"{sourceRef}:refs/remotes/origin/__source__", "--depth=100"],
-                cancellationToken);
-
-            var diffText = await gitCommandRunner.RunAsync(
-                tempDirectory,
-                ["diff", "origin/__target__...origin/__source__"],
-                cancellationToken);
-
-            return new DiffAcquisitionResult
-            {
-                DiffText = diffText,
-                RepositoryName = reference.RepositoryName,
-                PullRequestUrl = pullRequestUrl,
-                SourceRef = sourceRef,
-                TargetRef = targetRef
-            };
+            await gitCommandRunner.RunAsync(tempDirectory, ["config", "http.sslVerify", "false"], cancellationToken);
         }
-        finally
+
+        await gitCommandRunner.RunAsync(
+            tempDirectory,
+            ["fetch", "origin", $"{targetRef}:refs/remotes/origin/__target__", "--depth=100"],
+            cancellationToken);
+        await gitCommandRunner.RunAsync(
+            tempDirectory,
+            ["fetch", "origin", $"{sourceRef}:refs/remotes/origin/__source__", "--depth=100"],
+            cancellationToken);
+
+        var diffText = await gitCommandRunner.RunAsync(
+            tempDirectory,
+            ["diff", "origin/__target__...origin/__source__"],
+            cancellationToken);
+
+        return new DiffAcquisitionResult
         {
-            if (Directory.Exists(tempDirectory))
-            {
-                Directory.Delete(tempDirectory, true);
-            }
-        }
+            DiffText = diffText,
+            RepositoryPath = tempDirectory,
+            RepositoryName = reference.RepositoryName,
+            PullRequestUrl = pullRequestUrl,
+            SourceRef = "origin/__source__",
+            TargetRef = "origin/__target__",
+            CleanupDirectory = tempDirectory
+        };
     }
 
     private async Task<JsonDocument> GetPullRequestMetadataAsync(

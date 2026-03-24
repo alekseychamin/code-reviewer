@@ -3,9 +3,13 @@ import { ProgressStream } from './components/ProgressStream';
 import { ReviewForm } from './components/ReviewForm';
 import { RunDetails } from './components/RunDetails';
 import {
+  buildDiffDownloadUrl,
   buildEventsUrl,
+  buildReportDownloadUrl,
+  continueInlineDiscussion,
   fetchProviderProfiles,
   getReviewRun,
+  publishInlineComment,
   startBranchReview,
   startPullRequestReview
 } from './lib/api';
@@ -109,6 +113,26 @@ export default function App() {
     setCurrentRun(run);
   }
 
+  async function handlePublishInlineComment(commentId: string): Promise<void> {
+    if (!currentRun) {
+      return;
+    }
+
+    setError(null);
+    const run = await publishInlineComment(currentRun.id, commentId);
+    setCurrentRun(run);
+  }
+
+  async function handleAskInlineQuestion(commentId: string, message: string): Promise<void> {
+    if (!currentRun) {
+      return;
+    }
+
+    setError(null);
+    const run = await continueInlineDiscussion(currentRun.id, commentId, message);
+    setCurrentRun(run);
+  }
+
   return (
     <main className="app-shell">
       <section className="hero">
@@ -133,7 +157,13 @@ export default function App() {
         <ProgressStream events={events} run={currentRun} />
       </div>
 
-      <RunDetails run={currentRun} />
+      <RunDetails
+        diffDownloadUrl={currentRun ? buildDiffDownloadUrl(currentRun.id) : undefined}
+        onAskInlineQuestion={handleAskInlineQuestion}
+        onPublishInlineComment={handlePublishInlineComment}
+        reportDownloadUrl={currentRun ? buildReportDownloadUrl(currentRun.id) : undefined}
+        run={currentRun}
+      />
     </main>
   );
 }

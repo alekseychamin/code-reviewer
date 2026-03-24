@@ -35,4 +35,96 @@ public sealed class MarkdownReportBuilderTests
         Assert.Equal("/src/App/Service.cs", comments[0].FilePath);
         Assert.Equal(10, comments[0].LineNumber);
     }
+
+    [Fact]
+    public void BuildInlineComments_PrefersAbsoluteLineHintWhenPresent()
+    {
+        var sut = new MarkdownReportBuilder();
+        var findings = new[]
+        {
+            new ReviewFinding(
+                "src/App/Service.cs",
+                "Line 42",
+                FindingCategory.Bug,
+                FindingSeverity.High,
+                "Hidden null dereference",
+                "Potential null dereference remains on the changed line.",
+                "return request.Value.Length;",
+                "return request?.Value?.Length ?? 0;")
+        };
+
+        var diff = """
+            diff --git a/src/App/Service.cs b/src/App/Service.cs
+            @@ -40,2 +40,4 @@
+             var request = Load();
+            +return request.Value.Length;
+            +return request.Value.Length + 1;
+            """;
+
+        var comments = sut.BuildInlineComments(findings, diff);
+
+        Assert.Single(comments);
+        Assert.Equal(42, comments[0].LineNumber);
+    }
+
+    [Fact]
+    public void BuildInlineComments_UsesFuzzySnippetMatchingWhenWhitespaceDiffers()
+    {
+        var sut = new MarkdownReportBuilder();
+        var findings = new[]
+        {
+            new ReviewFinding(
+                "src/App/Service.cs",
+                "ExecuteAsync",
+                FindingCategory.CodeStyle,
+                FindingSeverity.Medium,
+                "Whitespace-insensitive match",
+                "The reviewer should still land on the right added line.",
+                "return request?.Value?.Length ?? 0;",
+                "return request?.Value?.Length ?? defaultValue;")
+        };
+
+        var diff = """
+            diff --git a/src/App/Service.cs b/src/App/Service.cs
+            @@ -10,1 +10,2 @@
+            +return request ?. Value ?. Length ?? 0;
+            """;
+
+        var comments = sut.BuildInlineComments(findings, diff);
+
+        Assert.Single(comments);
+        Assert.Equal(10, comments[0].LineNumber);
+    }
+
+    [Fact]
+    public void BuildInlineComments_IgnoresUnverifiedLineHintAndFallsBackToSnippet()
+    {
+        var sut = new MarkdownReportBuilder();
+        var findings = new[]
+        {
+            new ReviewFinding(
+                "src/App/Service.cs",
+                "Line 103",
+                FindingCategory.Bug,
+                FindingSeverity.High,
+                "Missing null check",
+                "Null validation is missing before dereference.",
+                "if (string.IsNullOrEmpty(cacheEntry.RequestId))",
+                "Validate request id before use.")
+        };
+
+        var diff = """
+            diff --git a/src/App/Service.cs b/src/App/Service.cs
+            @@ -260,3 +265,6 @@
+            +if (string.IsNullOrEmpty(cacheEntry.RequestId))
+            +{
+            +    throw new ArgumentNullException(nameof(cacheEntry.RequestId));
+            +}
+            """;
+
+        var comments = sut.BuildInlineComments(findings, diff);
+
+        Assert.Single(comments);
+        Assert.Equal(265, comments[0].LineNumber);
+    }
 }

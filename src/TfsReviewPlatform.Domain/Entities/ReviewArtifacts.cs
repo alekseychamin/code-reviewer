@@ -15,4 +15,6 @@ public sealed class ReviewArtifacts
     public string SummaryComment { get; init; } = string.Empty;
 
     public IReadOnlyList<InlineCommentDraft> InlineComments { get; init; } = [];
+
+    public IReadOnlyList<ReviewedFileArtifact> ReviewedFiles { get; init; } = [];
 }

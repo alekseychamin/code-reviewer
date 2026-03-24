@@ -37,6 +37,7 @@ public static class IntegrationServiceCollectionExtensions
             });
 
         services.AddSingleton<ShellGitCommandRunner>();
+        services.AddSingleton<IRepositoryFileContentService, GitRepositoryFileContentService>();
         services.AddSingleton<IBranchComparisonDiffService, BranchComparisonDiffService>();
         services.AddSingleton<IPullRequestDiffService, PullRequestDiffService>();
         services.AddSingleton<ILlmCompletionService, LlmCompletionService>();

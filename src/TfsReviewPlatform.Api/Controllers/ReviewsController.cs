@@ -58,6 +58,59 @@ public sealed class ReviewsController(
         return run is null ? NotFound() : Ok(run);
     }
 
+    [HttpPost("{runId:guid}/inline-comments/{commentId:guid}/publish")]
+    [ProducesResponseType<ReviewRunDto>(StatusCodes.Status200OK)]
+    public async Task<ActionResult<ReviewRunDto>> PublishInlineComment(
+        Guid runId,
+        Guid commentId,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            return Ok(await reviewOrchestrator.PublishInlineCommentAsync(runId, commentId, cancellationToken));
+        }
+        catch (InvalidOperationException exception)
+        {
+            return ValidationProblem(detail: exception.Message);
+        }
+    }
+
+    [HttpPost("{runId:guid}/inline-comments/{commentId:guid}/discussion")]
+    [ProducesResponseType<ReviewRunDto>(StatusCodes.Status200OK)]
+    public async Task<ActionResult<ReviewRunDto>> ContinueInlineDiscussion(
+        Guid runId,
+        Guid commentId,
+        [FromBody] ContinueInlineDiscussionRequest request,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            return Ok(await reviewOrchestrator.ContinueInlineDiscussionAsync(runId, commentId, request, cancellationToken));
+        }
+        catch (InvalidOperationException exception)
+        {
+            return ValidationProblem(detail: exception.Message);
+        }
+    }
+
+    [HttpGet("{runId:guid}/artifacts/diff")]
+    public async Task<IActionResult> DownloadDiff(Guid runId, CancellationToken cancellationToken)
+    {
+        var artifact = await reviewOrchestrator.GetDiffDownloadAsync(runId, cancellationToken);
+        return artifact is null
+            ? NotFound()
+            : File(artifact.Content, artifact.ContentType, artifact.FileName);
+    }
+
+    [HttpGet("{runId:guid}/artifacts/report")]
+    public async Task<IActionResult> DownloadReport(Guid runId, CancellationToken cancellationToken)
+    {
+        var artifact = await reviewOrchestrator.GetMarkdownReportDownloadAsync(runId, cancellationToken);
+        return artifact is null
+            ? NotFound()
+            : File(artifact.Content, artifact.ContentType, artifact.FileName);
+    }
+
     [HttpGet("{runId:guid}/events")]
     [Produces("text/event-stream")]
     public async Task Stream(Guid runId, CancellationToken cancellationToken)

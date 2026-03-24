@@ -107,3 +107,24 @@ export async function getReviewRun(runId: string): Promise<ReviewRun> {
 export function buildEventsUrl(runId: string): string {
   return buildUrl(`/api/reviews/${runId}/events`);
 }
+
+export async function publishInlineComment(runId: string, commentId: string): Promise<ReviewRun> {
+  return request<ReviewRun>(`/api/reviews/${runId}/inline-comments/${commentId}/publish`, {
+    method: 'POST'
+  });
+}
+
+export async function continueInlineDiscussion(runId: string, commentId: string, message: string): Promise<ReviewRun> {
+  return request<ReviewRun>(`/api/reviews/${runId}/inline-comments/${commentId}/discussion`, {
+    method: 'POST',
+    body: JSON.stringify({ message })
+  });
+}
+
+export function buildDiffDownloadUrl(runId: string): string {
+  return buildUrl(`/api/reviews/${runId}/artifacts/diff`);
+}
+
+export function buildReportDownloadUrl(runId: string): string {
+  return buildUrl(`/api/reviews/${runId}/artifacts/report`);
+}

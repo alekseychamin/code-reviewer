@@ -12,4 +12,10 @@ public interface IReviewPublisher
         string summaryComment,
         IReadOnlyList<InlineCommentDraft> inlineComments,
         CancellationToken cancellationToken);
+
+    Task<bool> PublishInlineCommentAsync(
+        string pullRequestUrl,
+        string accessToken,
+        InlineCommentDraft inlineComment,
+        CancellationToken cancellationToken);
 }

@@ -1,4 +1,5 @@
 using TfsReviewPlatform.Application.Contracts.Reviews;
+using TfsReviewPlatform.Application.Models;
 
 namespace TfsReviewPlatform.Application.Abstractions;
 
@@ -13,4 +14,16 @@ public interface IReviewOrchestrator
         CancellationToken cancellationToken);
 
     Task<ReviewRunDto?> GetAsync(Guid runId, CancellationToken cancellationToken);
+
+    Task<ReviewRunDto> PublishInlineCommentAsync(Guid runId, Guid commentId, CancellationToken cancellationToken);
+
+    Task<ReviewRunDto> ContinueInlineDiscussionAsync(
+        Guid runId,
+        Guid commentId,
+        ContinueInlineDiscussionRequest request,
+        CancellationToken cancellationToken);
+
+    Task<ArtifactDownloadResult?> GetDiffDownloadAsync(Guid runId, CancellationToken cancellationToken);
+
+    Task<ArtifactDownloadResult?> GetMarkdownReportDownloadAsync(Guid runId, CancellationToken cancellationToken);
 }

@@ -21,6 +21,7 @@ public sealed class BranchComparisonDiffService(ShellGitCommandRunner gitCommand
         return new DiffAcquisitionResult
         {
             DiffText = diffText,
+            RepositoryPath = repositoryPath,
             RepositoryName = repositoryName ?? Path.GetFileName(repositoryPath),
             SourceRef = sourceBranch,
             TargetRef = targetBranch
