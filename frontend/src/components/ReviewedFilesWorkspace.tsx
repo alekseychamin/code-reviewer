@@ -149,7 +149,7 @@ export function ReviewedFilesWorkspace({
       <div className="subsection-header">
         <div>
           <h3>Файлы с замечаниями</h3>
-          <p>{filesWithRemarks.length} files with remarks</p>
+          <p>{filesWithRemarks.length} файлов с замечаниями</p>
         </div>
       </div>
 
@@ -167,14 +167,14 @@ export function ReviewedFilesWorkspace({
                     <strong>{file.displayName}</strong>
                     {getHighestSeverity(file) ? (
                       <span className={`severity severity-${getSeverityClass(getHighestSeverity(file))}`}>
-                        {getHighestSeverity(file)}
+                        {getSeverityLabel(getHighestSeverity(file))}
                       </span>
                     ) : null}
                   </div>
                   <p className="file-accordion-path">{file.filePath}</p>
                   {previewRemark ? (
                     <p className="file-accordion-preview">
-                      {previewRemark.severity}: {previewRemark.title}
+                      {getSeverityLabel(previewRemark.severity)}: {previewRemark.title}
                     </p>
                   ) : null}
                 </div>
@@ -182,10 +182,10 @@ export function ReviewedFilesWorkspace({
                 <div className="file-accordion-side">
                   <div className="file-list-meta">
                     <small>
-                      {file.changeType} · <span className="added-count">+{file.addedLines}</span>{' '}
+                      {translateChangeType(file.changeType)} · <span className="added-count">+{file.addedLines}</span>{' '}
                       <span className="deleted-count">-{file.deletedLines}</span>
                     </small>
-                    <small className="thread-count-label">{file.inlineThreads.length} remarks</small>
+                    <small className="thread-count-label">{file.inlineThreads.length} замечаний</small>
                   </div>
                   <span className="file-accordion-caret">{isOpen ? '−' : '+'}</span>
                 </div>
@@ -199,10 +199,10 @@ export function ReviewedFilesWorkspace({
                       <p>{file.filePath}</p>
                     </div>
                     <div className="file-stats">
-                      <span className="secondary-chip">{file.changeType}</span>
+                      <span className="secondary-chip">{translateChangeType(file.changeType)}</span>
                       <span className="secondary-chip added">+{file.addedLines}</span>
                       <span className="secondary-chip deleted">-{file.deletedLines}</span>
-                      <span className="secondary-chip">{sortedThreads.length} remarks</span>
+                      <span className="secondary-chip">{sortedThreads.length} замечаний</span>
                     </div>
                   </div>
 
@@ -268,7 +268,6 @@ function InlineThreadCard({
 }: InlineThreadCardProps) {
   const hasContext = Boolean(
     thread.contextBlock?.trim() ||
-      thread.relevantDiffHunk?.trim() ||
       thread.existingCode?.trim() ||
       thread.suggestion?.trim()
   );
@@ -284,9 +283,9 @@ function InlineThreadCard({
         </div>
         <div className="thread-meta">
           <span className="secondary-chip">
-            {thread.lineNumber > 0 ? `Line ${thread.lineNumber}` : 'File-level'}
+            {thread.lineNumber > 0 ? `Строка ${thread.lineNumber}` : 'Уровень файла'}
           </span>
-          {thread.publishedToTfs ? <span className="secondary-chip success">Sent to TFS</span> : null}
+          {thread.publishedToTfs ? <span className="secondary-chip success">Отправлено в TFS</span> : null}
           <span className="thread-accordion-caret">{expanded ? '−' : '+'}</span>
         </div>
       </button>
@@ -317,13 +316,6 @@ function InlineThreadCard({
                 </div>
               ) : null}
 
-              {thread.relevantDiffHunk ? (
-                <div className="thread-snippet">
-                  <p>Relevant diff hunk</p>
-                  <pre>{thread.relevantDiffHunk}</pre>
-                </div>
-              ) : null}
-
               {thread.existingCode ? (
                 <div className="thread-snippet">
                   <p>Проблемный фрагмент</p>
@@ -343,7 +335,7 @@ function InlineThreadCard({
           <div className="thread-messages">
             {thread.messages.map((message, index) => (
               <div className={`thread-message ${message.role}`} key={`${thread.id}-${index}`}>
-                <strong>{message.role === 'assistant' ? 'LLM' : 'You'}</strong>
+                <strong>{message.role === 'assistant' ? 'LLM' : 'Вы'}</strong>
                 <MarkdownBlock content={message.content} emptyText="" />
               </div>
             ))}
@@ -356,7 +348,7 @@ function InlineThreadCard({
               onClick={onPublish}
               type="button"
             >
-              {thread.publishedToTfs ? 'Sent to TFS' : 'Send to TFS'}
+              {thread.publishedToTfs ? 'Отправлено в TFS' : 'Отправить в TFS'}
             </button>
           </div>
 
@@ -372,7 +364,7 @@ function InlineThreadCard({
 
           <div className="thread-actions">
             <button className="primary" disabled={busy || !draft.trim()} onClick={onSendQuestion} type="button">
-              {busy ? 'Thinking...' : 'Ask LLM'}
+              {busy ? 'Думаю...' : 'Спросить LLM'}
             </button>
           </div>
 
@@ -421,7 +413,7 @@ function getSevereThreadCount(file: ReviewedFile): number {
 }
 
 function getSeverityRank(value: string | undefined): number {
-  switch (getSeverityLabel(value).toLowerCase()) {
+  switch (value?.trim().toLowerCase()) {
     case 'critical':
       return 4;
     case 'high':
@@ -436,9 +428,50 @@ function getSeverityRank(value: string | undefined): number {
 }
 
 function getSeverityLabel(value: string | undefined): string {
-  return typeof value === 'string' && value.trim() ? value : 'Info';
+  if (typeof value !== 'string' || !value.trim()) {
+    return 'Инфо';
+  }
+
+  switch (value.trim().toLowerCase()) {
+    case 'critical':
+      return 'Критично';
+    case 'high':
+      return 'Высокий';
+    case 'medium':
+      return 'Средний';
+    case 'low':
+      return 'Низкий';
+    default:
+      return value;
+  }
 }
 
 function getSeverityClass(value: string | undefined): string {
-  return getSeverityLabel(value).toLowerCase();
+  switch (value?.trim().toLowerCase()) {
+    case 'critical':
+      return 'critical';
+    case 'high':
+      return 'high';
+    case 'medium':
+      return 'medium';
+    case 'low':
+      return 'low';
+    default:
+      return 'low';
+  }
+}
+
+function translateChangeType(value: string): string {
+  switch (value.trim().toLowerCase()) {
+    case 'added':
+      return 'Добавлен';
+    case 'modified':
+      return 'Изменён';
+    case 'deleted':
+      return 'Удалён';
+    case 'renamed':
+      return 'Переименован';
+    default:
+      return value;
+  }
 }

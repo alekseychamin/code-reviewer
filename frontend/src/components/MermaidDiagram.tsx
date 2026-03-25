@@ -32,7 +32,7 @@ export function MermaidDiagram({ chart }: MermaidDiagramProps) {
             }
 
             setSvg(result.svg);
-            setError(index === 0 ? null : 'Diagram was auto-corrected for Mermaid rendering.');
+            setError(index === 0 ? null : 'Диаграмма была автоматически скорректирована для рендера Mermaid.');
             return;
           } catch (reason) {
             lastError = reason;
@@ -65,14 +65,14 @@ export function MermaidDiagram({ chart }: MermaidDiagramProps) {
   if (error) {
     return (
       <div className="diagram-fallback">
-        <p>Could not render Mermaid diagram.</p>
+        <p>Не удалось отрисовать Mermaid-диаграмму.</p>
         <pre>{chart}</pre>
       </div>
     );
   }
 
   if (!svg) {
-    return <div className="empty-state compact">Rendering diagram...</div>;
+    return <div className="empty-state compact">Отрисовка диаграммы...</div>;
   }
 
   return <div className="mermaid-diagram" dangerouslySetInnerHTML={{ __html: svg }} />;

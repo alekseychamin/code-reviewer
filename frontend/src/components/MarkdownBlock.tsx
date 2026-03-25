@@ -23,30 +23,51 @@ export function MarkdownBlock({ content, emptyText }: MarkdownBlockProps) {
 function normalizeMarkdownContent(content: string): string {
   const lines = content.replace(/\r\n/g, '\n').split('\n');
   let lastMeaningfulLine = '';
+  const normalizedLines: string[] = [];
 
-  return lines
-    .map((line) => {
-      const trimmed = line.trim();
+  for (const line of lines) {
+    const trimmed = line.trim();
 
-      if (!trimmed) {
-        return line;
-      }
+    if (!trimmed) {
+      normalizedLines.push(line);
+      continue;
+    }
 
-      if (trimmed.startsWith(':')) {
-        const normalizedTail = trimmed.slice(1).trimStart();
-        if (isListItemLine(lastMeaningfulLine)) {
-          return `    ${normalizedTail}`;
+    if (trimmed.startsWith(':')) {
+      const normalizedTail = trimmed.slice(1).trimStart();
+      if (normalizedLines.length > 0) {
+        const previousIndex = findPreviousMeaningfulLineIndex(normalizedLines);
+        if (previousIndex >= 0) {
+          const previousLine = normalizedLines[previousIndex].replace(/\s+$/, '');
+          const separator = previousLine.endsWith(':') ? ' ' : ': ';
+          normalizedLines[previousIndex] = `${previousLine}${separator}${normalizedTail}`;
+          lastMeaningfulLine = normalizedLines[previousIndex].trim();
+          continue;
         }
-
-        return normalizedTail;
       }
 
-      lastMeaningfulLine = trimmed;
-      return line;
-    })
-    .join('\n');
+      normalizedLines.push(normalizedTail);
+      lastMeaningfulLine = normalizedTail;
+      continue;
+    }
+
+    normalizedLines.push(line);
+    lastMeaningfulLine = trimmed;
+  }
+
+  return normalizedLines.join('\n');
 }
 
 function isListItemLine(line: string): boolean {
   return /^\d+\.\s+/.test(line) || /^[-*+]\s+/.test(line);
+}
+
+function findPreviousMeaningfulLineIndex(lines: string[]): number {
+  for (let index = lines.length - 1; index >= 0; index -= 1) {
+    if (lines[index].trim()) {
+      return index;
+    }
+  }
+
+  return -1;
 }

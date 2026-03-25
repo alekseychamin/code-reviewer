@@ -36,6 +36,10 @@ export default function App() {
   }
 
   useEffect(() => {
+    document.title = 'TFS AI Reviewer';
+  }, []);
+
+  useEffect(() => {
     void fetchProviderProfiles()
       .then(setProfiles)
       .catch((reason) => setError(reason instanceof Error ? reason.message : String(reason)));
@@ -137,12 +141,12 @@ export default function App() {
     <main className="app-shell">
       <section className="hero">
         <div>
-          <p className="eyebrow">AI Code Review Platform</p>
-          <h1>Structured review orchestration for Azure DevOps, TFS, OpenAI-compatible models, and Ollama.</h1>
+          <p className="eyebrow">TFS AI Reviewer</p>
+          <h1>🕵️‍♂️ .NET Code Reviewer (DeepSeek)</h1>
         </div>
         <p className="hero-copy">
-          Bootstrap review runs by pull request URL or branch comparison, stream pipeline progress over SSE, route
-          stages across provider profiles, and publish summary plus inline comments back into Azure DevOps/TFS.
+          Запускайте ревью по ссылке на pull request или по сравнению веток, отслеживайте прогресс по SSE и
+          публикуйте итоговый комментарий и inline-замечания обратно в Azure DevOps/TFS.
         </p>
       </section>
 

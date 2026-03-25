@@ -23,11 +23,11 @@ export function RunDetails({
       <section className="panel">
         <div className="panel-header">
           <div>
-            <p className="eyebrow">Results</p>
-            <h2>Diagram, summary, and file review workspace</h2>
+            <p className="eyebrow">Результаты</p>
+            <h2>Диаграмма, описание и замечания по файлам</h2>
           </div>
         </div>
-        <div className="empty-state">Start a review to see the change diagram, change summary, and file-by-file inline review threads.</div>
+        <div className="empty-state">Запусти ревью, чтобы увидеть диаграмму изменений, описание и замечания по файлам.</div>
       </section>
     );
   }
@@ -36,7 +36,7 @@ export function RunDetails({
     <section className="panel">
       <div className="panel-header">
         <div>
-          <p className="eyebrow">Results</p>
+          <p className="eyebrow">Результаты</p>
           <h2>{run.title}</h2>
         </div>
         <div className="result-toolbar">
@@ -50,7 +50,7 @@ export function RunDetails({
             }}
             type="button"
           >
-              Export diff.txt
+              Скачать diff.txt
           </button>
           <button
             className="secondary-button"
@@ -62,35 +62,35 @@ export function RunDetails({
             }}
             type="button"
           >
-              Export report.md
+              Скачать report.md
           </button>
-          <span className="secondary-chip">{run.findings.length} findings</span>
+          <span className="secondary-chip">{run.findings.length} замечаний</span>
         </div>
       </div>
 
       <div className="results-stack">
         <article className="result-card">
-          <h3>Change diagram</h3>
+          <h3>Диаграмма изменений</h3>
           {run.changeDiagramMermaid ? (
             <div className="diagram-card large">
               <MermaidDiagram chart={run.changeDiagramMermaid} />
             </div>
           ) : (
-            <div className="empty-state">Diagram will appear here as soon as the change-description phase returns it.</div>
+            <div className="empty-state">Диаграмма появится здесь, как только этап описания изменений её вернёт.</div>
           )}
         </article>
 
         <article className="result-card">
-          <h3>Change description</h3>
+          <h3>Описание изменений</h3>
           <MarkdownBlock
             content={run.changeDescription}
-            emptyText="Description will appear here once phase 1 completes."
+            emptyText="Описание появится здесь после завершения первого этапа."
           />
         </article>
       </div>
 
       <div className="subsection">
-        <h3>File review workspace</h3>
+        <h3>Замечания по файлам</h3>
         <ReviewedFilesWorkspace
           files={run.reviewedFiles}
           onAskInlineQuestion={onAskInlineQuestion}

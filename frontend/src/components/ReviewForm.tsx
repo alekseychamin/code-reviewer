@@ -24,7 +24,7 @@ export function ReviewForm({
   const [mode, setMode] = useState<ReviewMode>('pullRequest');
   const [providerProfileId, setProviderProfileId] = useState('');
   const [localOnlyMode, setLocalOnlyMode] = useState(false);
-  const [publishMode, setPublishMode] = useState<PublishMode>('SummaryOnly');
+  const [publishMode, setPublishMode] = useState<PublishMode>('None');
   const [pullRequestUrl, setPullRequestUrl] = useState('');
   const [repositoryPath, setRepositoryPath] = useState('');
   const [repositoryName, setRepositoryName] = useState('');
@@ -40,22 +40,22 @@ export function ReviewForm({
   function validate(): string | null {
     if (mode === 'pullRequest') {
       if (!pullRequestUrl.trim()) {
-        return 'Enter a pull request URL.';
+        return 'Укажи ссылку на pull request.';
       }
 
       return null;
     }
 
     if (!repositoryPath.trim()) {
-      return 'Enter an absolute repository path for branch comparison.';
+      return 'Укажи абсолютный путь к репозиторию для сравнения веток.';
     }
 
     if (!sourceBranch.trim()) {
-      return 'Enter the source branch to compare.';
+      return 'Укажи исходную ветку для сравнения.';
     }
 
     if (!targetBranch.trim()) {
-      return 'Enter the target branch to compare against.';
+      return 'Укажи целевую ветку для сравнения.';
     }
 
     return null;
@@ -103,8 +103,8 @@ export function ReviewForm({
     <section className="panel">
       <div className="panel-header">
         <div>
-          <p className="eyebrow">Start Review</p>
-          <h2>Trigger a production-style AI review run</h2>
+          <p className="eyebrow">Запуск ревью</p>
+          <h2>Запуск AI-ревью</h2>
         </div>
         <div className="segmented-control">
           <button
@@ -112,14 +112,14 @@ export function ReviewForm({
             onClick={() => setMode('pullRequest')}
             type="button"
           >
-            Pull request URL
+            Pull request
           </button>
           <button
             className={mode === 'branches' ? 'active' : ''}
             onClick={() => setMode('branches')}
             type="button"
           >
-            Branch comparison
+            Сравнение веток
           </button>
         </div>
       </div>
@@ -128,7 +128,7 @@ export function ReviewForm({
         {mode === 'pullRequest' ? (
           <>
             <label>
-              Pull request URL
+              Ссылка на pull request
               <input
                 value={pullRequestUrl}
                 onChange={(event) => setPullRequestUrl(event.target.value)}
@@ -139,7 +139,7 @@ export function ReviewForm({
         ) : (
           <>
             <label>
-              Repository path
+              Путь к репозиторию
               <input
                 value={repositoryPath}
                 onChange={(event) => setRepositoryPath(event.target.value)}
@@ -147,28 +147,28 @@ export function ReviewForm({
               />
             </label>
             <label>
-              Repository label
+              Название репозитория
               <input
                 value={repositoryName}
                 onChange={(event) => setRepositoryName(event.target.value)}
-                placeholder="Optional display name"
+                placeholder="Необязательное отображаемое имя"
               />
             </label>
             <label>
-              Target branch
+              Целевая ветка
               <input value={targetBranch} onChange={(event) => setTargetBranch(event.target.value)} />
             </label>
             <label>
-              Source branch
+              Исходная ветка
               <input value={sourceBranch} onChange={(event) => setSourceBranch(event.target.value)} />
             </label>
           </>
         )}
 
         <label>
-          Provider profile
+          Профиль провайдера
           <select value={providerProfileId} onChange={(event) => setProviderProfileId(event.target.value)}>
-            <option value="">Use routed default</option>
+            <option value="">Использовать маршрут по умолчанию</option>
             {filteredProfiles.map((profile) => (
               <option key={profile.id} value={profile.id}>
                 {profile.name} · {profile.defaultModel}
@@ -178,7 +178,7 @@ export function ReviewForm({
         </label>
 
         <label>
-          Publish mode
+          Режим публикации
           <select
             disabled={mode === 'branches'}
             value={mode === 'branches' ? 'None' : publishMode}
@@ -186,7 +186,7 @@ export function ReviewForm({
           >
             {publishModes.map((modeValue) => (
               <option key={modeValue} value={modeValue}>
-                {modeValue}
+                {translatePublishMode(modeValue)}
               </option>
             ))}
           </select>
@@ -204,21 +204,34 @@ export function ReviewForm({
           }}
           type="checkbox"
         />
-        Local-only mode with Ollama routing
+        Локальный режим только через Ollama
       </label>
 
       <div className="panel-footer">
         <p>
-          Thin controllers, stage-based LLM routing, in-memory persistence, SSE progress, and Azure DevOps/TFS
-          publishing are wired from the same API. Azure DevOps/TFS PAT is read by the backend from
-          `AZURE_DEVOPS_TOKEN` in `.env`.
+          Тонкие контроллеры, stage-based маршрутизация LLM, in-memory persistence, SSE-прогресс и публикация в
+          Azure DevOps/TFS работают через один API. PAT для Azure DevOps/TFS backend читает из
+          `AZURE_DEVOPS_TOKEN` в `.env`.
         </p>
         <button className="primary" disabled={isSubmitting} onClick={() => void handleSubmit()} type="button">
-          {isSubmitting ? 'Starting review...' : 'Start review run'}
+          {isSubmitting ? 'Запуск ревью...' : 'Запустить ревью'}
         </button>
       </div>
 
       {submitError ? <div className="inline-error">{submitError}</div> : null}
     </section>
   );
+}
+
+function translatePublishMode(mode: PublishMode): string {
+  switch (mode) {
+    case 'None':
+      return 'Не публиковать';
+    case 'SummaryOnly':
+      return 'Только summary';
+    case 'SummaryAndInline':
+      return 'Summary и inline';
+    default:
+      return mode;
+  }
 }

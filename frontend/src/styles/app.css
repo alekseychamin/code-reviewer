@@ -48,14 +48,14 @@ pre {
 .app-shell {
   max-width: 1440px;
   margin: 0 auto;
-  padding: 32px 20px 48px;
+  padding: 24px 18px 32px;
 }
 
 .hero {
   display: grid;
-  gap: 18px;
-  margin-bottom: 28px;
-  padding: 28px;
+  gap: 12px;
+  margin-bottom: 18px;
+  padding: 22px;
   border-radius: 32px;
   background: linear-gradient(135deg, rgba(255, 249, 240, 0.92), rgba(246, 236, 225, 0.96));
   box-shadow: var(--shadow);
@@ -88,16 +88,16 @@ pre {
 
 .layout-grid {
   display: grid;
-  gap: 20px;
+  gap: 14px;
   grid-template-columns: 1.25fr 0.95fr;
-  margin-bottom: 20px;
+  margin-bottom: 14px;
 }
 
 .panel {
   background: var(--panel);
   border: 1px solid rgba(255, 255, 255, 0.8);
   border-radius: var(--radius);
-  padding: 22px;
+  padding: 16px;
   box-shadow: var(--shadow);
   backdrop-filter: blur(12px);
 }
@@ -106,8 +106,8 @@ pre {
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
-  gap: 16px;
-  margin-bottom: 18px;
+  gap: 12px;
+  margin-bottom: 12px;
 }
 
 .panel-header h2,
@@ -148,13 +148,13 @@ pre {
 
 .form-grid {
   display: grid;
-  gap: 16px;
+  gap: 12px;
   grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
 label {
   display: grid;
-  gap: 8px;
+  gap: 6px;
   font-size: 0.95rem;
   color: var(--muted);
 }
@@ -165,15 +165,15 @@ select {
   border: 1px solid var(--line);
   background: var(--panel-strong);
   border-radius: 16px;
-  padding: 12px 14px;
+  padding: 10px 12px;
   color: var(--ink);
 }
 
 .checkbox {
   display: flex;
   align-items: center;
-  gap: 12px;
-  margin-top: 18px;
+  gap: 10px;
+  margin-top: 14px;
   color: var(--ink);
 }
 
@@ -186,8 +186,8 @@ select {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 20px;
-  margin-top: 22px;
+  gap: 14px;
+  margin-top: 16px;
 }
 
 .panel-footer p {
@@ -199,7 +199,7 @@ select {
 button.primary {
   border: 0;
   border-radius: 999px;
-  padding: 14px 18px;
+  padding: 12px 16px;
   background: linear-gradient(135deg, var(--brand), var(--brand-strong));
   color: white;
   cursor: pointer;
@@ -212,7 +212,7 @@ button.primary {
   gap: 8px;
   border: 1px solid rgba(29, 36, 51, 0.1);
   border-radius: 999px;
-  padding: 12px 16px;
+  padding: 10px 14px;
   background: rgba(255, 255, 255, 0.82);
   color: var(--ink);
   cursor: pointer;
@@ -225,7 +225,7 @@ button.primary {
 }
 
 .progress-shell {
-  padding: 18px;
+  padding: 14px;
   border-radius: 22px;
   background: linear-gradient(160deg, rgba(15, 123, 108, 0.09), rgba(197, 98, 50, 0.06));
   border: 1px solid rgba(15, 123, 108, 0.12);
@@ -248,20 +248,20 @@ button.primary {
   display: flex;
   justify-content: space-between;
   gap: 12px;
-  margin-top: 12px;
+  margin-top: 10px;
   color: var(--muted);
 }
 
 .timeline {
   display: grid;
-  gap: 12px;
-  margin-top: 18px;
+  gap: 8px;
+  margin-top: 14px;
 }
 
 .timeline-item {
   display: grid;
-  gap: 6px;
-  padding: 14px;
+  gap: 4px;
+  padding: 10px 12px;
   border-radius: 18px;
   background: rgba(255, 255, 255, 0.72);
   border: 1px solid rgba(29, 36, 51, 0.06);
@@ -306,14 +306,14 @@ button.primary {
 
 .results-grid {
   display: grid;
-  gap: 16px;
+  gap: 12px;
   grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
 .result-card {
   display: grid;
-  gap: 12px;
-  padding: 18px;
+  gap: 8px;
+  padding: 14px;
   border-radius: 20px;
   background: rgba(255, 255, 255, 0.78);
   border: 1px solid rgba(29, 36, 51, 0.06);
@@ -324,15 +324,15 @@ button.primary {
 }
 
 .subsection {
-  margin-top: 20px;
+  margin-top: 14px;
 }
 
 .chip-list,
 .findings-list {
   display: flex;
   flex-wrap: wrap;
-  gap: 10px;
-  margin-top: 12px;
+  gap: 8px;
+  margin-top: 8px;
 }
 
 .file-chip {
@@ -342,8 +342,8 @@ button.primary {
 .finding-card {
   flex: 1 1 320px;
   display: grid;
-  gap: 10px;
-  padding: 16px;
+  gap: 8px;
+  padding: 12px;
   border-radius: 18px;
   background: rgba(255, 255, 255, 0.8);
   border: 1px solid rgba(29, 36, 51, 0.06);
@@ -351,9 +351,15 @@ button.primary {
 
 .markdown-content {
   color: #283246;
-  line-height: 1.6;
-  overflow-wrap: anywhere;
-  word-break: break-word;
+  line-height: 1.5;
+  overflow-wrap: break-word;
+  word-break: normal;
+  hyphens: none;
+}
+
+.thread-message .markdown-content,
+.thread-accordion-body > .markdown-content {
+  line-height: 1.5;
 }
 
 .markdown-content > :first-child {
@@ -368,7 +374,7 @@ button.primary {
 .markdown-content h2,
 .markdown-content h3,
 .markdown-content h4 {
-  margin: 0 0 12px;
+  margin: 0 0 8px;
   line-height: 1.2;
   overflow-wrap: anywhere;
 }
@@ -377,38 +383,103 @@ button.primary {
 .markdown-content ul,
 .markdown-content ol,
 .markdown-content blockquote {
-  margin: 0 0 12px;
+  margin: 0 0 8px;
+  overflow-wrap: break-word;
+}
+
+.thread-message .markdown-content h1,
+.thread-message .markdown-content h2,
+.thread-message .markdown-content h3,
+.thread-message .markdown-content h4,
+.thread-accordion-body > .markdown-content h1,
+.thread-accordion-body > .markdown-content h2,
+.thread-accordion-body > .markdown-content h3,
+.thread-accordion-body > .markdown-content h4 {
+  margin-bottom: 8px;
+}
+
+.thread-message .markdown-content p,
+.thread-message .markdown-content ul,
+.thread-message .markdown-content ol,
+.thread-message .markdown-content blockquote,
+.thread-accordion-body > .markdown-content p,
+.thread-accordion-body > .markdown-content ul,
+.thread-accordion-body > .markdown-content ol,
+.thread-accordion-body > .markdown-content blockquote {
+  margin-bottom: 8px;
+}
+
+.markdown-content ul,
+.markdown-content ol {
+  padding-left: 22px;
+}
+
+.markdown-content li {
+  margin: 0 0 6px;
+  overflow-wrap: break-word;
+}
+
+.thread-message .markdown-content li,
+.thread-accordion-body > .markdown-content li {
+  margin-bottom: 6px;
+}
+
+.markdown-content li > p {
+  display: inline;
+  margin: 0;
+}
+
+.markdown-content li > p + p {
+  margin-left: 0.35ch;
+}
+
+.markdown-content li > ul,
+.markdown-content li > ol {
+  display: block;
+  margin-top: 6px;
 }
 
 .markdown-content code {
+  display: inline-block;
+  vertical-align: baseline;
   font-family: "IBM Plex Mono", "SFMono-Regular", monospace;
   font-size: 0.92em;
   background: rgba(29, 36, 51, 0.06);
   padding: 2px 6px;
   border-radius: 8px;
-  overflow-wrap: anywhere;
+  white-space: nowrap;
+  overflow-wrap: normal;
+  word-break: normal;
+  max-width: 100%;
 }
 
 .markdown-content pre {
   overflow-x: auto;
-  padding: 14px;
+  padding: 10px 12px;
   border-radius: 16px;
   background: rgba(29, 36, 51, 0.05);
+  line-height: 1.55;
 }
 
 .markdown-content pre code {
+  display: block;
   background: transparent;
   padding: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  padding-left: 2ch;
+  text-indent: -2ch;
 }
 
 .markdown-content blockquote {
-  padding-left: 14px;
+  padding-left: 10px;
   border-left: 3px solid rgba(15, 123, 108, 0.35);
   color: var(--muted);
 }
 
 .diagram-card {
-  padding: 18px;
+  padding: 14px;
   border-radius: 20px;
   background: rgba(255, 255, 255, 0.82);
   border: 1px solid rgba(29, 36, 51, 0.06);
@@ -434,7 +505,7 @@ button.primary {
 
 .reviewed-files-layout {
   display: grid;
-  gap: 18px;
+  gap: 12px;
   grid-template-columns: minmax(240px, 320px) minmax(0, 1fr);
 }
 
@@ -444,24 +515,24 @@ button.primary {
 
 .reviewed-files-layout.horizontal {
   display: grid;
-  gap: 16px;
+  gap: 12px;
   grid-template-columns: minmax(0, 1fr);
 }
 
 .reviewed-files-layout.vertical-selection {
   display: grid;
-  gap: 18px;
+  gap: 12px;
   grid-template-columns: minmax(0, 1fr);
 }
 
 .reviewed-files-accordion {
   display: grid;
-  gap: 16px;
+  gap: 12px;
 }
 
 .results-stack {
   display: grid;
-  gap: 18px;
+  gap: 12px;
 }
 
 .file-sidebar {
@@ -476,17 +547,17 @@ button.primary {
 
 .file-strip-panel {
   display: grid;
-  gap: 12px;
+  gap: 8px;
 }
 
 .file-list-panel {
   display: grid;
-  gap: 12px;
+  gap: 8px;
 }
 
 .file-accordion-list {
   display: grid;
-  gap: 14px;
+  gap: 10px;
 }
 
 .file-strip-list {
@@ -554,8 +625,8 @@ button.primary {
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
-  gap: 18px;
-  padding: 18px 20px;
+  gap: 14px;
+  padding: 14px 16px;
   border: 0;
   background: transparent;
   text-align: left;
@@ -564,7 +635,7 @@ button.primary {
 
 .file-accordion-main {
   display: grid;
-  gap: 8px;
+  gap: 6px;
   min-width: 0;
 }
 
@@ -593,7 +664,7 @@ button.primary {
 
 .file-accordion-side {
   display: grid;
-  gap: 10px;
+  gap: 8px;
   justify-items: end;
   flex-shrink: 0;
 }
@@ -613,8 +684,8 @@ button.primary {
 
 .file-accordion-body {
   display: grid;
-  gap: 16px;
-  padding: 0 20px 20px;
+  gap: 12px;
+  padding: 0 16px 16px;
 }
 
 .file-strip-item strong,
@@ -682,13 +753,13 @@ button.primary {
 
 .file-sidebar-list {
   display: grid;
-  gap: 10px;
+  gap: 8px;
 }
 
 .file-nav-item {
   display: grid;
-  gap: 6px;
-  padding: 14px;
+  gap: 4px;
+  padding: 12px;
   border-radius: 18px;
   border: 1px solid rgba(29, 36, 51, 0.08);
   background: rgba(255, 255, 255, 0.74);
@@ -734,7 +805,7 @@ button.primary {
 
 .file-review-surface {
   display: grid;
-  gap: 16px;
+  gap: 12px;
   min-width: 0;
 }
 
@@ -744,21 +815,21 @@ button.primary {
 
 .code-viewer-toolbar {
   display: grid;
-  gap: 14px;
-  padding: 18px;
+  gap: 10px;
+  padding: 14px;
   border-radius: 22px;
   background: rgba(255, 255, 255, 0.74);
   border: 1px solid rgba(29, 36, 51, 0.06);
 }
 
 .code-viewer-toolbar.compact {
-  gap: 12px;
-  padding-bottom: 14px;
+  gap: 8px;
+  padding-bottom: 10px;
 }
 
 .thread-jump-strip {
   display: grid;
-  gap: 10px;
+  gap: 8px;
 }
 
 .thread-jump-summary {
@@ -803,8 +874,8 @@ button.primary {
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
-  gap: 16px;
-  padding: 18px;
+  gap: 12px;
+  padding: 14px;
   border-radius: 20px;
   background: rgba(255, 255, 255, 0.7);
   border: 1px solid rgba(29, 36, 51, 0.06);
@@ -824,7 +895,7 @@ button.primary {
 }
 
 .file-review-header p {
-  margin-top: 6px;
+  margin-top: 4px;
   color: var(--muted);
 }
 
@@ -854,8 +925,8 @@ button.primary {
 .unmapped-thread-banner {
   display: flex;
   justify-content: space-between;
-  gap: 12px;
-  padding: 14px 18px;
+  gap: 10px;
+  padding: 10px 14px;
   background: rgba(197, 98, 50, 0.08);
   border-bottom: 1px solid rgba(29, 36, 51, 0.04);
 }
@@ -868,9 +939,9 @@ button.primary {
   display: grid;
   grid-template-columns: 76px 112px minmax(0, 1fr);
   align-items: start;
-  gap: 12px;
-  padding: 0 14px;
-  min-height: 34px;
+  gap: 10px;
+  padding: 0 12px;
+  min-height: 30px;
 }
 
 .code-row.changed {
@@ -884,7 +955,7 @@ button.primary {
 .code-line-number {
   display: flex;
   justify-content: flex-end;
-  padding: 8px 0;
+  padding: 6px 0;
   color: #7b8797;
   font-family: "IBM Plex Mono", "SFMono-Regular", monospace;
   user-select: none;
@@ -893,7 +964,7 @@ button.primary {
 .comment-anchor {
   display: flex;
   align-items: center;
-  padding: 8px 0;
+  padding: 6px 0;
   font-size: 0.8rem;
   font-weight: 700;
   color: var(--accent);
@@ -902,7 +973,7 @@ button.primary {
 
 .code-row code {
   display: block;
-  padding: 8px 0;
+  padding: 6px 0;
   font-family: "IBM Plex Mono", "SFMono-Regular", monospace;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
@@ -910,8 +981,8 @@ button.primary {
 }
 
 .inline-thread-card {
-  margin: 10px 14px 14px 96px;
-  padding: 16px;
+  margin: 8px 12px 12px 88px;
+  padding: 12px;
   border-radius: 18px;
   background: rgba(255, 255, 255, 0.95);
   border: 1px solid rgba(197, 98, 50, 0.18);
@@ -943,7 +1014,7 @@ button.primary {
   width: 100%;
   align-items: flex-start;
   justify-content: space-between;
-  gap: 14px;
+  gap: 10px;
   border: 0;
   background: transparent;
   padding: 0;
@@ -977,11 +1048,11 @@ button.primary {
 }
 
 .thread-accordion-body {
-  margin-top: 14px;
+  margin-top: 10px;
 }
 
 .thread-accordion-preview {
-  margin-top: 14px;
+  margin-top: 10px;
   color: var(--muted);
 }
 
@@ -1001,22 +1072,22 @@ button.primary {
 
 .thread-meta {
   display: flex;
-  gap: 8px;
+  gap: 6px;
   flex-wrap: wrap;
   justify-content: flex-end;
 }
 
 .thread-snippet {
-  margin-top: 12px;
+  margin-top: 8px;
 }
 
 .thread-snippet p {
-  margin: 0 0 8px;
+  margin: 0 0 6px;
   font-weight: 600;
 }
 
 .thread-snippet pre {
-  padding: 14px;
+  padding: 10px 12px;
   border-radius: 16px;
   background: rgba(29, 36, 51, 0.05);
   overflow-x: auto;
@@ -1024,19 +1095,19 @@ button.primary {
 
 .thread-messages {
   display: grid;
-  gap: 10px;
-  margin-top: 14px;
+  gap: 8px;
+  margin-top: 10px;
 }
 
 .thread-message {
-  padding: 12px 14px;
+  padding: 10px 12px;
   border-radius: 16px;
   background: rgba(29, 36, 51, 0.05);
 }
 
 .thread-message strong {
   display: block;
-  margin-bottom: 8px;
+  margin-bottom: 6px;
 }
 
 .thread-message.user {
@@ -1045,14 +1116,14 @@ button.primary {
 
 .thread-actions {
   display: flex;
-  gap: 10px;
-  margin-top: 14px;
+  gap: 8px;
+  margin-top: 10px;
   flex-wrap: wrap;
 }
 
 .thread-error {
-  margin-top: 12px;
-  padding: 12px 14px;
+  margin-top: 10px;
+  padding: 10px 12px;
   border-radius: 14px;
   background: rgba(180, 35, 24, 0.08);
   border: 1px solid rgba(180, 35, 24, 0.16);
@@ -1060,7 +1131,7 @@ button.primary {
 }
 
 .thread-chat-box {
-  margin-top: 14px;
+  margin-top: 10px;
 }
 
 .thread-chat-box textarea {
@@ -1069,29 +1140,29 @@ button.primary {
   border: 1px solid var(--line);
   background: var(--panel-strong);
   border-radius: 16px;
-  padding: 12px 14px;
+  padding: 10px 12px;
   resize: vertical;
 }
 
 .diff-snippet-block {
-  padding: 18px;
+  padding: 14px;
   border-radius: 22px;
   background: rgba(255, 255, 255, 0.74);
   border: 1px solid rgba(29, 36, 51, 0.06);
 }
 
 .diff-snippet-block pre {
-  margin-top: 14px;
+  margin-top: 10px;
   max-height: 420px;
   overflow: auto;
-  padding: 14px;
+  padding: 10px 12px;
   border-radius: 16px;
   background: rgba(29, 36, 51, 0.05);
 }
 
 .floating-threads {
   display: grid;
-  gap: 12px;
+  gap: 8px;
 }
 
 .floating-threads h4 {
@@ -1100,18 +1171,18 @@ button.primary {
 
 .thread-list {
   display: grid;
-  gap: 14px;
+  gap: 10px;
 }
 
 .thread-context-actions {
-  margin-top: 14px;
+  margin-top: 10px;
 }
 
 .thread-context-block {
   display: grid;
-  gap: 12px;
-  margin-top: 14px;
-  padding: 14px;
+  gap: 8px;
+  margin-top: 10px;
+  padding: 10px 12px;
   border-radius: 16px;
   background: rgba(29, 36, 51, 0.035);
   border: 1px solid rgba(29, 36, 51, 0.06);

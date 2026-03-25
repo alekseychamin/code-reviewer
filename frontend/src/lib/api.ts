@@ -19,8 +19,9 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
       }
     });
   } catch (error) {
+    const location = apiBaseUrl ? ` ${apiBaseUrl}` : '';
     throw new Error(
-      `Could not reach API at ${apiBaseUrl}. Check that the backend is running and VITE_API_BASE_URL is correct.`,
+      `Не удалось обратиться к API${location}. Проверь, что backend запущен и VITE_API_BASE_URL настроен корректно.`,
       { cause: error }
     );
   }
@@ -48,7 +49,7 @@ function buildUrl(path: string): string {
 
 function extractApiErrorMessage(raw: string, status: number): string {
   if (!raw.trim()) {
-    return `Request failed with status ${status}.`;
+    return `Запрос завершился с кодом ${status}.`;
   }
 
   try {
