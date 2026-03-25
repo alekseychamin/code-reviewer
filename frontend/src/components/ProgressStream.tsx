@@ -1,3 +1,4 @@
+import { useState } from 'react';
 import type { ReviewProgressEvent, ReviewRun } from '../lib/types';
 
 interface ProgressStreamProps {
@@ -6,6 +7,7 @@ interface ProgressStreamProps {
 }
 
 export function ProgressStream({ run, events }: ProgressStreamProps) {
+  const [isTimelineCollapsed, setIsTimelineCollapsed] = useState(false);
   const statusLabel = toRussianStatus(run?.status);
   const statusClass = typeof run?.status === 'string' ? run.status.toLowerCase() : 'unknown';
 
@@ -16,7 +18,17 @@ export function ProgressStream({ run, events }: ProgressStreamProps) {
           <p className="eyebrow">Прогресс</p>
           <h2>Ход выполнения пайплайна</h2>
         </div>
-        {run ? <span className={`status-pill status-${statusClass}`}>{statusLabel}</span> : null}
+        <div className="result-toolbar">
+          <button
+            aria-expanded={!isTimelineCollapsed}
+            className="secondary-button"
+            onClick={() => setIsTimelineCollapsed((value) => !value)}
+            type="button"
+          >
+            {isTimelineCollapsed ? 'Развернуть ленту' : 'Свернуть ленту'}
+          </button>
+          {run ? <span className={`status-pill status-${statusClass}`}>{statusLabel}</span> : null}
+        </div>
       </div>
 
       <div className="progress-shell">
@@ -29,19 +41,28 @@ export function ProgressStream({ run, events }: ProgressStreamProps) {
         </div>
       </div>
 
-      <div className="timeline">
-        {events.length === 0 ? (
-          <div className="timeline-item muted">Ожидание первого запуска ревью.</div>
-        ) : (
-          events.map((event, index) => (
-            <div className="timeline-item" key={`${event.runId}-${index}`}>
-              <span className="timeline-stage">{toRussianStage(event.stage) ?? toRussianStatus(event.status)}</span>
-              <span>{translateProgressMessage(event.message)}</span>
-              <time>{new Date(event.timestamp).toLocaleTimeString()}</time>
-            </div>
-          ))
-        )}
-      </div>
+      {!isTimelineCollapsed ? (
+        <div className="timeline">
+          {events.length === 0 ? (
+            <div className="timeline-item muted">Ожидание первого запуска ревью.</div>
+          ) : (
+            events.map((event, index) => (
+              <div className="timeline-item" key={`${event.runId}-${index}`}>
+                <span className="timeline-stage">{toRussianStage(event.stage) ?? toRussianStatus(event.status)}</span>
+                <span>{translateProgressMessage(event.message)}</span>
+                <time>
+                  {new Date(event.timestamp).toLocaleTimeString('ru-RU', {
+                    hour: '2-digit',
+                    minute: '2-digit',
+                    second: '2-digit',
+                    hour12: false
+                  })}
+                </time>
+              </div>
+            ))
+          )}
+        </div>
+      ) : null}
     </section>
   );
 }

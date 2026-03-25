@@ -142,7 +142,7 @@ export default function App() {
       <section className="hero">
         <div>
           <p className="eyebrow">TFS AI Reviewer</p>
-          <h1>🕵️‍♂️ .NET Code Reviewer (DeepSeek)</h1>
+          <h1>🕵️‍♂️ Code Reviewer</h1>
         </div>
         <p className="hero-copy">
           Запускайте ревью по ссылке на pull request или по сравнению веток, отслеживайте прогресс по SSE и
