@@ -48,11 +48,20 @@ Production-oriented AI code review platform built around:
 3. Start the stack:
    `docker compose up --build`
 
+By default the API container expects local-only Ollama to be running on the host machine and reaches it through:
+`LOCAL_OLLAMA_BASE_URL=http://host.docker.internal:11434`
+
+If you want to use the `ollama` service from docker compose instead, set:
+`LOCAL_OLLAMA_BASE_URL=http://ollama:11434`
+and start the Ollama profile too:
+`docker compose --profile local-llm up --build`
+
 `docker-compose.yml` now uses `env_file: .env`, so the same local file can hold LLM API keys, Azure DevOps/TFS tokens, and frontend runtime settings for local development. In compose mode the frontend uses same-origin `/api` requests and Vite proxies them to the `api` service, which is more reliable than calling `localhost:8080` directly from the browser. The pull request flow now reads Azure DevOps/TFS PAT from `AZURE_DEVOPS_TOKEN` on the backend, so the token no longer needs to be entered in the UI.
 
 ## Notes
 
 - `appsettings.json` seeds provider profiles and default stage routing.
 - `LocalOnlyMode=true` routes stages to a local Ollama profile and disables PR publishing.
+- In docker compose, host Ollama is the default for local-only mode. The optional compose `ollama` service sits under the `local-llm` profile.
 - The backend stores review runs in memory today, but all persistence and external dependencies already sit behind interfaces.
 - The prompt design follows the existing Python prototype flow from `main.py` and `prompts.py`, translated into explicit pipeline stages and deterministic markdown generation.

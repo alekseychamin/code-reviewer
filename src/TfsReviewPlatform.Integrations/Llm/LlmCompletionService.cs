@@ -1,7 +1,9 @@
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using System.Net;
+using System.Net.Sockets;
 using System.Text.Json;
+using System.Text;
 using Microsoft.Extensions.Logging;
 using TfsReviewPlatform.Application.Abstractions;
 using TfsReviewPlatform.Application.Models;
@@ -76,7 +78,6 @@ public sealed class LlmCompletionService(
         CancellationToken cancellationToken)
     {
         using var client = httpClientFactory.CreateClient(HttpClientNames.OllamaLlm);
-        var endpoint = $"{profile.BaseUrl.TrimEnd('/')}/api/chat";
         var payload = new
         {
             model = request.Model ?? profile.DefaultModel,
@@ -89,17 +90,38 @@ public sealed class LlmCompletionService(
             }
         };
 
-        using var message = new HttpRequestMessage(HttpMethod.Post, endpoint)
+        Exception? lastException = null;
+        foreach (var baseUrl in GetOllamaBaseUrlCandidates(profile.BaseUrl))
         {
-            Version = HttpVersion.Version11,
-            VersionPolicy = HttpVersionPolicy.RequestVersionOrLower,
-            Content = JsonContent.Create(payload, options: JsonOptions)
-        };
+            var endpoint = $"{baseUrl.TrimEnd('/')}/api/chat";
+            using var message = new HttpRequestMessage(HttpMethod.Post, endpoint)
+            {
+                Version = HttpVersion.Version11,
+                VersionPolicy = HttpVersionPolicy.RequestVersionOrLower,
+                Content = JsonContent.Create(payload, options: JsonOptions)
+            };
 
-        using var response = await SendWithRetriesAsync(client, message, profile, request, cancellationToken);
-        using var document = JsonDocument.Parse(
-            await response.Content.ReadAsStringAsync(cancellationToken));
-        return document.RootElement.GetProperty("message").GetProperty("content").GetString() ?? string.Empty;
+            try
+            {
+                using var response = await SendWithRetriesAsync(client, message, profile, request, cancellationToken);
+                using var document = JsonDocument.Parse(
+                    await response.Content.ReadAsStringAsync(cancellationToken));
+                return document.RootElement.GetProperty("message").GetProperty("content").GetString() ?? string.Empty;
+            }
+            catch (HttpRequestException exception) when (ShouldTryAlternateOllamaEndpoint(exception, baseUrl, profile.BaseUrl))
+            {
+                lastException = exception;
+                logger.LogWarning(
+                    exception,
+                    "Could not reach Ollama at {BaseUrl} for provider {ProviderName}. Trying alternate endpoint.",
+                    baseUrl,
+                    profile.Name);
+            }
+        }
+
+        throw new HttpRequestException(
+            BuildOllamaFailureMessage(profile.BaseUrl),
+            lastException);
     }
 
     private async Task<HttpResponseMessage> SendWithRetriesAsync(
@@ -224,6 +246,141 @@ public sealed class LlmCompletionService(
         }
 
         return exception is IOException;
+    }
+
+    private static IReadOnlyList<string> GetOllamaBaseUrlCandidates(string configuredBaseUrl)
+    {
+        var candidates = new List<string>();
+        AddCandidate(candidates, configuredBaseUrl);
+
+        if (!Uri.TryCreate(configuredBaseUrl, UriKind.Absolute, out var configuredUri))
+        {
+            return candidates;
+        }
+
+        if (IsDockerOllamaHost(configuredUri.Host))
+        {
+            AddCandidate(candidates, BuildAlternateOllamaBaseUrl(configuredUri, "localhost"));
+            AddCandidate(candidates, BuildAlternateOllamaBaseUrl(configuredUri, "127.0.0.1"));
+            AddCandidate(candidates, BuildAlternateOllamaBaseUrl(configuredUri, "host.docker.internal"));
+        }
+        else if (IsLocalhostHost(configuredUri.Host))
+        {
+            AddCandidate(candidates, BuildAlternateOllamaBaseUrl(configuredUri, "ollama"));
+            AddCandidate(candidates, BuildAlternateOllamaBaseUrl(configuredUri, "host.docker.internal"));
+        }
+
+        return candidates;
+    }
+
+    private static bool ShouldTryAlternateOllamaEndpoint(
+        HttpRequestException exception,
+        string attemptedBaseUrl,
+        string configuredBaseUrl)
+    {
+        if (!IsNameResolutionFailure(exception) && !IsConnectionFailure(exception))
+        {
+            return false;
+        }
+
+        return !string.Equals(attemptedBaseUrl.TrimEnd('/'), configuredBaseUrl.TrimEnd('/'), StringComparison.OrdinalIgnoreCase)
+            || IsNameResolutionFailure(exception)
+            || IsConnectionFailure(exception);
+    }
+
+    private static bool IsNameResolutionFailure(HttpRequestException exception)
+    {
+        return FindSocketException(exception) is { SocketErrorCode: SocketError.HostNotFound or SocketError.TryAgain or SocketError.NoData };
+    }
+
+    private static bool IsConnectionFailure(HttpRequestException exception)
+    {
+        return FindSocketException(exception) is { SocketErrorCode: SocketError.ConnectionRefused or SocketError.NetworkUnreachable };
+    }
+
+    private static SocketException? FindSocketException(Exception exception)
+    {
+        return exception switch
+        {
+            SocketException socketException => socketException,
+            _ when exception.InnerException is not null => FindSocketException(exception.InnerException),
+            _ => null
+        };
+    }
+
+    private static bool IsDockerOllamaHost(string host)
+    {
+        return string.Equals(host, "ollama", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool IsLocalhostHost(string host)
+    {
+        return string.Equals(host, "localhost", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(host, "127.0.0.1", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(host, "::1", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static string BuildAlternateOllamaBaseUrl(Uri configuredUri, string host)
+    {
+        var builder = new UriBuilder(configuredUri)
+        {
+            Host = host
+        };
+
+        return builder.Uri.GetLeftPart(UriPartial.Authority);
+    }
+
+    private static void AddCandidate(ICollection<string> candidates, string? baseUrl)
+    {
+        if (string.IsNullOrWhiteSpace(baseUrl))
+        {
+            return;
+        }
+
+        var normalized = baseUrl.TrimEnd('/');
+        if (!candidates.Any(candidate => string.Equals(candidate, normalized, StringComparison.OrdinalIgnoreCase)))
+        {
+            candidates.Add(normalized);
+        }
+    }
+
+    private static string BuildOllamaFailureMessage(string configuredBaseUrl)
+    {
+        var builder = new StringBuilder();
+        builder.Append("Could not reach Ollama using base URL '")
+            .Append(configuredBaseUrl)
+            .Append("'.");
+
+        if (configuredBaseUrl.Contains("ollama:11434", StringComparison.OrdinalIgnoreCase))
+        {
+            if (IsRunningInContainer())
+            {
+                builder.Append(" The API appears to be running inside docker compose, so make sure the Ollama service is started with `docker compose --profile local-llm up -d ollama` (or `docker compose --profile local-llm up --build`).");
+            }
+            else
+            {
+                builder.Append(" If the API is running outside docker compose, use 'http://localhost:11434' for the Ollama provider.");
+            }
+        }
+        else if (configuredBaseUrl.Contains("localhost:11434", StringComparison.OrdinalIgnoreCase))
+        {
+            if (IsRunningInContainer())
+            {
+                builder.Append(" If the API is running inside docker compose, use 'http://ollama:11434' for the Ollama provider and start Ollama with `docker compose --profile local-llm up -d ollama`.");
+            }
+            else
+            {
+                builder.Append(" Make sure Ollama itself is running locally and listening on port 11434.");
+            }
+        }
+
+        return builder.ToString();
+    }
+
+    private static bool IsRunningInContainer()
+    {
+        return File.Exists("/.dockerenv")
+            || string.Equals(Environment.GetEnvironmentVariable("DOTNET_RUNNING_IN_CONTAINER"), "true", StringComparison.OrdinalIgnoreCase);
     }
 
     private static TimeSpan GetRetryDelay(int attempt)

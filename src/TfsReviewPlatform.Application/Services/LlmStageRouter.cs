@@ -44,10 +44,36 @@ public sealed class LlmStageRouter(
 
         EnsureLocalOnlyCompatibility(localOnlyMode, profile);
 
-        var model = overrideRoute?.Model ?? configuredRoute?.Model ?? profile.DefaultModel;
+        var model = ResolveModel(profile, localOnlyMode, overrideRoute, configuredRoute);
         var temperature = overrideRoute?.Temperature ?? configuredRoute?.Temperature ?? 0;
 
         return new StageRouteSelection(profile, model, temperature);
+    }
+
+    private static string ResolveModel(
+        ProviderProfile profile,
+        bool localOnlyMode,
+        StageRouteOverrideDto? overrideRoute,
+        StageRouteOptions? configuredRoute)
+    {
+        if (!string.IsNullOrWhiteSpace(overrideRoute?.Model))
+        {
+            return overrideRoute.Model;
+        }
+
+        if (!string.IsNullOrWhiteSpace(configuredRoute?.Model))
+        {
+            var configuredProfileMatchesSelection =
+                string.IsNullOrWhiteSpace(configuredRoute.ProfileId)
+                || string.Equals(configuredRoute.ProfileId, profile.Id, StringComparison.OrdinalIgnoreCase);
+
+            if (configuredProfileMatchesSelection)
+            {
+                return configuredRoute.Model;
+            }
+        }
+
+        return profile.DefaultModel;
     }
 
     private static void EnsureLocalOnlyCompatibility(bool localOnlyMode, ProviderProfile profile)
