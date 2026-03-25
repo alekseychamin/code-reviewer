@@ -14,7 +14,6 @@ public static class ReviewRunMappingExtensions
             TargetKind = run.Target.Kind,
             Title = run.Target.Title,
             ProviderProfileId = run.ProviderProfileId,
-            LocalOnlyMode = run.LocalOnlyMode,
             CurrentStage = run.CurrentStage,
             ProgressPercent = run.ProgressPercent,
             CurrentMessage = run.CurrentMessage,
@@ -64,7 +63,8 @@ public static class ReviewRunMappingExtensions
                 {
                     Role = message.Role,
                     Content = message.Content,
-                    CreatedAt = message.CreatedAt
+                    CreatedAt = message.CreatedAt,
+                    StructuredContent = MapStructuredContent(message.StructuredContent)
                 }).ToArray()
             }).ToArray(),
             ReviewedFiles = run.Artifacts.ReviewedFiles.Select(file => new ReviewedFileDto
@@ -97,10 +97,31 @@ public static class ReviewRunMappingExtensions
                     {
                         Role = message.Role,
                         Content = message.Content,
-                        CreatedAt = message.CreatedAt
+                        CreatedAt = message.CreatedAt,
+                        StructuredContent = MapStructuredContent(message.StructuredContent)
                     }).ToArray()
                 }).ToArray()
             }).ToArray()
+        };
+    }
+
+    private static InlineDiscussionStructuredContentDto? MapStructuredContent(InlineDiscussionStructuredContent? content)
+    {
+        if (content is null)
+        {
+            return null;
+        }
+
+        return new InlineDiscussionStructuredContentDto
+        {
+            Summary = content.Summary,
+            Problems = content.Problems,
+            Risk = content.Risk,
+            Recommendations = content.Recommendations,
+            ShouldPublishToTfs = content.ShouldPublishToTfs,
+            PublishToTfsReason = content.PublishToTfsReason,
+            ExampleCodeLanguage = content.ExampleCodeLanguage,
+            ExampleCode = content.ExampleCode
         };
     }
 

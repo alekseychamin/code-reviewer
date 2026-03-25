@@ -18,8 +18,6 @@ public sealed class StartBranchReviewRequest
 
     public string? ProviderProfileId { get; init; }
 
-    public bool LocalOnlyMode { get; init; }
-
     public PublishMode PublishMode { get; init; }
 
     public List<StageRouteOverrideDto> StageOverrides { get; init; } = [];

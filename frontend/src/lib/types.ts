@@ -45,6 +45,18 @@ export interface ReviewCommentMessage {
   role: string;
   content: string;
   createdAt: string;
+  structuredContent?: InlineDiscussionStructuredContent;
+}
+
+export interface InlineDiscussionStructuredContent {
+  summary: string;
+  problems: string[];
+  risk: string;
+  recommendations: string[];
+  shouldPublishToTfs?: boolean;
+  publishToTfsReason: string;
+  exampleCodeLanguage: string;
+  exampleCode: string;
 }
 
 export interface ReviewedFile {
@@ -65,7 +77,6 @@ export interface ReviewRun {
   targetKind: ReviewTargetKind;
   title: string;
   providerProfileId?: string;
-  localOnlyMode: boolean;
   currentStage?: string;
   progressPercent: number;
   currentMessage: string;
@@ -98,7 +109,6 @@ export interface ReviewProgressEvent {
 export interface PullRequestReviewPayload {
   pullRequestUrl: string;
   providerProfileId?: string;
-  localOnlyMode: boolean;
   publishMode: PublishMode;
   stageOverrides: Array<{ stage: string; profileId: string; model?: string; temperature?: number }>;
 }
@@ -109,7 +119,6 @@ export interface BranchReviewPayload {
   sourceBranch: string;
   repositoryName?: string;
   providerProfileId?: string;
-  localOnlyMode: boolean;
   publishMode: PublishMode;
   stageOverrides: Array<{ stage: string; profileId: string; model?: string; temperature?: number }>;
 }

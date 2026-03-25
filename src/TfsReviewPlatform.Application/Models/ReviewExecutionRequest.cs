@@ -12,8 +12,6 @@ public sealed class ReviewExecutionRequest
 
     public string? ProviderProfileId { get; init; }
 
-    public bool LocalOnlyMode { get; init; }
-
     public PublishMode PublishMode { get; init; }
 
     public string? AzureDevOpsAccessToken { get; init; }

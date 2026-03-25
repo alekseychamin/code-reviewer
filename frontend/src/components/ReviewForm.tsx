@@ -23,7 +23,6 @@ export function ReviewForm({
 }: ReviewFormProps) {
   const [mode, setMode] = useState<ReviewMode>('pullRequest');
   const [providerProfileId, setProviderProfileId] = useState('');
-  const [localOnlyMode, setLocalOnlyMode] = useState(false);
   const [publishMode, setPublishMode] = useState<PublishMode>('None');
   const [pullRequestUrl, setPullRequestUrl] = useState('');
   const [repositoryPath, setRepositoryPath] = useState('');
@@ -32,10 +31,6 @@ export function ReviewForm({
   const [sourceBranch, setSourceBranch] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
-
-  const filteredProfiles = localOnlyMode
-    ? profiles.filter((profile) => profile.localOnly)
-    : profiles;
 
   function validate(): string | null {
     if (mode === 'pullRequest') {
@@ -76,7 +71,6 @@ export function ReviewForm({
         await onStartPullRequestReview({
           pullRequestUrl,
           providerProfileId: providerProfileId || undefined,
-          localOnlyMode,
           publishMode,
           stageOverrides: []
         });
@@ -87,7 +81,6 @@ export function ReviewForm({
           targetBranch,
           sourceBranch,
           providerProfileId: providerProfileId || undefined,
-          localOnlyMode,
           publishMode: 'None',
           stageOverrides: []
         });
@@ -169,7 +162,7 @@ export function ReviewForm({
           Профиль провайдера
           <select value={providerProfileId} onChange={(event) => setProviderProfileId(event.target.value)}>
             <option value="">Использовать маршрут по умолчанию</option>
-            {filteredProfiles.map((profile) => (
+            {profiles.map((profile) => (
               <option key={profile.id} value={profile.id}>
                 {profile.name} · {profile.defaultModel}
               </option>
@@ -193,26 +186,7 @@ export function ReviewForm({
         </label>
       </div>
 
-      <label className="checkbox">
-        <input
-          checked={localOnlyMode}
-          onChange={(event) => {
-            setLocalOnlyMode(event.target.checked);
-            if (event.target.checked) {
-              setPublishMode('None');
-            }
-          }}
-          type="checkbox"
-        />
-        Локальный режим только через Ollama
-      </label>
-
       <div className="panel-footer">
-        <p>
-          Тонкие контроллеры, stage-based маршрутизация LLM, in-memory persistence, SSE-прогресс и публикация в
-          Azure DevOps/TFS работают через один API. PAT для Azure DevOps/TFS backend читает из
-          `AZURE_DEVOPS_TOKEN` в `.env`.
-        </p>
         <button className="primary" disabled={isSubmitting} onClick={() => void handleSubmit()} type="button">
           {isSubmitting ? 'Запуск ревью...' : 'Запустить ревью'}
         </button>

@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import type { InlineComment, ReviewedFile } from '../lib/types';
+import type { InlineComment, InlineDiscussionStructuredContent, ReviewCommentMessage, ReviewedFile } from '../lib/types';
 import { MarkdownBlock } from './MarkdownBlock';
 
 interface ReviewedFilesWorkspaceProps {
@@ -352,7 +352,7 @@ function InlineThreadCard({
             {thread.messages.map((message, index) => (
               <div className={`thread-message ${message.role}`} key={`${thread.id}-${index}`}>
                 <strong>{message.role === 'assistant' ? 'LLM' : 'Вы'}</strong>
-                <MarkdownBlock content={message.content} emptyText="" />
+                <ThreadMessageBody message={message} />
               </div>
             ))}
           </div>
@@ -394,6 +394,78 @@ function InlineThreadCard({
 
       {error && !expanded ? <div className="thread-error">{error}</div> : null}
     </article>
+  );
+}
+
+function ThreadMessageBody({ message }: { message: ReviewCommentMessage }) {
+  if (message.role === 'assistant' && message.structuredContent) {
+    return <StructuredInlineDiscussion content={message.structuredContent} />;
+  }
+
+  return <MarkdownBlock content={message.content} emptyText="" />;
+}
+
+function StructuredInlineDiscussion({ content }: { content: InlineDiscussionStructuredContent }) {
+  const hasPublishDecision =
+    typeof content.shouldPublishToTfs === 'boolean' || Boolean(content.publishToTfsReason?.trim());
+
+  return (
+    <div className="structured-discussion">
+      {content.summary?.trim() ? (
+        <section className="structured-discussion-section">
+          <h4>Пояснение</h4>
+          <p>{content.summary}</p>
+        </section>
+      ) : null}
+
+      {content.problems?.length ? (
+        <section className="structured-discussion-section">
+          <h4>Проблема</h4>
+          <ol>
+            {content.problems.map((problem, index) => (
+              <li key={`problem-${index}`}>{problem}</li>
+            ))}
+          </ol>
+        </section>
+      ) : null}
+
+      {content.risk?.trim() ? (
+        <section className="structured-discussion-section">
+          <h4>Риск</h4>
+          <p>{content.risk}</p>
+        </section>
+      ) : null}
+
+      {content.recommendations?.length ? (
+        <section className="structured-discussion-section">
+          <h4>Рекомендации</h4>
+          <ol>
+            {content.recommendations.map((recommendation, index) => (
+              <li key={`recommendation-${index}`}>{recommendation}</li>
+            ))}
+          </ol>
+        </section>
+      ) : null}
+
+      {hasPublishDecision ? (
+        <section className="structured-discussion-section">
+          <h4>Публикация в TFS</h4>
+          {typeof content.shouldPublishToTfs === 'boolean' ? (
+            <p>{content.shouldPublishToTfs ? 'Да' : 'Нет'}</p>
+          ) : null}
+          {content.publishToTfsReason?.trim() ? <p>{content.publishToTfsReason}</p> : null}
+        </section>
+      ) : null}
+
+      {content.exampleCode?.trim() ? (
+        <section className="structured-discussion-section">
+          <h4>Пример кода</h4>
+          <pre>
+            <code>{content.exampleCode}</code>
+          </pre>
+        </section>
+      ) : null}
+    </div>
   );
 }
 

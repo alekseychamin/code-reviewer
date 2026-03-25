@@ -1,5 +1,7 @@
 using Microsoft.Extensions.Logging;
 using System.Globalization;
+using System.Text;
+using System.Text.Json;
 using System.Text.RegularExpressions;
 using TfsReviewPlatform.Application.Abstractions;
 using TfsReviewPlatform.Application.Contracts.Reviews;
@@ -21,6 +23,11 @@ public sealed class ReviewOrchestrator(
     ILogger<ReviewOrchestrator> logger)
     : IReviewOrchestrator
 {
+    private static readonly JsonSerializerOptions InlineDiscussionJsonOptions = new()
+    {
+        PropertyNameCaseInsensitive = true
+    };
+
     public async Task<ReviewRunDto> StartPullRequestReviewAsync(
         StartPullRequestReviewRequest request,
         CancellationToken cancellationToken)
@@ -41,7 +48,6 @@ public sealed class ReviewOrchestrator(
             TargetKind = ReviewTargetKind.PullRequest,
             Target = target,
             ProviderProfileId = request.ProviderProfileId,
-            LocalOnlyMode = request.LocalOnlyMode,
             PublishMode = request.PublishMode,
             AzureDevOpsAccessToken = ResolveAzureDevOpsToken(request.AzureDevOpsAccessToken),
             StageOverrides = request.StageOverrides
@@ -71,7 +77,6 @@ public sealed class ReviewOrchestrator(
             TargetKind = ReviewTargetKind.BranchComparison,
             Target = target,
             ProviderProfileId = request.ProviderProfileId,
-            LocalOnlyMode = request.LocalOnlyMode,
             PublishMode = request.PublishMode,
             StageOverrides = request.StageOverrides
         };
@@ -152,7 +157,6 @@ public sealed class ReviewOrchestrator(
         var selection = await llmStageRouter.ResolveAsync(
             ReviewPipelineStage.ChunkReview,
             run.ProviderProfileId,
-            run.LocalOnlyMode,
             [],
             cancellationToken);
 
@@ -172,6 +176,7 @@ public sealed class ReviewOrchestrator(
             {
                 Model = selection.Model,
                 Temperature = 0.2,
+                ExpectJson = true,
                 SystemPrompt = """
                     You are a Principal .NET reviewer continuing an inline code review discussion.
                     Answer in Russian.
@@ -179,7 +184,22 @@ public sealed class ReviewOrchestrator(
                     Give concrete, implementation-level advice.
                     Focus on the exact changed block under discussion rather than the whole file.
                     If the provided hunk or context is not enough, say exactly what is missing.
-                    If the user asks whether the comment should be published to TFS, answer directly.
+                    Return JSON only.
+                    Do not return markdown.
+                    All string values must be plain text without markdown emphasis markers such as **, __, or backticks.
+                    Use this exact schema:
+                    {
+                      "summary": "short direct answer for the user",
+                      "problems": ["specific problem or implication", "another problem if needed"],
+                      "risk": "concrete risk or impact",
+                      "recommendations": ["actionable recommendation", "second recommendation if needed"],
+                      "shouldPublishToTfs": true,
+                      "publishToTfsReason": "why this should or should not be published",
+                      "exampleCodeLanguage": "csharp",
+                      "exampleCode": "optional code example, otherwise empty string"
+                    }
+                    Keep arrays short.
+                    If there is no code example, return an empty string in exampleCode and exampleCodeLanguage.
                     """,
                 UserPrompt = $"""
                     Review target: {run.Target.Title}
@@ -215,11 +235,16 @@ public sealed class ReviewOrchestrator(
             },
             cancellationToken);
 
+        var structuredReply = ParseInlineDiscussionStructuredContent(assistantReply);
+        var renderedReply = structuredReply is null
+            ? assistantReply
+            : RenderInlineDiscussionMarkdown(structuredReply);
+
         var updatedMessages = thread.Messages
             .Concat(
                 [
                     new ReviewCommentMessage("user", request.Message.Trim(), DateTimeOffset.UtcNow),
-                    new ReviewCommentMessage("assistant", assistantReply, DateTimeOffset.UtcNow)
+                    new ReviewCommentMessage("assistant", renderedReply, DateTimeOffset.UtcNow, structuredReply)
                 ])
             .ToArray();
 
@@ -231,6 +256,183 @@ public sealed class ReviewOrchestrator(
         run.UpdateArtifacts(ReplaceInlineComment(run.Artifacts, updatedThread));
         await reviewRunRepository.UpdateAsync(run, cancellationToken);
         return run.ToDto();
+    }
+
+    private static InlineDiscussionStructuredContent? ParseInlineDiscussionStructuredContent(string rawResponse)
+    {
+        if (string.IsNullOrWhiteSpace(rawResponse))
+        {
+            return null;
+        }
+
+        try
+        {
+            var json = ExtractJsonObject(rawResponse);
+            var payload = JsonSerializer.Deserialize<InlineDiscussionResponsePayload>(json, InlineDiscussionJsonOptions);
+            if (payload is null)
+            {
+                return null;
+            }
+
+            var problems = NormalizeList(payload.Problems);
+            var recommendations = NormalizeList(payload.Recommendations);
+            var summary = payload.Summary?.Trim() ?? string.Empty;
+            var risk = payload.Risk?.Trim() ?? string.Empty;
+            var publishReason = payload.PublishToTfsReason?.Trim() ?? string.Empty;
+            var exampleCode = payload.ExampleCode?.Trim() ?? string.Empty;
+            var exampleLanguage = payload.ExampleCodeLanguage?.Trim() ?? string.Empty;
+
+            if (string.IsNullOrWhiteSpace(summary)
+                && problems.Count == 0
+                && string.IsNullOrWhiteSpace(risk)
+                && recommendations.Count == 0
+                && string.IsNullOrWhiteSpace(publishReason)
+                && string.IsNullOrWhiteSpace(exampleCode))
+            {
+                return null;
+            }
+
+            return new InlineDiscussionStructuredContent
+            {
+                Summary = summary,
+                Problems = problems,
+                Risk = risk,
+                Recommendations = recommendations,
+                ShouldPublishToTfs = payload.ShouldPublishToTfs,
+                PublishToTfsReason = publishReason,
+                ExampleCodeLanguage = exampleLanguage,
+                ExampleCode = exampleCode
+            };
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
+    }
+
+    private static string RenderInlineDiscussionMarkdown(InlineDiscussionStructuredContent content)
+    {
+        var builder = new StringBuilder();
+
+        if (!string.IsNullOrWhiteSpace(content.Summary))
+        {
+            builder.AppendLine("### Пояснение");
+            builder.AppendLine(content.Summary.Trim());
+            builder.AppendLine();
+        }
+
+        if (content.Problems.Count > 0)
+        {
+            builder.AppendLine("### Проблема");
+            for (var index = 0; index < content.Problems.Count; index++)
+            {
+                builder.Append(index + 1).Append(". ").AppendLine(content.Problems[index]);
+            }
+
+            builder.AppendLine();
+        }
+
+        if (!string.IsNullOrWhiteSpace(content.Risk))
+        {
+            builder.AppendLine("### Риск");
+            builder.AppendLine(content.Risk.Trim());
+            builder.AppendLine();
+        }
+
+        if (content.Recommendations.Count > 0)
+        {
+            builder.AppendLine("### Рекомендации");
+            for (var index = 0; index < content.Recommendations.Count; index++)
+            {
+                builder.Append(index + 1).Append(". ").AppendLine(content.Recommendations[index]);
+            }
+
+            builder.AppendLine();
+        }
+
+        if (content.ShouldPublishToTfs.HasValue || !string.IsNullOrWhiteSpace(content.PublishToTfsReason))
+        {
+            builder.AppendLine("### Публикация в TFS");
+            if (content.ShouldPublishToTfs.HasValue)
+            {
+                builder.AppendLine(content.ShouldPublishToTfs.Value ? "Да" : "Нет");
+            }
+
+            if (!string.IsNullOrWhiteSpace(content.PublishToTfsReason))
+            {
+                builder.AppendLine(content.PublishToTfsReason.Trim());
+            }
+
+            builder.AppendLine();
+        }
+
+        if (!string.IsNullOrWhiteSpace(content.ExampleCode))
+        {
+            builder.AppendLine("### Пример кода");
+            builder.Append("```");
+            builder.AppendLine(content.ExampleCodeLanguage);
+            builder.AppendLine(content.ExampleCode);
+            builder.AppendLine("```");
+        }
+
+        return builder.ToString().Trim();
+    }
+
+    private static string ExtractJsonObject(string rawResponse)
+    {
+        var trimmed = rawResponse.Trim();
+        if (trimmed.StartsWith("```", StringComparison.Ordinal))
+        {
+            var firstNewLine = trimmed.IndexOf('\n');
+            if (firstNewLine >= 0)
+            {
+                trimmed = trimmed[(firstNewLine + 1)..];
+            }
+
+            var closingFenceIndex = trimmed.LastIndexOf("```", StringComparison.Ordinal);
+            if (closingFenceIndex >= 0)
+            {
+                trimmed = trimmed[..closingFenceIndex];
+            }
+        }
+
+        var firstBrace = trimmed.IndexOf('{');
+        var lastBrace = trimmed.LastIndexOf('}');
+        if (firstBrace >= 0 && lastBrace > firstBrace)
+        {
+            return trimmed.Substring(firstBrace, lastBrace - firstBrace + 1);
+        }
+
+        return trimmed;
+    }
+
+    private static IReadOnlyList<string> NormalizeList(IReadOnlyList<string>? items)
+    {
+        return items?
+            .Select(item => item?.Trim())
+            .Where(item => !string.IsNullOrWhiteSpace(item))
+            .Cast<string>()
+            .ToArray()
+            ?? [];
+    }
+
+    private sealed class InlineDiscussionResponsePayload
+    {
+        public string? Summary { get; init; }
+
+        public IReadOnlyList<string>? Problems { get; init; }
+
+        public string? Risk { get; init; }
+
+        public IReadOnlyList<string>? Recommendations { get; init; }
+
+        public bool? ShouldPublishToTfs { get; init; }
+
+        public string? PublishToTfsReason { get; init; }
+
+        public string? ExampleCodeLanguage { get; init; }
+
+        public string? ExampleCode { get; init; }
     }
 
     public async Task<ArtifactDownloadResult?> GetDiffDownloadAsync(Guid runId, CancellationToken cancellationToken)
@@ -270,7 +472,7 @@ public sealed class ReviewOrchestrator(
         ReviewExecutionRequest executionRequest,
         CancellationToken cancellationToken)
     {
-        var run = new ReviewRun(Guid.NewGuid(), target, executionRequest.ProviderProfileId, executionRequest.LocalOnlyMode);
+        var run = new ReviewRun(Guid.NewGuid(), target, executionRequest.ProviderProfileId);
         await reviewRunRepository.AddAsync(run, cancellationToken);
         reviewProgressStore.EnsureRun(run.Id);
 

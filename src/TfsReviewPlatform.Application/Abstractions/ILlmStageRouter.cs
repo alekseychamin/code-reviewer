@@ -9,7 +9,6 @@ public interface ILlmStageRouter
     Task<StageRouteSelection> ResolveAsync(
         ReviewPipelineStage stage,
         string? requestedProfileId,
-        bool localOnlyMode,
         IReadOnlyList<StageRouteOverrideDto> stageOverrides,
         CancellationToken cancellationToken);
 }

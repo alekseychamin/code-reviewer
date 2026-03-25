@@ -14,8 +14,6 @@ public sealed class ReviewRunDto
 
     public string? ProviderProfileId { get; init; }
 
-    public bool LocalOnlyMode { get; init; }
-
     public ReviewPipelineStage? CurrentStage { get; init; }
 
     public int ProgressPercent { get; init; }

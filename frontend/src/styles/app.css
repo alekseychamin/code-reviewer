@@ -1121,6 +1121,46 @@ button.primary {
   background: rgba(15, 123, 108, 0.08);
 }
 
+.structured-discussion {
+  display: grid;
+  gap: 10px;
+}
+
+.structured-discussion-section {
+  display: grid;
+  gap: 6px;
+}
+
+.structured-discussion-section h4 {
+  margin: 0;
+  font-size: 0.96rem;
+}
+
+.structured-discussion-section p,
+.structured-discussion-section ol,
+.structured-discussion-section ul {
+  margin: 0;
+}
+
+.structured-discussion-section ol,
+.structured-discussion-section ul {
+  padding-left: 20px;
+}
+
+.structured-discussion-section li + li {
+  margin-top: 4px;
+}
+
+.structured-discussion-section pre {
+  margin: 0;
+  padding: 10px 12px;
+  border-radius: 16px;
+  background: rgba(29, 36, 51, 0.05);
+  overflow-x: auto;
+  font-size: 0.9rem;
+  line-height: 1.45;
+}
+
 .thread-actions {
   display: flex;
   gap: 8px;

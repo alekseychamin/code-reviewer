@@ -16,12 +16,6 @@ public sealed class ReviewRequestValidator : IReviewRequestValidator
             errors["azureDevOpsAccessToken"] = ["Publishing requires an Azure DevOps/TFS access token in the request or AZURE_DEVOPS_TOKEN environment variable."];
         }
 
-        if (request.LocalOnlyMode && !string.IsNullOrWhiteSpace(request.ProviderProfileId) &&
-            !request.ProviderProfileId.Contains("ollama", StringComparison.OrdinalIgnoreCase))
-        {
-            errors["providerProfileId"] = ["Local-only mode must use an Ollama-compatible provider profile."];
-        }
-
         return errors;
     }
 

@@ -208,7 +208,6 @@ public sealed class ReviewRunExecutor(
         var selection = await llmStageRouter.ResolveAsync(
             ReviewPipelineStage.ChangeDescription,
             request.ProviderProfileId,
-            request.LocalOnlyMode,
             request.StageOverrides,
             cancellationToken);
 
@@ -377,7 +376,6 @@ public sealed class ReviewRunExecutor(
         var selection = await llmStageRouter.ResolveAsync(
             ReviewPipelineStage.ChunkReview,
             request.ProviderProfileId,
-            request.LocalOnlyMode,
             request.StageOverrides,
             cancellationToken);
 

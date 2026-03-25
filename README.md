@@ -61,7 +61,7 @@ and start the Ollama profile too:
 ## Notes
 
 - `appsettings.json` seeds provider profiles and default stage routing.
-- `LocalOnlyMode=true` routes stages to a local Ollama profile and disables PR publishing.
-- In docker compose, host Ollama is the default for local-only mode. The optional compose `ollama` service sits under the `local-llm` profile.
+- To run fully on Ollama, select the `Local Ollama` provider profile in the UI or send `providerProfileId=ollama-local` to the API.
+- In docker compose, host Ollama is the default local target. The optional compose `ollama` service sits under the `local-llm` profile.
 - The backend stores review runs in memory today, but all persistence and external dependencies already sit behind interfaces.
 - The prompt design follows the existing Python prototype flow from `main.py` and `prompts.py`, translated into explicit pipeline stages and deterministic markdown generation.

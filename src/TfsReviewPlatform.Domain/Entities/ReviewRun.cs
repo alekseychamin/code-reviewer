@@ -10,13 +10,11 @@ public sealed class ReviewRun
     public ReviewRun(
         Guid id,
         ReviewTargetDescriptor target,
-        string? providerProfileId,
-        bool localOnlyMode)
+        string? providerProfileId)
     {
         Id = id;
         Target = target;
         ProviderProfileId = providerProfileId;
-        LocalOnlyMode = localOnlyMode;
         Status = ReviewRunStatus.Pending;
         CurrentMessage = "Queued";
         CreatedAt = DateTimeOffset.UtcNow;
@@ -28,8 +26,6 @@ public sealed class ReviewRun
     public ReviewTargetDescriptor Target { get; }
 
     public string? ProviderProfileId { get; }
-
-    public bool LocalOnlyMode { get; }
 
     public ReviewRunStatus Status { get; private set; }
 

@@ -6,8 +6,6 @@ public sealed class ReviewRoutingOptions
 
     public string? DefaultProfileId { get; init; }
 
-    public string? LocalOnlyProfileId { get; init; }
-
     public List<StageRouteOptions> Routes { get; init; } = [];
 }
 

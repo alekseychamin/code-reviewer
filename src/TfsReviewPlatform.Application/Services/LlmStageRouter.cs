@@ -15,7 +15,6 @@ public sealed class LlmStageRouter(
     public async Task<StageRouteSelection> ResolveAsync(
         ReviewPipelineStage stage,
         string? requestedProfileId,
-        bool localOnlyMode,
         IReadOnlyList<StageRouteOverrideDto> stageOverrides,
         CancellationToken cancellationToken)
     {
@@ -27,7 +26,6 @@ public sealed class LlmStageRouter(
 
         var selectedProfileId = overrideRoute?.ProfileId
             ?? requestedProfileId
-            ?? (localOnlyMode ? routingOptions.Value.LocalOnlyProfileId : null)
             ?? configuredRoute?.ProfileId
             ?? routingOptions.Value.DefaultProfileId;
 
@@ -42,9 +40,7 @@ public sealed class LlmStageRouter(
             throw new InvalidOperationException($"Provider profile '{selectedProfileId}' was not found.");
         }
 
-        EnsureLocalOnlyCompatibility(localOnlyMode, profile);
-
-        var model = ResolveModel(profile, localOnlyMode, overrideRoute, configuredRoute);
+        var model = ResolveModel(profile, overrideRoute, configuredRoute);
         var temperature = overrideRoute?.Temperature ?? configuredRoute?.Temperature ?? 0;
 
         return new StageRouteSelection(profile, model, temperature);
@@ -52,7 +48,6 @@ public sealed class LlmStageRouter(
 
     private static string ResolveModel(
         ProviderProfile profile,
-        bool localOnlyMode,
         StageRouteOverrideDto? overrideRoute,
         StageRouteOptions? configuredRoute)
     {
@@ -74,14 +69,5 @@ public sealed class LlmStageRouter(
         }
 
         return profile.DefaultModel;
-    }
-
-    private static void EnsureLocalOnlyCompatibility(bool localOnlyMode, ProviderProfile profile)
-    {
-        if (localOnlyMode && !profile.LocalOnly)
-        {
-            throw new InvalidOperationException(
-                $"Profile '{profile.Id}' is not marked as local-only and cannot be used in local-only mode.");
-        }
     }
 }

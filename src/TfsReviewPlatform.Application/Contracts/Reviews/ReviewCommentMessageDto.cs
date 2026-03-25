@@ -7,4 +7,6 @@ public sealed class ReviewCommentMessageDto
     public string Content { get; init; } = string.Empty;
 
     public DateTimeOffset CreatedAt { get; init; }
+
+    public InlineDiscussionStructuredContentDto? StructuredContent { get; init; }
 }
