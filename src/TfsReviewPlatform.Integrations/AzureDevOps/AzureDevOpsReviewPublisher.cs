@@ -97,7 +97,7 @@ public sealed class AzureDevOpsReviewPublisher(IHttpClientFactory httpClientFact
                     new
                     {
                         parentCommentId = 0,
-                        content = inlineComment.Content,
+                        content = ResolveInlineCommentContent(inlineComment),
                         commentType = 1
                     }
                 },
@@ -110,6 +110,16 @@ public sealed class AzureDevOpsReviewPublisher(IHttpClientFactory httpClientFact
                 }
             },
             cancellationToken);
+    }
+
+    private static string ResolveInlineCommentContent(InlineCommentDraft inlineComment)
+    {
+        var initialAssistantMessage = inlineComment.Messages.FirstOrDefault(message =>
+            string.Equals(message.Role, "assistant", StringComparison.OrdinalIgnoreCase));
+
+        return !string.IsNullOrWhiteSpace(initialAssistantMessage?.Content)
+            ? initialAssistantMessage.Content
+            : inlineComment.Content;
     }
 
     private static string EncodePat(string accessToken)

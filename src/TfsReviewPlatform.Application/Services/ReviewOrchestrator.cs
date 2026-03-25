@@ -225,8 +225,7 @@ public sealed class ReviewOrchestrator(
 
         var updatedThread = thread with
         {
-            Messages = updatedMessages,
-            Content = assistantReply
+            Messages = updatedMessages
         };
 
         run.UpdateArtifacts(ReplaceInlineComment(run.Artifacts, updatedThread));
