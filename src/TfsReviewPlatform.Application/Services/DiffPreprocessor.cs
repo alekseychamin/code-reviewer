@@ -33,11 +33,19 @@ public sealed class DiffPreprocessor(IOptions<ReviewPipelineOptions> options) : 
             .ToArray();
 
         var filteredDiff = string.Concat(files.Select(file => file.Content));
-        var chunks = BuildChunks(files.Select(file => file.Content));
+        var reviewContextFiles = files
+            .Select(file => CompressForReviewContext(file.Content))
+            .Where(content => !string.IsNullOrWhiteSpace(content))
+            .ToArray();
+        var reviewContextDiff = reviewContextFiles.Length > 0
+            ? string.Concat(reviewContextFiles)
+            : filteredDiff;
+        var chunks = BuildChunks(reviewContextFiles.Length > 0 ? reviewContextFiles : files.Select(file => file.Content));
 
         return new PreprocessedDiff
         {
             FilteredDiffText = filteredDiff,
+            ReviewContextDiffText = reviewContextDiff,
             ChangedFiles = files.Select(file => file.FilePath).Distinct(StringComparer.OrdinalIgnoreCase).ToArray(),
             Chunks = chunks
         };
@@ -51,13 +59,16 @@ public sealed class DiffPreprocessor(IOptions<ReviewPipelineOptions> options) : 
 
         foreach (var fileDiff in fileDiffs)
         {
-            if (current.Length > 0 && current.Length + fileDiff.Length > maxCharacters)
+            foreach (var fileDiffChunk in SplitOversizedFileDiff(fileDiff, maxCharacters))
             {
-                chunks.Add(current.ToString());
-                current.Clear();
-            }
+                if (current.Length > 0 && current.Length + fileDiffChunk.Length > maxCharacters)
+                {
+                    chunks.Add(current.ToString());
+                    current.Clear();
+                }
 
-            current.Append(fileDiff);
+                current.Append(fileDiffChunk);
+            }
         }
 
         if (current.Length > 0)
@@ -66,6 +77,147 @@ public sealed class DiffPreprocessor(IOptions<ReviewPipelineOptions> options) : 
         }
 
         return chunks.Count == 0 ? [string.Empty] : chunks;
+    }
+
+    private static IReadOnlyList<string> SplitOversizedFileDiff(string fileDiff, int maxCharacters)
+    {
+        if (fileDiff.Length <= maxCharacters)
+        {
+            return [fileDiff];
+        }
+
+        var lines = fileDiff.Split('\n');
+        var firstHunkIndex = Array.FindIndex(lines, line => line.StartsWith("@@ ", StringComparison.Ordinal));
+        if (firstHunkIndex < 0)
+        {
+            return SplitByCharacterBudget(fileDiff, maxCharacters);
+        }
+
+        var header = string.Join('\n', lines[..firstHunkIndex]).TrimEnd('\n');
+        var contentLines = lines[firstHunkIndex..];
+        var effectiveBudget = Math.Max(1000, maxCharacters - header.Length - 1);
+        var lineChunks = SplitLinesByBudget(contentLines, effectiveBudget);
+
+        return lineChunks
+            .Select(chunk => string.IsNullOrWhiteSpace(header)
+                ? chunk
+                : $"{header}\n{chunk}")
+            .ToArray();
+    }
+
+    private static IReadOnlyList<string> SplitLinesByBudget(IReadOnlyList<string> lines, int maxCharacters)
+    {
+        var results = new List<string>();
+        var current = new StringBuilder();
+
+        foreach (var line in lines)
+        {
+            var normalizedLine = line + '\n';
+            if (normalizedLine.Length > maxCharacters)
+            {
+                if (current.Length > 0)
+                {
+                    results.Add(current.ToString());
+                    current.Clear();
+                }
+
+                results.AddRange(SplitByCharacterBudget(normalizedLine, maxCharacters));
+                continue;
+            }
+
+            if (current.Length > 0 && current.Length + normalizedLine.Length > maxCharacters)
+            {
+                results.Add(current.ToString());
+                current.Clear();
+            }
+
+            current.Append(normalizedLine);
+        }
+
+        if (current.Length > 0)
+        {
+            results.Add(current.ToString());
+        }
+
+        return results;
+    }
+
+    private static IReadOnlyList<string> SplitByCharacterBudget(string content, int maxCharacters)
+    {
+        var results = new List<string>();
+        for (var start = 0; start < content.Length; start += maxCharacters)
+        {
+            var length = Math.Min(maxCharacters, content.Length - start);
+            results.Add(content.Substring(start, length));
+        }
+
+        return results;
+    }
+
+    private static string CompressForReviewContext(string fileDiff)
+    {
+        var lines = fileDiff.Split('\n');
+        var firstHunkIndex = Array.FindIndex(lines, line => line.StartsWith("@@ ", StringComparison.Ordinal));
+        if (firstHunkIndex < 0)
+        {
+            return fileDiff;
+        }
+
+        var header = string.Join('\n', lines[..firstHunkIndex]).TrimEnd('\n');
+        var hunks = ExtractHunks(lines[firstHunkIndex..]);
+        var keptHunks = hunks
+            .Where(ContainsAdditions)
+            .ToArray();
+
+        if (keptHunks.Length == 0)
+        {
+            return string.Empty;
+        }
+
+        var builder = new StringBuilder();
+        if (!string.IsNullOrWhiteSpace(header))
+        {
+            builder.AppendLine(header);
+        }
+
+        foreach (var hunk in keptHunks)
+        {
+            builder.Append(string.Join('\n', hunk).TrimEnd('\n'));
+            builder.Append('\n');
+        }
+
+        return builder.ToString();
+    }
+
+    private static IReadOnlyList<IReadOnlyList<string>> ExtractHunks(IReadOnlyList<string> hunkLines)
+    {
+        var results = new List<IReadOnlyList<string>>();
+        var current = new List<string>();
+
+        foreach (var line in hunkLines)
+        {
+            if (line.StartsWith("@@ ", StringComparison.Ordinal) && current.Count > 0)
+            {
+                results.Add(current.ToArray());
+                current = [];
+            }
+
+            current.Add(line);
+        }
+
+        if (current.Count > 0)
+        {
+            results.Add(current.ToArray());
+        }
+
+        return results;
+    }
+
+    private static bool ContainsAdditions(IReadOnlyList<string> hunkLines)
+    {
+        return hunkLines.Any(line =>
+            line.StartsWith('+') &&
+            !line.StartsWith("+++", StringComparison.Ordinal));
     }
 
     private static bool ShouldIgnore(string filePath)

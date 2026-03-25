@@ -1,4 +1,5 @@
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 using System.Text.Json;
 using TfsReviewPlatform.Application.Abstractions;
 using TfsReviewPlatform.Application.Models;
@@ -21,6 +22,7 @@ public sealed class ReviewRunExecutor(
     IFindingsComparisonService findingsComparisonService,
     IMarkdownReportBuilder markdownReportBuilder,
     IReviewPublisher reviewPublisher,
+    IOptions<ReviewPipelineOptions> reviewPipelineOptions,
     ILogger<ReviewRunExecutor> logger)
     : IReviewRunExecutor
 {
@@ -211,9 +213,10 @@ public sealed class ReviewRunExecutor(
             cancellationToken);
 
         var fileList = string.Join('\n', preprocessed.ChangedFiles.Take(100));
-        var diffSnippet = preprocessed.FilteredDiffText.Length > 24000
-            ? preprocessed.FilteredDiffText[..24000]
-            : preprocessed.FilteredDiffText;
+        var maxChangeSummaryCharacters = Math.Max(4000, reviewPipelineOptions.Value.MaxChangeSummaryCharacters);
+        var diffSnippet = preprocessed.ReviewContextDiffText.Length > maxChangeSummaryCharacters
+            ? preprocessed.ReviewContextDiffText[..maxChangeSummaryCharacters]
+            : preprocessed.ReviewContextDiffText;
 
         var response = await llmCompletionService.CompleteAsync(
             selection.Profile,
