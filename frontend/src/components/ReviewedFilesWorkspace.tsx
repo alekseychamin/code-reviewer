@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import type { InlineComment, ReviewedFile } from '../lib/types';
 import { MarkdownBlock } from './MarkdownBlock';
 
@@ -19,6 +19,8 @@ export function ReviewedFilesWorkspace({
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [expandedRemarks, setExpandedRemarks] = useState<Record<string, boolean>>({});
   const [expandedContexts, setExpandedContexts] = useState<Record<string, boolean>>({});
+  const [pendingScrollFilePath, setPendingScrollFilePath] = useState<string>('');
+  const fileCardRefs = useRef<Record<string, HTMLElement | null>>({});
 
   const filesWithRemarks = useMemo(
     () =>
@@ -51,34 +53,31 @@ export function ReviewedFilesWorkspace({
       return;
     }
 
-    if (!expandedFilePath || !filesWithRemarks.some((file) => file.filePath === expandedFilePath)) {
-      setExpandedFilePath(filesWithRemarks[0].filePath);
+    if (expandedFilePath && !filesWithRemarks.some((file) => file.filePath === expandedFilePath)) {
+      setExpandedFilePath('');
     }
   }, [expandedFilePath, filesWithRemarks]);
 
   useEffect(() => {
-    if (!expandedFilePath) {
+    if (!pendingScrollFilePath || expandedFilePath !== pendingScrollFilePath) {
       return;
     }
 
-    const file = filesWithRemarks.find((item) => item.filePath === expandedFilePath);
-    if (!file) {
-      return;
-    }
+    const frameId = window.requestAnimationFrame(() => {
+      const element = fileCardRefs.current[pendingScrollFilePath];
+      if (!element) {
+        return;
+      }
 
-    const firstRemark = sortThreads(file.inlineThreads)[0];
-    if (!firstRemark) {
-      return;
-    }
+      element.scrollIntoView({
+        behavior: 'smooth',
+        block: 'start'
+      });
+      setPendingScrollFilePath('');
+    });
 
-    setExpandedRemarks((current) =>
-      current[firstRemark.id]
-        ? current
-        : {
-            ...current,
-            [firstRemark.id]: true
-          });
-  }, [expandedFilePath, filesWithRemarks]);
+    return () => window.cancelAnimationFrame(frameId);
+  }, [expandedFilePath, pendingScrollFilePath]);
 
   async function handlePublish(commentId: string): Promise<void> {
     setBusy((current) => ({ ...current, [commentId]: true }));
@@ -119,7 +118,18 @@ export function ReviewedFilesWorkspace({
   }
 
   function toggleFile(filePath: string): void {
-    setExpandedFilePath((current) => (current === filePath ? '' : filePath));
+    setExpandedFilePath((current) => {
+      const nextFilePath = current === filePath ? '' : filePath;
+
+      if (nextFilePath) {
+        expandFirstRemark(nextFilePath, filesWithRemarks, setExpandedRemarks);
+        setPendingScrollFilePath(nextFilePath);
+      } else {
+        setPendingScrollFilePath('');
+      }
+
+      return nextFilePath;
+    });
   }
 
   function toggleRemark(commentId: string): void {
@@ -160,7 +170,13 @@ export function ReviewedFilesWorkspace({
           const sortedThreads = sortThreads(file.inlineThreads);
 
           return (
-            <article className={`file-accordion-card${isOpen ? ' open' : ''}`} key={file.filePath}>
+            <article
+              className={`file-accordion-card${isOpen ? ' open' : ''}`}
+              key={file.filePath}
+              ref={(element) => {
+                fileCardRefs.current[file.filePath] = element;
+              }}
+            >
               <button className="file-accordion-toggle" onClick={() => toggleFile(file.filePath)} type="button">
                 <div className="file-accordion-main">
                   <div className="file-accordion-title-row">
@@ -389,6 +405,30 @@ function getHighestSeverity(file: ReviewedFile): string | undefined {
 
 function getPreviewRemark(file: ReviewedFile): InlineComment | undefined {
   return sortThreads(file.inlineThreads)[0];
+}
+
+function expandFirstRemark(
+  filePath: string,
+  filesWithRemarks: ReviewedFile[],
+  setExpandedRemarks: React.Dispatch<React.SetStateAction<Record<string, boolean>>>
+): void {
+  const file = filesWithRemarks.find((item) => item.filePath === filePath);
+  if (!file) {
+    return;
+  }
+
+  const firstRemark = sortThreads(file.inlineThreads)[0];
+  if (!firstRemark) {
+    return;
+  }
+
+  setExpandedRemarks((current) =>
+    current[firstRemark.id]
+      ? current
+      : {
+          ...current,
+          [firstRemark.id]: true
+        });
 }
 
 function sortThreads(threads: InlineComment[]): InlineComment[] {

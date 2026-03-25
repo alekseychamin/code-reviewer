@@ -526,6 +526,7 @@ button.primary {
 .reviewed-files-accordion {
   display: grid;
   gap: 12px;
+  overflow-anchor: none;
 }
 
 .results-stack {
@@ -556,6 +557,7 @@ button.primary {
 .file-accordion-list {
   display: grid;
   gap: 10px;
+  overflow-anchor: none;
 }
 
 .file-strip-list {
@@ -612,6 +614,7 @@ button.primary {
   background: rgba(255, 255, 255, 0.82);
   box-shadow: 0 10px 28px rgba(29, 36, 51, 0.06);
   overflow: hidden;
+  scroll-margin-top: 16px;
 }
 
 .file-accordion-card.open {
@@ -684,6 +687,7 @@ button.primary {
   display: grid;
   gap: 12px;
   padding: 0 16px 16px;
+  overflow-anchor: none;
 }
 
 .file-strip-item strong,
@@ -1047,6 +1051,7 @@ button.primary {
 
 .thread-accordion-body {
   margin-top: 10px;
+  font-size: 0.96rem;
 }
 
 .thread-accordion-preview {
@@ -1082,6 +1087,7 @@ button.primary {
 .thread-snippet p {
   margin: 0 0 6px;
   font-weight: 600;
+  font-size: 0.94rem;
 }
 
 .thread-snippet pre {
@@ -1089,6 +1095,8 @@ button.primary {
   border-radius: 16px;
   background: rgba(29, 36, 51, 0.05);
   overflow-x: auto;
+  font-size: 0.9rem;
+  line-height: 1.45;
 }
 
 .thread-messages {
@@ -1101,6 +1109,7 @@ button.primary {
   padding: 10px 12px;
   border-radius: 16px;
   background: rgba(29, 36, 51, 0.05);
+  font-size: 0.96rem;
 }
 
 .thread-message strong {
@@ -1184,6 +1193,13 @@ button.primary {
   border-radius: 16px;
   background: rgba(29, 36, 51, 0.035);
   border: 1px solid rgba(29, 36, 51, 0.06);
+  font-size: 0.95rem;
+}
+
+.thread-context-block pre,
+.thread-message .markdown-content pre {
+  font-size: 0.9rem;
+  line-height: 1.45;
 }
 
 .finding-card header {
