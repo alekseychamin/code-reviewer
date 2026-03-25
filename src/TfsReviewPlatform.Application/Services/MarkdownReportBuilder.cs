@@ -152,10 +152,26 @@ public sealed class MarkdownReportBuilder : IMarkdownReportBuilder
                         new ReviewCommentMessage(
                             "assistant",
                             $"**{finding.Severity}: {finding.Title}**\n\n{finding.Description}",
-                            DateTimeOffset.UtcNow)
+                            DateTimeOffset.UtcNow,
+                            BuildInitialStructuredContent(finding))
                     ]);
             })
             .ToArray();
+    }
+
+    private static InlineDiscussionStructuredContent BuildInitialStructuredContent(ReviewFinding finding)
+    {
+        var recommendations = string.IsNullOrWhiteSpace(finding.Suggestion)
+            ? Array.Empty<string>()
+            : [finding.Suggestion.Trim()];
+
+        return new InlineDiscussionStructuredContent
+        {
+            Summary = finding.Description,
+            Problems = [finding.Title],
+            Risk = finding.Description,
+            Recommendations = recommendations
+        };
     }
 
     private static string NormalizeFilePath(string filePath)
