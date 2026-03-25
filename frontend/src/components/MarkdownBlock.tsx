@@ -132,10 +132,22 @@ function normalizeLabelsInText(text: string): string {
     const valueEnd = nextMatch?.index ?? cleanedText.length;
     const value = stripEdgeFormattingArtifacts(cleanedText.slice(valueStart, valueEnd).trim());
 
-    parts.push(`**${label}:** ${value}`.trim());
+    parts.push(formatSectionBlock(label, value));
   }
 
   return parts.join('\n\n');
+}
+
+function formatSectionBlock(label: string, value: string): string {
+  if (!value) {
+    return `**${label}:**`;
+  }
+
+  if (isListBlock(value)) {
+    return `**${label}:**\n\n${value}`;
+  }
+
+  return `**${label}:** ${value}`.trim();
 }
 
 function stripFormattingArtifacts(text: string): string {
@@ -156,6 +168,10 @@ function stripEdgeFormattingArtifacts(text: string): string {
 
 function isStandaloneFormattingArtifact(text: string): boolean {
   return /^(?:\*\*|__|[*_]{3,})$/.test(text.trim());
+}
+
+function isListBlock(text: string): boolean {
+  return /^([-*+]\s+|\d+\.\s+)/.test(text.trim());
 }
 
 function stripDanglingInlineFormatting(text: string): string {
