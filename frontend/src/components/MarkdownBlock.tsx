@@ -21,7 +21,7 @@ export function MarkdownBlock({ content, emptyText }: MarkdownBlockProps) {
 }
 
 function normalizeMarkdownContent(content: string): string {
-  const lines = content.replace(/\r\n/g, '\n').split('\n');
+  const lines = normalizeFenceLayout(content.replace(/\r\n/g, '\n')).split('\n');
   const normalizedLines: string[] = [];
   let paragraphBuffer = '';
   let insideCodeFence = false;
@@ -63,9 +63,16 @@ function normalizeMarkdownContent(content: string): string {
       continue;
     }
 
+    const normalizedBrokenLabelLine = normalizeBrokenLabelLine(trimmed);
+    if (normalizedBrokenLabelLine) {
+      flushParagraph();
+      normalizedLines.push(normalizedBrokenLabelLine);
+      continue;
+    }
+
     if (isStandaloneMarkdownBlock(trimmed)) {
       flushParagraph();
-      normalizedLines.push(trimmed);
+      normalizedLines.push(normalizeStandaloneMarkdownLine(trimmed));
       continue;
     }
 
@@ -78,6 +85,75 @@ function normalizeMarkdownContent(content: string): string {
   flushParagraph();
 
   return normalizeSectionLabels(normalizedLines.join('\n'));
+}
+
+function normalizeFenceLayout(content: string): string {
+  const rawLines = content.split('\n');
+  const normalizedLines: string[] = [];
+  let insideFence = false;
+
+  for (const rawLine of rawLines) {
+    let line = rawLine;
+
+    if (!insideFence) {
+      const embeddedOpeningFenceMatch = line.match(/^(.*?)(```[A-Za-z0-9_-]*)(.*)$/);
+      if (embeddedOpeningFenceMatch && !line.trimStart().startsWith('```')) {
+        const [, before, fence, after] = embeddedOpeningFenceMatch;
+        if (before.trim()) {
+          normalizedLines.push(before.trimEnd());
+        }
+
+        normalizedLines.push(fence);
+        insideFence = true;
+
+        const trailingCode = after.trimStart();
+        if (trailingCode) {
+          normalizedLines.push(trailingCode);
+        }
+
+        continue;
+      }
+
+      const trimmed = line.trim();
+      const inlineOpeningFenceMatch = trimmed.match(/^(```[A-Za-z0-9_-]*)(?:\s+)(.+)$/);
+      if (inlineOpeningFenceMatch) {
+        normalizedLines.push(inlineOpeningFenceMatch[1]);
+        normalizedLines.push(inlineOpeningFenceMatch[2]);
+        insideFence = true;
+        continue;
+      }
+
+      normalizedLines.push(rawLine);
+      if (trimmed.startsWith('```')) {
+        insideFence = true;
+      }
+
+      continue;
+    }
+
+    const closingFenceIndex = line.indexOf('```');
+    if (closingFenceIndex >= 0) {
+      const beforeFence = line.slice(0, closingFenceIndex);
+      const afterFence = line.slice(closingFenceIndex + 3).trimStart();
+
+      if (beforeFence.length > 0) {
+        normalizedLines.push(beforeFence);
+      }
+
+      normalizedLines.push('```');
+      insideFence = false;
+
+      if (afterFence) {
+        normalizedLines.push(afterFence);
+      }
+
+      continue;
+    }
+
+    normalizedLines.push(rawLine);
+  }
+
+  return normalizedLines.join('\n');
 }
 
 function normalizeContinuationLine(line: string): string {
@@ -150,6 +226,26 @@ function formatSectionBlock(label: string, value: string): string {
   return `**${label}:** ${value}`.trim();
 }
 
+function normalizeStandaloneMarkdownLine(line: string): string {
+  return line
+    .replace(/^(\d+\.\s+)\*\*\s*([^:*][^:]*?)\s*:\*\*\s*(.*)$/u, '$1**$2:** $3')
+    .replace(/^([-*+]\s+)\*\*\s*([^:*][^:]*?)\s*:\*\*\s*(.*)$/u, '$1**$2:** $3')
+    .replace(/^(\d+\.\s+)([^:*][^:]*?):\*\*\s+(.*)$/u, '$1**$2:** $3')
+    .replace(/^([-*+]\s+)([^:*][^:]*?):\*\*\s+(.*)$/u, '$1**$2:** $3');
+}
+
+function normalizeBrokenLabelLine(line: string): string | null {
+  const match = line.match(new RegExp(`^(${BROKEN_LABEL_PREFIXES.map(escapeRegExp).join('|')})(?:\\s*\\((.*?)\\))?(?::\\*\\*|::)\\s*(.*)$`, 'u'));
+  if (!match) {
+    return null;
+  }
+
+  const [, label, suffix, remainder] = match;
+  const title = suffix ? `${label} (${suffix})` : label;
+  const value = remainder.trim();
+  return value ? `**${title}:** ${value}` : `**${title}:**`;
+}
+
 function stripFormattingArtifacts(text: string): string {
   return text
     .replace(/(^|\n)\s*(\*\*|__)\s*(?=\n|$)/g, '$1')
@@ -195,8 +291,21 @@ const SECTION_LABELS = [
   'Конкретная проблема',
   'Конкретные проблемы',
   'Конкретный риск',
+  'Проблема',
   'Пояснение к замечанию',
   'Пояснение к комментарию',
+  'Рекомендации',
+  'Что проверить и исправить',
+  'Пример исправления',
+  'Ответ на вопрос о публикации в TFS',
   'Рекомендуемое исправление',
   'Конкретные шаги для исправления'
+] as const;
+
+const BROKEN_LABEL_PREFIXES = [
+  'Проблема',
+  'Рекомендации',
+  'Что проверить и исправить',
+  'Пример исправления',
+  'Ответ на вопрос о публикации в TFS'
 ] as const;
