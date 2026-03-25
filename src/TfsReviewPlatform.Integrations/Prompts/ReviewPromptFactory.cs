@@ -14,10 +14,18 @@ public sealed class ReviewPromptFactory : IReviewPromptFactory
                 Return ONLY a valid JSON object with keys "description" and "diagram".
 
                 Rules for "description":
-                - Markdown in Russian
-                - Category: Feature, Bugfix, Refactoring, Hotfix, or Config update
-                - 2-3 sentence summary of business or technical value
-                - 3-5 key impacted modules or layers
+                - It must be a JSON object, not markdown
+                - Use Russian plain text values only
+                - Schema:
+                  {
+                    "category": "Feature | Bugfix | Refactoring | Hotfix | Config update",
+                    "summary": "2-3 sentence summary of business or technical value",
+                    "impacted_modules": ["3-5 key impacted modules or layers"],
+                    "risks": ["optional risk or follow-up point", "optional second point"]
+                  }
+                - Do not use markdown markers such as **, __, bullets, or fenced code in any field
+                - impacted_modules should contain short readable module or layer descriptions
+                - risks may be an empty array
 
                 Rules for "diagram":
                 - Mermaid only

@@ -8,6 +8,8 @@ public sealed class ReviewArtifacts
 
     public string ChangeDescription { get; init; } = string.Empty;
 
+    public ChangeDescriptionStructuredContent? ChangeDescriptionStructured { get; init; }
+
     public string? ChangeDiagramMermaid { get; init; }
 
     public string MarkdownReport { get; init; } = string.Empty;

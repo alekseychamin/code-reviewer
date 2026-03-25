@@ -1,7 +1,7 @@
 import { MarkdownBlock } from './MarkdownBlock';
 import { MermaidDiagram } from './MermaidDiagram';
 import { ReviewedFilesWorkspace } from './ReviewedFilesWorkspace';
-import type { ReviewRun } from '../lib/types';
+import type { ChangeDescriptionStructuredContent, ReviewRun } from '../lib/types';
 
 interface RunDetailsProps {
   run: ReviewRun | null;
@@ -82,9 +82,9 @@ export function RunDetails({
 
         <article className="result-card">
           <h3>Описание изменений</h3>
-          <MarkdownBlock
-            content={run.changeDescription}
-            emptyText="Описание появится здесь после завершения первого этапа."
+          <ChangeDescriptionBlock
+            content={run.changeDescriptionStructured}
+            fallback={run.changeDescription}
           />
         </article>
       </div>
@@ -98,5 +98,62 @@ export function RunDetails({
         />
       </div>
     </section>
+  );
+}
+
+function ChangeDescriptionBlock({
+  content,
+  fallback
+}: {
+  content?: ChangeDescriptionStructuredContent;
+  fallback: string;
+}) {
+  if (content) {
+    return (
+      <div className="structured-change-description">
+        {content.category ? (
+          <section className="structured-change-section">
+            <h4>Категория</h4>
+            <p>{content.category}</p>
+          </section>
+        ) : null}
+
+        {content.summary ? (
+          <section className="structured-change-section">
+            <h4>Краткое описание</h4>
+            <p>{content.summary}</p>
+          </section>
+        ) : null}
+
+        {content.impactedModules?.length ? (
+          <section className="structured-change-section">
+            <h4>Затронутые модули</h4>
+            <ul>
+              {content.impactedModules.map((module, index) => (
+                <li key={`module-${index}`}>{module}</li>
+              ))}
+            </ul>
+          </section>
+        ) : null}
+
+        {content.risks?.length ? (
+          <section className="structured-change-section">
+            <h4>Риски и точки внимания</h4>
+            <ul>
+              {content.risks.map((risk, index) => (
+                <li key={`risk-${index}`}>{risk}</li>
+              ))}
+            </ul>
+          </section>
+        ) : null}
+      </div>
+    );
+  }
+
+  return (
+    <MarkdownBlock
+      content={fallback}
+      emptyText="Описание появится здесь после завершения первого этапа."
+    />
   );
 }

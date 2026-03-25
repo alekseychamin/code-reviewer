@@ -84,6 +84,7 @@ export interface ReviewRun {
   createdAt: string;
   updatedAt: string;
   changeDescription: string;
+  changeDescriptionStructured?: ChangeDescriptionStructuredContent;
   changeDiagramMermaid?: string;
   hasDiffArtifact: boolean;
   markdownReport: string;
@@ -94,6 +95,13 @@ export interface ReviewRun {
   findings: ReviewFinding[];
   inlineComments: InlineComment[];
   reviewedFiles: ReviewedFile[];
+}
+
+export interface ChangeDescriptionStructuredContent {
+  category: string;
+  summary: string;
+  impactedModules: string[];
+  risks: string[];
 }
 
 export interface ReviewProgressEvent {

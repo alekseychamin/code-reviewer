@@ -28,6 +28,8 @@ public sealed class ReviewRunDto
 
     public string ChangeDescription { get; init; } = string.Empty;
 
+    public ChangeDescriptionStructuredContentDto? ChangeDescriptionStructured { get; init; }
+
     public string? ChangeDiagramMermaid { get; init; }
 
     public bool HasDiffArtifact { get; init; }

@@ -1161,6 +1161,34 @@ button.primary {
   line-height: 1.45;
 }
 
+.structured-change-description {
+  display: grid;
+  gap: 12px;
+}
+
+.structured-change-section {
+  display: grid;
+  gap: 6px;
+}
+
+.structured-change-section h4 {
+  margin: 0;
+  font-size: 0.98rem;
+}
+
+.structured-change-section p,
+.structured-change-section ul {
+  margin: 0;
+}
+
+.structured-change-section ul {
+  padding-left: 20px;
+}
+
+.structured-change-section li + li {
+  margin-top: 4px;
+}
+
 .thread-actions {
   display: flex;
   gap: 8px;

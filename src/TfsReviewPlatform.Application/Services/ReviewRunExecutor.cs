@@ -1,6 +1,7 @@
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using System.Text.Json;
+using System.Text;
 using TfsReviewPlatform.Application.Abstractions;
 using TfsReviewPlatform.Application.Models;
 using TfsReviewPlatform.Domain.Entities;
@@ -62,6 +63,7 @@ public sealed class ReviewRunExecutor(
                 DiffText = preprocessed.FilteredDiffText,
                 ChangedFiles = preprocessed.ChangedFiles,
                 ChangeDescription = changeSummary.Description,
+                ChangeDescriptionStructured = changeSummary.StructuredContent,
                 ChangeDiagramMermaid = changeSummary.DiagramMermaid
             });
             await reviewRunRepository.UpdateAsync(run, cancellationToken);
@@ -88,6 +90,7 @@ public sealed class ReviewRunExecutor(
                 DiffText = preprocessed.FilteredDiffText,
                 ChangedFiles = preprocessed.ChangedFiles,
                 ChangeDescription = changeSummary.Description,
+                ChangeDescriptionStructured = changeSummary.StructuredContent,
                 ChangeDiagramMermaid = changeSummary.DiagramMermaid,
                 InlineComments = inlineComments,
                 ReviewedFiles = reviewedFiles,
@@ -103,6 +106,7 @@ public sealed class ReviewRunExecutor(
                 DiffText = preprocessed.FilteredDiffText,
                 ChangedFiles = preprocessed.ChangedFiles,
                 ChangeDescription = changeSummary.Description,
+                ChangeDescriptionStructured = changeSummary.StructuredContent,
                 ChangeDiagramMermaid = changeSummary.DiagramMermaid,
                 MarkdownReport = fullReport,
                 SummaryComment = summaryComment,
@@ -134,6 +138,7 @@ public sealed class ReviewRunExecutor(
                 DiffText = preprocessed.FilteredDiffText,
                 ChangedFiles = preprocessed.ChangedFiles,
                 ChangeDescription = description,
+                ChangeDescriptionStructured = changeSummary.StructuredContent,
                 ChangeDiagramMermaid = changeSummary.DiagramMermaid,
                 MarkdownReport = fullReport,
                 SummaryComment = summaryComment,
@@ -241,7 +246,8 @@ public sealed class ReviewRunExecutor(
         return new ChangeSummaryResult
         {
             Description = parsed.Description,
-            DiagramMermaid = diagram
+            DiagramMermaid = diagram,
+            StructuredContent = parsed.StructuredContent
         };
     }
 
@@ -269,18 +275,19 @@ public sealed class ReviewRunExecutor(
             using var document = JsonDocument.Parse(payload);
             var root = document.RootElement;
             var description = root.TryGetProperty("description", out var descriptionNode)
-                ? descriptionNode.GetString()
+                ? ParseChangeDescription(descriptionNode)
                 : null;
             var diagram = root.TryGetProperty("diagram", out var diagramNode)
                 ? diagramNode.GetString()
                 : null;
 
-            if (!string.IsNullOrWhiteSpace(description))
+            if (description is not null && !string.IsNullOrWhiteSpace(description.Description))
             {
                 return new ChangeSummaryResult
                 {
-                    Description = description,
-                    DiagramMermaid = NormalizeMermaidCode(diagram)
+                    Description = description.Description,
+                    DiagramMermaid = NormalizeMermaidCode(diagram),
+                    StructuredContent = description.StructuredContent
                 };
             }
         }
@@ -292,6 +299,113 @@ public sealed class ReviewRunExecutor(
         {
             Description = response
         };
+    }
+
+    private static ParsedChangeDescription? ParseChangeDescription(JsonElement node)
+    {
+        if (node.ValueKind == JsonValueKind.String)
+        {
+            var value = node.GetString();
+            if (string.IsNullOrWhiteSpace(value))
+            {
+                return null;
+            }
+
+            return new ParsedChangeDescription(value.Trim(), null);
+        }
+
+        if (node.ValueKind != JsonValueKind.Object)
+        {
+            return null;
+        }
+
+        var category = node.TryGetProperty("category", out var categoryNode)
+            ? categoryNode.GetString()?.Trim() ?? string.Empty
+            : string.Empty;
+        var summary = node.TryGetProperty("summary", out var summaryNode)
+            ? summaryNode.GetString()?.Trim() ?? string.Empty
+            : string.Empty;
+        var impactedModules = node.TryGetProperty("impacted_modules", out var impactedModulesNode)
+            ? ParseStringArray(impactedModulesNode)
+            : [];
+        var risks = node.TryGetProperty("risks", out var risksNode)
+            ? ParseStringArray(risksNode)
+            : [];
+
+        var description = RenderChangeDescriptionMarkdown(category, summary, impactedModules, risks);
+        if (string.IsNullOrWhiteSpace(description))
+        {
+            return null;
+        }
+
+        return new ParsedChangeDescription(
+            description,
+            new ChangeDescriptionStructuredContent
+            {
+                Category = category,
+                Summary = summary,
+                ImpactedModules = impactedModules,
+                Risks = risks
+            });
+    }
+
+    private static IReadOnlyList<string> ParseStringArray(JsonElement node)
+    {
+        if (node.ValueKind != JsonValueKind.Array)
+        {
+            return [];
+        }
+
+        return node
+            .EnumerateArray()
+            .Where(item => item.ValueKind == JsonValueKind.String)
+            .Select(item => item.GetString()?.Trim())
+            .Where(item => !string.IsNullOrWhiteSpace(item))
+            .Cast<string>()
+            .ToArray();
+    }
+
+    private static string RenderChangeDescriptionMarkdown(
+        string category,
+        string summary,
+        IReadOnlyList<string> impactedModules,
+        IReadOnlyList<string> risks)
+    {
+        var builder = new StringBuilder();
+
+        if (!string.IsNullOrWhiteSpace(category))
+        {
+            builder.AppendLine($"**Категория:** {category}");
+            builder.AppendLine();
+        }
+
+        if (!string.IsNullOrWhiteSpace(summary))
+        {
+            builder.AppendLine(summary);
+            builder.AppendLine();
+        }
+
+        if (impactedModules.Count > 0)
+        {
+            builder.AppendLine("**Затронутые модули:**");
+            foreach (var module in impactedModules)
+            {
+                builder.AppendLine($"- {module}");
+            }
+
+            builder.AppendLine();
+        }
+
+        if (risks.Count > 0)
+        {
+            builder.AppendLine("**Риски и точки внимания:**");
+            foreach (var risk in risks)
+            {
+                builder.AppendLine($"- {risk}");
+            }
+        }
+
+        return builder.ToString().Trim();
     }
 
     private static string? NormalizeMermaidCode(string? content)
@@ -605,6 +719,10 @@ public sealed class ReviewRunExecutor(
     {
         return path.Replace("\\", "/", StringComparison.Ordinal).TrimStart('/').ToLowerInvariant();
     }
+
+    private sealed record ParsedChangeDescription(
+        string Description,
+        ChangeDescriptionStructuredContent? StructuredContent);
 
     private static class ContextExtractor
     {

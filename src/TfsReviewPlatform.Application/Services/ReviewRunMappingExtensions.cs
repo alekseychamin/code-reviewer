@@ -21,6 +21,7 @@ public static class ReviewRunMappingExtensions
             CreatedAt = run.CreatedAt,
             UpdatedAt = run.UpdatedAt,
             ChangeDescription = run.Artifacts.ChangeDescription,
+            ChangeDescriptionStructured = MapChangeDescription(run.Artifacts.ChangeDescriptionStructured),
             ChangeDiagramMermaid = run.Artifacts.ChangeDiagramMermaid,
             HasDiffArtifact = !string.IsNullOrWhiteSpace(run.Artifacts.DiffText),
             MarkdownReport = run.Artifacts.MarkdownReport,
@@ -122,6 +123,22 @@ public static class ReviewRunMappingExtensions
             PublishToTfsReason = content.PublishToTfsReason,
             ExampleCodeLanguage = content.ExampleCodeLanguage,
             ExampleCode = content.ExampleCode
+        };
+    }
+
+    private static ChangeDescriptionStructuredContentDto? MapChangeDescription(ChangeDescriptionStructuredContent? content)
+    {
+        if (content is null)
+        {
+            return null;
+        }
+
+        return new ChangeDescriptionStructuredContentDto
+        {
+            Category = content.Category,
+            Summary = content.Summary,
+            ImpactedModules = content.ImpactedModules,
+            Risks = content.Risks
         };
     }
 
