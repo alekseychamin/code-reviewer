@@ -22,8 +22,13 @@ public sealed class ReviewPromptFactory : IReviewPromptFactory
                 Rules for "diagram":
                 - Mermaid only
                 - Prefer "flowchart LR"
-                - Show the meaningful changed flow, components, handlers, API endpoints, and key dependencies
-                - Use short readable labels
+                - Draw a concise high-level diagram of the changed capability, not a detailed call graph
+                - Prefer modules, layers, bounded contexts, external systems, and main flows over concrete classes
+                - Keep it easy to read: 4-8 nodes, up to 8 edges
+                - Merge repetitive technical details into one node per layer or subsystem
+                - Omit DTOs, validators, AutoMapper profiles, configuration classes, test classes, and helper classes unless they are central to the change
+                - Include endpoints, queues, cache, or database only when they materially explain the changed behavior
+                - Use short readable labels focused on business or architectural meaning
                 - Always declare nodes as ID["Label text"]
                 - Do not use HTML tags except <br/>
                 - Do not put [] inside labels; use () instead

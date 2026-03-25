@@ -8,7 +8,11 @@ namespace TfsReviewPlatform.Application.Services;
 
 public sealed class MarkdownReportBuilder : IMarkdownReportBuilder
 {
-    public string BuildFullReport(string reviewTitle, string description, IReadOnlyList<ReviewFinding> findings)
+    public string BuildFullReport(
+        string reviewTitle,
+        string description,
+        IReadOnlyList<ReviewFinding> findings,
+        FindingsComparisonSnapshot? comparison)
     {
         var critical = findings.Count(finding => finding.Severity == FindingSeverity.Critical);
         var high = findings.Count(finding => finding.Severity == FindingSeverity.High);
@@ -23,6 +27,7 @@ public sealed class MarkdownReportBuilder : IMarkdownReportBuilder
         sb.AppendLine();
         sb.AppendLine($"**Findings:** {findings.Count} total, {critical} critical, {high} high.");
         sb.AppendLine();
+        AppendComparisonSection(sb, comparison);
 
         if (findings.Count == 0)
         {
@@ -69,7 +74,11 @@ public sealed class MarkdownReportBuilder : IMarkdownReportBuilder
         return sb.ToString().Trim();
     }
 
-    public string BuildSummaryComment(string reviewTitle, string description, IReadOnlyList<ReviewFinding> findings)
+    public string BuildSummaryComment(
+        string reviewTitle,
+        string description,
+        IReadOnlyList<ReviewFinding> findings,
+        FindingsComparisonSnapshot? comparison)
     {
         var critical = findings.Count(finding => finding.Severity == FindingSeverity.Critical);
         var high = findings.Count(finding => finding.Severity == FindingSeverity.High);
@@ -88,6 +97,14 @@ public sealed class MarkdownReportBuilder : IMarkdownReportBuilder
         sb.AppendLine($"- High: {high}");
         sb.AppendLine($"- Medium: {medium}");
         sb.AppendLine();
+        if (comparison?.PreviousRunId is not null)
+        {
+            sb.AppendLine("### Since previous review");
+            sb.AppendLine($"- Still relevant: {comparison.StillRelevantFindingsCount}");
+            sb.AppendLine($"- Resolved: {comparison.ResolvedFindingsCount}");
+            sb.AppendLine($"- New: {comparison.NewFindingsCount}");
+            sb.AppendLine();
+        }
 
         foreach (var finding in findings
                      .Where(item => item.Severity is FindingSeverity.Critical or FindingSeverity.High)
@@ -161,6 +178,48 @@ public sealed class MarkdownReportBuilder : IMarkdownReportBuilder
             FindingSeverity.Medium => "🟡",
             _ => "🔵"
         };
+    }
+
+    private static void AppendComparisonSection(StringBuilder sb, FindingsComparisonSnapshot? comparison)
+    {
+        if (comparison?.PreviousRunId is null)
+        {
+            return;
+        }
+
+        sb.AppendLine("## Delta Since Previous Review");
+        sb.AppendLine();
+        sb.AppendLine($"- Previous findings: {comparison.PreviousFindingsCount}");
+        sb.AppendLine($"- Still relevant: {comparison.StillRelevantFindingsCount}");
+        sb.AppendLine($"- Resolved: {comparison.ResolvedFindingsCount}");
+        sb.AppendLine($"- New: {comparison.NewFindingsCount}");
+        sb.AppendLine();
+
+        AppendFindingList(sb, "New findings in this review", comparison.NewFindings);
+        AppendFindingList(sb, "Still relevant from previous review", comparison.StillRelevantFindings);
+        AppendFindingList(sb, "Resolved since previous review", comparison.ResolvedFindings);
+    }
+
+    private static void AppendFindingList(StringBuilder sb, string title, IReadOnlyList<ReviewFinding> findings)
+    {
+        if (findings.Count == 0)
+        {
+            return;
+        }
+
+        sb.AppendLine($"### {title}");
+        sb.AppendLine();
+        foreach (var finding in findings.Take(5))
+        {
+            sb.AppendLine($"- `{finding.File}`: {finding.Title}");
+        }
+
+        if (findings.Count > 5)
+        {
+            sb.AppendLine($"- ... and {findings.Count - 5} more");
+        }
+
+        sb.AppendLine();
     }
 
     private static class LineLocator

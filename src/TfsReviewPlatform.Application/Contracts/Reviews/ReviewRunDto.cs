@@ -46,6 +46,8 @@ public sealed class ReviewRunDto
 
     public IReadOnlyList<ReviewFindingDto> Findings { get; init; } = [];
 
+    public FindingsComparisonDto? FindingsComparison { get; init; }
+
     public IReadOnlyList<InlineCommentDto> InlineComments { get; init; } = [];
 
     public IReadOnlyList<ReviewedFileDto> ReviewedFiles { get; init; } = [];

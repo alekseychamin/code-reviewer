@@ -18,6 +18,7 @@ public static class ApplicationServiceCollectionExtensions
         services.AddSingleton<IReviewRequestValidator, ReviewRequestValidator>();
         services.AddSingleton<IDiffPreprocessor, DiffPreprocessor>();
         services.AddSingleton<IFindingsNormalizer, FindingsNormalizer>();
+        services.AddSingleton<IFindingsComparisonService, FindingsComparisonService>();
         services.AddSingleton<IMarkdownReportBuilder, MarkdownReportBuilder>();
         services.AddScoped<IReviewRunExecutor, ReviewRunExecutor>();
         services.AddScoped<IReviewOrchestrator, ReviewOrchestrator>();

@@ -18,6 +18,7 @@ public sealed class ReviewRunExecutor(
     ILlmCompletionService llmCompletionService,
     IReviewPromptFactory reviewPromptFactory,
     IFindingsNormalizer findingsNormalizer,
+    IFindingsComparisonService findingsComparisonService,
     IMarkdownReportBuilder markdownReportBuilder,
     IReviewPublisher reviewPublisher,
     ILogger<ReviewRunExecutor> logger)
@@ -27,6 +28,7 @@ public sealed class ReviewRunExecutor(
     {
         var run = await reviewRunRepository.GetAsync(runId, cancellationToken)
                   ?? throw new InvalidOperationException($"Review run '{runId}' was not found.");
+        var previousRun = await reviewRunRepository.FindLatestCompletedForTargetAsync(run.Target, run.CreatedAt, cancellationToken);
         DiffAcquisitionResult? diffResult = null;
 
         try
@@ -67,6 +69,12 @@ public sealed class ReviewRunExecutor(
             await PersistAndPublishAsync(run, "Raw findings collected", ReviewPipelineStage.FindingsNormalization, 75, cancellationToken);
 
             var findings = findingsNormalizer.Normalize(rawFindings);
+            var findingsComparison = previousRun is null
+                ? null
+                : findingsComparisonService.Compare(
+                    previousRun.Id,
+                    previousRun.Findings,
+                    findings);
             run.UpdateFindings(findings);
             await reviewRunRepository.UpdateAsync(run, cancellationToken);
             await PersistAndPublishAsync(run, $"Normalized {findings.Count} findings", ReviewPipelineStage.FinalSynthesis, 87, cancellationToken);
@@ -80,13 +88,14 @@ public sealed class ReviewRunExecutor(
                 ChangeDescription = changeSummary.Description,
                 ChangeDiagramMermaid = changeSummary.DiagramMermaid,
                 InlineComments = inlineComments,
-                ReviewedFiles = reviewedFiles
+                ReviewedFiles = reviewedFiles,
+                FindingsComparison = findingsComparison
             });
             await reviewRunRepository.UpdateAsync(run, cancellationToken);
             await PersistAndPublishAsync(run, "File review workspace generated", ReviewPipelineStage.FinalSynthesis, 90, cancellationToken);
 
-            var fullReport = markdownReportBuilder.BuildFullReport(run.Target.Title, description, findings);
-            var summaryComment = markdownReportBuilder.BuildSummaryComment(run.Target.Title, description, findings);
+            var fullReport = markdownReportBuilder.BuildFullReport(run.Target.Title, description, findings, findingsComparison);
+            var summaryComment = markdownReportBuilder.BuildSummaryComment(run.Target.Title, description, findings, findingsComparison);
             run.UpdateArtifacts(new ReviewArtifacts
             {
                 DiffText = preprocessed.FilteredDiffText,
@@ -96,7 +105,8 @@ public sealed class ReviewRunExecutor(
                 MarkdownReport = fullReport,
                 SummaryComment = summaryComment,
                 InlineComments = inlineComments,
-                ReviewedFiles = reviewedFiles
+                ReviewedFiles = reviewedFiles,
+                FindingsComparison = findingsComparison
             });
             await reviewRunRepository.UpdateAsync(run, cancellationToken);
             await PersistAndPublishAsync(run, "Final report generated", ReviewPipelineStage.FinalSynthesis, 93, cancellationToken);
@@ -126,7 +136,8 @@ public sealed class ReviewRunExecutor(
                 MarkdownReport = fullReport,
                 SummaryComment = summaryComment,
                 InlineComments = inlineComments,
-                ReviewedFiles = reviewedFiles
+                ReviewedFiles = reviewedFiles,
+                FindingsComparison = findingsComparison
             };
 
             run.Complete(artifacts, findings, publishSucceeded);
@@ -322,10 +333,7 @@ public sealed class ReviewRunExecutor(
         string description,
         CancellationToken cancellationToken)
     {
-        var fileList = string.Join('\n', preprocessed.ChangedFiles.Take(100));
-        var diffSnippet = preprocessed.FilteredDiffText.Length > 18000
-            ? preprocessed.FilteredDiffText[..18000]
-            : preprocessed.FilteredDiffText;
+        var fileList = string.Join('\n', preprocessed.ChangedFiles.Take(40));
 
         var response = await llmCompletionService.CompleteAsync(
             profile,
@@ -335,13 +343,21 @@ public sealed class ReviewRunExecutor(
                 Temperature = temperature,
                 SystemPrompt = """
                     You are a Lead System Architect.
-                    Produce only Mermaid code for a concise semantic change diagram.
+                    Produce only Mermaid code for a concise high-level semantic change diagram.
                     Prefer "flowchart LR".
-                    Show only meaningful changed components, handlers, endpoints, and dependencies.
+                    Show the changed capability as an architecture-level flow, not as a full class-by-class call graph.
+                    Prefer modules, layers, services, bounded contexts, and external systems over concrete classes.
+                    Keep the diagram easy to read: 4-8 nodes and no more than 8 edges.
+                    Merge repeated implementation details into a single node per subsystem.
+                    Do not include DTOs, validators, AutoMapper profiles, configuration classes, test classes, or utility helpers unless they are the main point of the change.
+                    Include cache, queue, or database only if they materially explain the changed behavior.
+                    If several endpoints share the same path, represent them as one API node.
+                    Use short labels with business or architectural meaning.
+                    Always declare nodes as ID["Label text"] first, then connect them.
                     Return an empty response if a diagram is not useful.
                     """,
                 UserPrompt =
-                    $"Description:\n{description}\n\nChanged files:\n{fileList}\n\nDiff snippet:\n{diffSnippet}"
+                    $"Description:\n{description}\n\nChanged files:\n{fileList}"
             },
             cancellationToken);
 

@@ -7,6 +7,52 @@ namespace TfsReviewPlatform.Tests;
 public sealed class MarkdownReportBuilderTests
 {
     [Fact]
+    public void BuildFullReport_IncludesComparisonSection()
+    {
+        var sut = new MarkdownReportBuilder();
+        var findings = new[]
+        {
+            new ReviewFinding(
+                "src/App/Service.cs",
+                "Line 10",
+                FindingCategory.Bug,
+                FindingSeverity.High,
+                "Current issue",
+                "Current issue description.",
+                "return request.Value.Length;",
+                "return request?.Value?.Length ?? 0;")
+        };
+        var comparison = new FindingsComparisonSnapshot
+        {
+            PreviousRunId = Guid.NewGuid(),
+            PreviousFindingsCount = 2,
+            CurrentFindingsCount = 1,
+            NewFindingsCount = 1,
+            StillRelevantFindingsCount = 0,
+            ResolvedFindingsCount = 2,
+            NewFindings = findings,
+            ResolvedFindings =
+            [
+                new ReviewFinding(
+                    "src/App/OldService.cs",
+                    "Line 42",
+                    FindingCategory.Bug,
+                    FindingSeverity.Medium,
+                    "Resolved issue",
+                    "Resolved description.",
+                    "var oldCode = value.Length;",
+                    "var oldCode = value?.Length ?? 0;")
+            ]
+        };
+
+        var report = sut.BuildFullReport("demo", "desc", findings, comparison);
+
+        Assert.Contains("## Delta Since Previous Review", report);
+        Assert.Contains("- Resolved: 2", report);
+        Assert.Contains("Resolved issue", report);
+    }
+
+    [Fact]
     public void BuildInlineComments_MapsFindingToDiffLine()
     {
         var sut = new MarkdownReportBuilder();

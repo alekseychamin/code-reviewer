@@ -29,17 +29,21 @@ public static class ReviewRunMappingExtensions
             SummaryComment = run.Artifacts.SummaryComment,
             PublishSucceeded = run.PublishSucceeded,
             ChangedFiles = run.Artifacts.ChangedFiles,
-            Findings = run.Findings.Select(finding => new ReviewFindingDto
-            {
-                File = finding.File,
-                LineHint = finding.LineHint,
-                Category = finding.Category,
-                Severity = finding.Severity,
-                Title = finding.Title,
-                Description = finding.Description,
-                ExistingCode = finding.ExistingCode,
-                Suggestion = finding.Suggestion
-            }).ToArray(),
+            Findings = run.Findings.Select(MapFinding).ToArray(),
+            FindingsComparison = run.Artifacts.FindingsComparison is null
+                ? null
+                : new FindingsComparisonDto
+                {
+                    PreviousRunId = run.Artifacts.FindingsComparison.PreviousRunId,
+                    PreviousFindingsCount = run.Artifacts.FindingsComparison.PreviousFindingsCount,
+                    CurrentFindingsCount = run.Artifacts.FindingsComparison.CurrentFindingsCount,
+                    NewFindingsCount = run.Artifacts.FindingsComparison.NewFindingsCount,
+                    StillRelevantFindingsCount = run.Artifacts.FindingsComparison.StillRelevantFindingsCount,
+                    ResolvedFindingsCount = run.Artifacts.FindingsComparison.ResolvedFindingsCount,
+                    NewFindings = run.Artifacts.FindingsComparison.NewFindings.Select(MapFinding).ToArray(),
+                    StillRelevantFindings = run.Artifacts.FindingsComparison.StillRelevantFindings.Select(MapFinding).ToArray(),
+                    ResolvedFindings = run.Artifacts.FindingsComparison.ResolvedFindings.Select(MapFinding).ToArray()
+                },
             InlineComments = run.Artifacts.InlineComments.Select(comment => new InlineCommentDto
             {
                 Id = comment.Id,
@@ -97,6 +101,21 @@ public static class ReviewRunMappingExtensions
                     }).ToArray()
                 }).ToArray()
             }).ToArray()
+        };
+    }
+
+    private static ReviewFindingDto MapFinding(ReviewFinding finding)
+    {
+        return new ReviewFindingDto
+        {
+            File = finding.File,
+            LineHint = finding.LineHint,
+            Category = finding.Category,
+            Severity = finding.Severity,
+            Title = finding.Title,
+            Description = finding.Description,
+            ExistingCode = finding.ExistingCode,
+            Suggestion = finding.Suggestion
         };
     }
 }

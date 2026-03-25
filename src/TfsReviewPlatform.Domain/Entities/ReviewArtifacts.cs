@@ -17,4 +17,6 @@ public sealed class ReviewArtifacts
     public IReadOnlyList<InlineCommentDraft> InlineComments { get; init; } = [];
 
     public IReadOnlyList<ReviewedFileArtifact> ReviewedFiles { get; init; } = [];
+
+    public FindingsComparisonSnapshot? FindingsComparison { get; init; }
 }
