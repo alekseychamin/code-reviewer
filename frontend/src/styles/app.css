@@ -442,6 +442,23 @@ button.primary {
   align-items: start;
 }
 
+.reviewed-files-layout.horizontal {
+  display: grid;
+  gap: 16px;
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.reviewed-files-layout.vertical-selection {
+  display: grid;
+  gap: 18px;
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.reviewed-files-accordion {
+  display: grid;
+  gap: 16px;
+}
+
 .results-stack {
   display: grid;
   gap: 18px;
@@ -455,6 +472,195 @@ button.primary {
   position: sticky;
   top: 20px;
   align-self: start;
+}
+
+.file-strip-panel {
+  display: grid;
+  gap: 12px;
+}
+
+.file-list-panel {
+  display: grid;
+  gap: 12px;
+}
+
+.file-accordion-list {
+  display: grid;
+  gap: 14px;
+}
+
+.file-strip-list {
+  display: flex;
+  gap: 12px;
+  overflow-x: auto;
+  padding-bottom: 6px;
+  scroll-snap-type: x proximity;
+}
+
+.file-list-vertical {
+  display: grid;
+  gap: 12px;
+}
+
+.file-strip-item {
+  display: grid;
+  gap: 8px;
+  min-width: min(360px, 80vw);
+  padding: 14px 16px;
+  border-radius: 18px;
+  border: 1px solid rgba(29, 36, 51, 0.08);
+  background: rgba(255, 255, 255, 0.78);
+  text-align: left;
+  cursor: pointer;
+  scroll-snap-align: start;
+}
+
+.file-list-item {
+  display: grid;
+  gap: 8px;
+  padding: 14px 16px;
+  border-radius: 18px;
+  border: 1px solid rgba(29, 36, 51, 0.08);
+  background: rgba(255, 255, 255, 0.78);
+  text-align: left;
+  cursor: pointer;
+  min-width: 0;
+}
+
+.file-strip-item.active {
+  border-color: rgba(15, 123, 108, 0.35);
+  background: rgba(15, 123, 108, 0.08);
+}
+
+.file-list-item.active {
+  border-color: rgba(15, 123, 108, 0.35);
+  background: rgba(15, 123, 108, 0.08);
+}
+
+.file-accordion-card {
+  border-radius: 24px;
+  border: 1px solid rgba(29, 36, 51, 0.08);
+  background: rgba(255, 255, 255, 0.82);
+  box-shadow: 0 10px 28px rgba(29, 36, 51, 0.06);
+  overflow: hidden;
+}
+
+.file-accordion-card.open {
+  border-color: rgba(15, 123, 108, 0.3);
+}
+
+.file-accordion-toggle {
+  width: 100%;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 18px;
+  padding: 18px 20px;
+  border: 0;
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+}
+
+.file-accordion-main {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+
+.file-accordion-title-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.file-accordion-path,
+.file-accordion-preview {
+  margin: 0;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.file-accordion-path {
+  color: var(--muted);
+}
+
+.file-accordion-preview {
+  color: var(--ink);
+  font-weight: 500;
+}
+
+.file-accordion-side {
+  display: grid;
+  gap: 10px;
+  justify-items: end;
+  flex-shrink: 0;
+}
+
+.file-accordion-caret {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  border-radius: 999px;
+  background: rgba(29, 36, 51, 0.06);
+  color: var(--ink);
+  font-size: 1.3rem;
+  line-height: 1;
+}
+
+.file-accordion-body {
+  display: grid;
+  gap: 16px;
+  padding: 0 20px 20px;
+}
+
+.file-strip-item strong,
+.file-strip-item span,
+.file-strip-item small {
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.file-strip-item span,
+.file-strip-item small {
+  color: var(--muted);
+}
+
+.file-list-item strong,
+.file-list-item span,
+.file-list-item small {
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.file-list-item span,
+.file-list-item small {
+  color: var(--muted);
+}
+
+.file-strip-title-row,
+.file-strip-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.file-list-title-row,
+.file-list-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.file-list-preview {
+  margin: 0;
+  color: var(--ink);
+  font-weight: 500;
 }
 
 .subsection-header {
@@ -605,6 +811,11 @@ button.primary {
   min-width: 0;
 }
 
+.file-review-header.sticky {
+  position: static;
+  backdrop-filter: blur(14px);
+}
+
 .file-review-header p,
 .file-review-header h3 {
   margin: 0;
@@ -715,12 +926,70 @@ button.primary {
   margin: 0;
 }
 
+.inline-thread-card.accordion {
+  overflow: hidden;
+}
+
 .inline-thread-card header {
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
   gap: 12px;
   margin-bottom: 12px;
+}
+
+.thread-accordion-toggle {
+  display: flex;
+  width: 100%;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 14px;
+  border: 0;
+  background: transparent;
+  padding: 0;
+  cursor: pointer;
+  text-align: left;
+}
+
+.thread-accordion-title {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+
+.thread-accordion-title strong {
+  overflow-wrap: anywhere;
+}
+
+.thread-accordion-caret {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  border-radius: 999px;
+  background: rgba(29, 36, 51, 0.06);
+  color: var(--ink);
+  font-size: 1.2rem;
+  line-height: 1;
+}
+
+.thread-accordion-body {
+  margin-top: 14px;
+}
+
+.thread-accordion-preview {
+  margin-top: 14px;
+  color: var(--muted);
+}
+
+.thread-accordion-preview .markdown-content {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
 }
 
 .inline-thread-card header > div:first-child {
@@ -923,6 +1192,26 @@ button.primary {
 
   .file-sidebar {
     position: static;
+  }
+
+  .file-review-header.sticky {
+    position: static;
+  }
+
+  .file-strip-item {
+    min-width: 280px;
+  }
+
+  .file-accordion-toggle,
+  .file-accordion-side,
+  .file-list-meta {
+    align-items: flex-start;
+    justify-items: start;
+  }
+
+  .file-accordion-toggle,
+  .file-review-header {
+    flex-direction: column;
   }
 
   .inline-thread-card {
