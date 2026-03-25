@@ -58,6 +58,11 @@ function normalizeMarkdownContent(content: string): string {
       continue;
     }
 
+    if (isStandaloneFormattingArtifact(trimmed)) {
+      flushParagraph();
+      continue;
+    }
+
     if (isStandaloneMarkdownBlock(trimmed)) {
       flushParagraph();
       normalizedLines.push(trimmed);
@@ -76,11 +81,13 @@ function normalizeMarkdownContent(content: string): string {
 }
 
 function normalizeContinuationLine(line: string): string {
-  if (line.startsWith(':')) {
-    return line.slice(1).trimStart();
+  const cleanedLine = stripDanglingInlineFormatting(line);
+
+  if (cleanedLine.startsWith(':')) {
+    return cleanedLine.slice(1).trimStart();
   }
 
-  return line;
+  return cleanedLine;
 }
 
 function isStandaloneMarkdownBlock(line: string): boolean {
@@ -102,13 +109,59 @@ function normalizeSectionLabels(markdown: string): string {
 }
 
 function normalizeLabelsInText(text: string): string {
+  const cleanedText = stripFormattingArtifacts(text);
   const labelsPattern = SECTION_LABELS.map(escapeRegExp).join('|');
-  const inlineLabelRegex = new RegExp(`\\s+(${labelsPattern})\\s*:\\s*`, 'g');
-  const lineStartLabelRegex = new RegExp(`(^|\\n)(${labelsPattern})\\s*:\\s*`, 'g');
+  const labelRegex = new RegExp(`(${labelsPattern})\\s*:\\s*`, 'g');
+  const matches = [...cleanedText.matchAll(labelRegex)];
 
+  if (matches.length === 0) {
+    return cleanedText;
+  }
+
+  const parts: string[] = [];
+  const prefix = cleanedText.slice(0, matches[0].index ?? 0).trim();
+  if (prefix && !isStandaloneFormattingArtifact(prefix)) {
+    parts.push(prefix);
+  }
+
+  for (let index = 0; index < matches.length; index += 1) {
+    const match = matches[index];
+    const nextMatch = matches[index + 1];
+    const label = match[1];
+    const valueStart = (match.index ?? 0) + match[0].length;
+    const valueEnd = nextMatch?.index ?? cleanedText.length;
+    const value = stripEdgeFormattingArtifacts(cleanedText.slice(valueStart, valueEnd).trim());
+
+    parts.push(`**${label}:** ${value}`.trim());
+  }
+
+  return parts.join('\n\n');
+}
+
+function stripFormattingArtifacts(text: string): string {
   return text
-    .replace(inlineLabelRegex, '\n\n$1: ')
-    .replace(lineStartLabelRegex, '$1**$2:** ');
+    .replace(/(^|\n)\s*(\*\*|__)\s*(?=\n|$)/g, '$1')
+    .replace(/\*\*(?=\s*(?:Категория|Описание|Краткое описание|Затронутые модули|Ключевые модули|Что улучшилось|Что можно улучшить дальше|Конкретная проблема|Конкретные проблемы|Конкретный риск|Пояснение к замечанию|Пояснение к комментарию|Рекомендуемое исправление|Конкретные шаги для исправления)\s*:)/g, '')
+    .replace(/__(?=\s*(?:Категория|Описание|Краткое описание|Затронутые модули|Ключевые модули|Что улучшилось|Что можно улучшить дальше|Конкретная проблема|Конкретные проблемы|Конкретный риск|Пояснение к замечанию|Пояснение к комментарию|Рекомендуемое исправление|Конкретные шаги для исправления)\s*:)/g, '');
+}
+
+function stripEdgeFormattingArtifacts(text: string): string {
+  return stripDanglingInlineFormatting(
+    text
+    .replace(/^(?:\*\*|__)\s*/, '')
+    .replace(/\s*(?:\*\*|__)$/, '')
+    .trim()
+  );
+}
+
+function isStandaloneFormattingArtifact(text: string): boolean {
+  return /^(?:\*\*|__|[*_]{3,})$/.test(text.trim());
+}
+
+function stripDanglingInlineFormatting(text: string): string {
+  return text
+    .replace(/(^|[\s(])(?:\*\*|__)(?=\S)/g, '$1')
+    .replace(/(?<![:*_\s])(?:\*\*|__)(?=$|[\s).,;!?])/g, '');
 }
 
 function escapeRegExp(value: string): string {
