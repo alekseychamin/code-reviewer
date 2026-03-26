@@ -79,6 +79,8 @@ export interface ReviewRun {
   targetKind: ReviewTargetKind;
   title: string;
   providerProfileId?: string;
+  serviceName: string;
+  authorName?: string;
   currentStage?: string;
   progressPercent: number;
   currentMessage: string;
@@ -97,6 +99,27 @@ export interface ReviewRun {
   findings: ReviewFinding[];
   inlineComments: InlineComment[];
   reviewedFiles: ReviewedFile[];
+}
+
+export interface ReviewHistory {
+  baselineRunId?: string;
+  items: ReviewHistoryItem[];
+}
+
+export interface ReviewHistoryItem {
+  id: string;
+  status: ReviewRunStatus;
+  title: string;
+  serviceName: string;
+  authorName?: string;
+  providerProfileId?: string;
+  createdAt: string;
+  updatedAt: string;
+  findingsCount: number;
+  criticalCount: number;
+  highCount: number;
+  publishSucceeded: boolean;
+  hasMarkdownReportArtifact: boolean;
 }
 
 export interface ChangeDescriptionStructuredContent {

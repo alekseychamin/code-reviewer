@@ -1,6 +1,7 @@
 import type {
   BranchReviewPayload,
   ProviderProfile,
+  ReviewHistory,
   PullRequestReviewPayload,
   ReviewRun
 } from './types';
@@ -30,6 +31,10 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     const raw = await response.text();
     const message = extractApiErrorMessage(raw, response.status);
     throw new Error(message);
+  }
+
+  if (response.status === 204) {
+    return undefined as T;
   }
 
   return (await response.json()) as T;
@@ -103,6 +108,18 @@ export async function startBranchReview(payload: BranchReviewPayload): Promise<R
 
 export async function getReviewRun(runId: string): Promise<ReviewRun> {
   return request<ReviewRun>(`/api/reviews/${runId}`);
+}
+
+export async function getPullRequestReviewHistory(pullRequestUrl: string): Promise<ReviewHistory> {
+  const query = new URLSearchParams({ pullRequestUrl });
+  return request<ReviewHistory>(`/api/reviews/history/pull-requests?${query.toString()}`);
+}
+
+export async function deletePullRequestReviewHistory(pullRequestUrl: string): Promise<void> {
+  const query = new URLSearchParams({ pullRequestUrl });
+  await request<void>(`/api/reviews/history/pull-requests?${query.toString()}`, {
+    method: 'DELETE'
+  });
 }
 
 export function buildEventsUrl(runId: string): string {

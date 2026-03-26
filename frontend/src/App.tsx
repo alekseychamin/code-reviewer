@@ -7,7 +7,9 @@ import {
   buildEventsUrl,
   buildReportDownloadUrl,
   continueInlineDiscussion,
+  deletePullRequestReviewHistory,
   fetchProviderProfiles,
+  getPullRequestReviewHistory,
   getReviewRun,
   publishInlineComment,
   publishReport,
@@ -18,6 +20,7 @@ import type {
   BranchReviewPayload,
   ProviderProfile,
   PullRequestReviewPayload,
+  ReviewHistory,
   ReviewProgressEvent,
   ReviewRun
 } from './lib/types';
@@ -27,6 +30,11 @@ export default function App() {
   const [currentRun, setCurrentRun] = useState<ReviewRun | null>(null);
   const [events, setEvents] = useState<ReviewProgressEvent[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const [pullRequestUrl, setPullRequestUrl] = useState('');
+  const [pullRequestHistory, setPullRequestHistory] = useState<ReviewHistory | null>(null);
+  const [pullRequestHistoryLoading, setPullRequestHistoryLoading] = useState(false);
+  const [pullRequestHistoryError, setPullRequestHistoryError] = useState<string | null>(null);
+  const [pullRequestHistoryDeleting, setPullRequestHistoryDeleting] = useState(false);
 
   async function refreshRun(runId: string): Promise<void> {
     try {
@@ -45,6 +53,49 @@ export default function App() {
       .then(setProfiles)
       .catch((reason) => setError(reason instanceof Error ? reason.message : String(reason)));
   }, []);
+
+  useEffect(() => {
+    const normalizedUrl = pullRequestUrl.trim();
+    if (!normalizedUrl) {
+      setPullRequestHistory(null);
+      setPullRequestHistoryError(null);
+      setPullRequestHistoryLoading(false);
+      return;
+    }
+
+    const timeoutId = window.setTimeout(() => {
+      setPullRequestHistoryLoading(true);
+      setPullRequestHistoryError(null);
+
+      void getPullRequestReviewHistory(normalizedUrl)
+        .then(async (history) => {
+          setPullRequestHistory(history);
+
+          if (history.baselineRunId && currentRun?.id !== history.baselineRunId) {
+            try {
+              const baselineRun = await getReviewRun(history.baselineRunId);
+              setCurrentRun((existing) => {
+                if (existing?.status === 'Running') {
+                  return existing;
+                }
+
+                return baselineRun;
+              });
+            } catch {
+            }
+          }
+        })
+        .catch((reason) => {
+          setPullRequestHistory(null);
+          setPullRequestHistoryError(reason instanceof Error ? reason.message : String(reason));
+        })
+        .finally(() => setPullRequestHistoryLoading(false));
+    }, 350);
+
+    return () => {
+      window.clearTimeout(timeoutId);
+    };
+  }, [pullRequestUrl, currentRun?.id, currentRun?.status]);
 
   useEffect(() => {
     if (!currentRun) {
@@ -148,6 +199,32 @@ export default function App() {
     setCurrentRun(run);
   }
 
+  async function handleDeletePullRequestHistory(url: string): Promise<void> {
+    const normalizedUrl = url.trim();
+    if (!normalizedUrl) {
+      return;
+    }
+
+    setPullRequestHistoryDeleting(true);
+    setError(null);
+    try {
+      await deletePullRequestReviewHistory(normalizedUrl);
+      setPullRequestHistory({ baselineRunId: undefined, items: [] });
+      setPullRequestHistoryError(null);
+      setCurrentRun((existing) => {
+        if (!existing) {
+          return existing;
+        }
+
+        return existing.targetKind === 'PullRequest' && existing.title === normalizedUrl ? null : existing;
+      });
+    } catch (reason) {
+      setPullRequestHistoryError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setPullRequestHistoryDeleting(false);
+    }
+  }
+
   return (
     <main className="app-shell">
       <section className="hero">
@@ -165,7 +242,13 @@ export default function App() {
 
       <div className="layout-grid">
         <ReviewForm
+          pullRequestHistoryDeleting={pullRequestHistoryDeleting}
+          pullRequestHistory={pullRequestHistory}
+          pullRequestHistoryError={pullRequestHistoryError}
+          pullRequestHistoryLoading={pullRequestHistoryLoading}
           profiles={profiles}
+          onDeletePullRequestHistory={handleDeletePullRequestHistory}
+          onPullRequestUrlChange={setPullRequestUrl}
           onStartPullRequestReview={handleStartPullRequestReview}
           onStartBranchReview={handleStartBranchReview}
         />

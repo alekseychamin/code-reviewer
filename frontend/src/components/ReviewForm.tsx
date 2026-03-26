@@ -2,6 +2,7 @@ import { useState } from 'react';
 import type {
   BranchReviewPayload,
   ProviderProfile,
+  ReviewHistory,
   PullRequestReviewPayload
 } from '../lib/types';
 
@@ -9,14 +10,26 @@ type ReviewMode = 'pullRequest' | 'branches';
 
 interface ReviewFormProps {
   profiles: ProviderProfile[];
+  pullRequestHistory: ReviewHistory | null;
+  pullRequestHistoryError: string | null;
+  pullRequestHistoryLoading: boolean;
+  pullRequestHistoryDeleting: boolean;
   onStartPullRequestReview: (payload: PullRequestReviewPayload) => Promise<void>;
   onStartBranchReview: (payload: BranchReviewPayload) => Promise<void>;
+  onDeletePullRequestHistory: (url: string) => Promise<void>;
+  onPullRequestUrlChange: (url: string) => void;
 }
 
 export function ReviewForm({
   profiles,
+  pullRequestHistory,
+  pullRequestHistoryError,
+  pullRequestHistoryLoading,
+  pullRequestHistoryDeleting,
   onStartPullRequestReview,
-  onStartBranchReview
+  onStartBranchReview,
+  onDeletePullRequestHistory,
+  onPullRequestUrlChange
 }: ReviewFormProps) {
   const [mode, setMode] = useState<ReviewMode>('pullRequest');
   const [providerProfileId, setProviderProfileId] = useState('');
@@ -115,19 +128,31 @@ export function ReviewForm({
 
       <div className="form-grid">
         {mode === 'pullRequest' ? (
-          <>
-            <label>
+          <div className="form-stack form-stack-full">
+            <label className="form-field">
               Ссылка на pull request
               <input
                 value={pullRequestUrl}
-                onChange={(event) => setPullRequestUrl(event.target.value)}
+                onChange={(event) => {
+                  const value = event.target.value;
+                  setPullRequestUrl(value);
+                  onPullRequestUrlChange(value);
+                }}
                 placeholder="https://tfs.example.local/.../_git/repo/pullrequest/42"
               />
             </label>
-          </>
+            <PullRequestHistoryPanel
+              history={pullRequestHistory}
+              isDeleting={pullRequestHistoryDeleting}
+              isLoading={pullRequestHistoryLoading}
+              error={pullRequestHistoryError}
+              onDeleteHistory={onDeletePullRequestHistory}
+              pullRequestUrl={pullRequestUrl}
+            />
+          </div>
         ) : (
           <>
-            <label>
+            <label className="form-field">
               Путь к репозиторию
               <input
                 value={repositoryPath}
@@ -135,7 +160,7 @@ export function ReviewForm({
                 placeholder="/Users/alex/Documents/Projects/programs/your-repo"
               />
             </label>
-            <label>
+            <label className="form-field">
               Название репозитория
               <input
                 value={repositoryName}
@@ -143,18 +168,18 @@ export function ReviewForm({
                 placeholder="Необязательное отображаемое имя"
               />
             </label>
-            <label>
+            <label className="form-field">
               Целевая ветка
               <input value={targetBranch} onChange={(event) => setTargetBranch(event.target.value)} />
             </label>
-            <label>
+            <label className="form-field">
               Исходная ветка
               <input value={sourceBranch} onChange={(event) => setSourceBranch(event.target.value)} />
             </label>
           </>
         )}
 
-        <label>
+        <label className={`form-field ${mode === 'pullRequest' ? 'form-field-full' : ''}`}>
           Профиль провайдера
           <select value={providerProfileId} onChange={(event) => setProviderProfileId(event.target.value)}>
             <option value="">Использовать маршрут по умолчанию</option>
@@ -176,4 +201,131 @@ export function ReviewForm({
       {submitError ? <div className="inline-error">{submitError}</div> : null}
     </section>
   );
+}
+
+interface PullRequestHistoryPanelProps {
+  history: ReviewHistory | null;
+  isDeleting: boolean;
+  isLoading: boolean;
+  error: string | null;
+  onDeleteHistory: (url: string) => Promise<void>;
+  pullRequestUrl: string;
+}
+
+function PullRequestHistoryPanel({
+  history,
+  isDeleting,
+  isLoading,
+  error,
+  onDeleteHistory,
+  pullRequestUrl
+}: PullRequestHistoryPanelProps) {
+  const hasUrl = pullRequestUrl.trim().length > 0;
+
+  if (!hasUrl && !isLoading && !error && !history) {
+    return null;
+  }
+
+  return (
+    <div className="history-panel">
+      <div className="history-panel-header">
+        <div>
+          <p className="eyebrow">История ревью</p>
+          <h3>Предыдущие запуски по этому PR</h3>
+        </div>
+        <div className="history-actions">
+          {isLoading ? <span className="secondary-chip">Загрузка...</span> : null}
+          {history && history.items.length > 0 ? (
+            <button
+              className="secondary-button"
+              disabled={isDeleting}
+              onClick={() => {
+                if (!pullRequestUrl.trim()) {
+                  return;
+                }
+
+                if (!window.confirm('Удалить всю сохранённую историю ревью для этого PR?')) {
+                  return;
+                }
+
+                void onDeleteHistory(pullRequestUrl);
+              }}
+              type="button"
+            >
+              {isDeleting ? 'Удаляем...' : 'Удалить историю'}
+            </button>
+          ) : null}
+        </div>
+      </div>
+
+      {error ? <div className="inline-error">{error}</div> : null}
+
+      {!error && !isLoading && history && history.items.length > 0 ? (
+        <>
+          {history.baselineRunId ? (
+            <p className="history-note">
+              Последний завершённый запуск из этого списка будет использован как база для следующего ревью и блока
+              <span className="history-highlight"> Delta Since Previous Review</span>.
+            </p>
+          ) : (
+            <p className="history-note">Завершённых запусков пока нет, поэтому следующее ревью начнётся без baseline.</p>
+          )}
+          <div className="history-list">
+            {history.items.map((item) => {
+              const isBaseline = item.id === history.baselineRunId;
+              return (
+                <article className={`history-item ${isBaseline ? 'baseline' : ''}`} key={item.id}>
+                  <div className="history-item-row">
+                    <strong>{item.serviceName || item.title}</strong>
+                    <span className={`status-pill status-${String(item.status).toLowerCase()}`}>{translateStatus(item.status)}</span>
+                  </div>
+                  <div className="history-item-row">
+                    <span className="history-meta">{formatTimestamp(item.createdAt)}</span>
+                    {isBaseline ? <span className="secondary-chip">Будет baseline</span> : null}
+                  </div>
+                  <div className="history-meta">
+                    Найдено: {item.findingsCount}
+                    {item.criticalCount > 0 ? ` · critical ${item.criticalCount}` : ''}
+                    {item.highCount > 0 ? ` · high ${item.highCount}` : ''}
+                    {item.authorName ? ` · ${item.authorName}` : ''}
+                  </div>
+                </article>
+              );
+            })}
+          </div>
+        </>
+      ) : null}
+
+      {!error && !isLoading && history && history.items.length === 0 && hasUrl ? (
+        <p className="history-note">Для этого PR история ревью в БД пока не найдена.</p>
+      ) : null}
+    </div>
+  );
+}
+
+function translateStatus(status: string): string {
+  switch (status) {
+    case 'Pending':
+      return 'В очереди';
+    case 'Running':
+      return 'Выполняется';
+    case 'Completed':
+      return 'Завершено';
+    case 'Failed':
+      return 'Ошибка';
+    default:
+      return status;
+  }
+}
+
+function formatTimestamp(value: string): string {
+  return new Date(value).toLocaleString('ru-RU', {
+    hour12: false,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit'
+  });
 }
