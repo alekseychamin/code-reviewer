@@ -25,6 +25,19 @@ import type {
   ReviewRun
 } from './lib/types';
 
+function shouldHidePullRequestRun(run: ReviewRun | null, activePullRequestUrl: string): boolean {
+  if (!run || run.targetKind !== 'PullRequest' || run.status === 'Running') {
+    return false;
+  }
+
+  const normalizedActiveUrl = activePullRequestUrl.trim();
+  if (!normalizedActiveUrl) {
+    return false;
+  }
+
+  return run.pullRequestUrl?.trim() !== normalizedActiveUrl;
+}
+
 export default function App() {
   const [profiles, setProfiles] = useState<ProviderProfile[]>([]);
   const [currentRun, setCurrentRun] = useState<ReviewRun | null>(null);
@@ -36,6 +49,7 @@ export default function App() {
   const [pullRequestHistoryError, setPullRequestHistoryError] = useState<string | null>(null);
   const [pullRequestHistoryDeleting, setPullRequestHistoryDeleting] = useState(false);
   const historyRequestIdRef = useRef(0);
+  const displayedRun = shouldHidePullRequestRun(currentRun, pullRequestUrl) ? null : currentRun;
 
   async function refreshRun(runId: string): Promise<void> {
     try {
@@ -63,7 +77,7 @@ export default function App() {
       setPullRequestHistoryError(null);
       setPullRequestHistoryLoading(false);
       setCurrentRun((existing) => {
-        if (!existing || existing.status === 'Running' || existing.targetKind !== 'PullRequest') {
+        if (!shouldHidePullRequestRun(existing, normalizedUrl)) {
           return existing;
         }
 
@@ -79,7 +93,7 @@ export default function App() {
     setPullRequestHistoryError(null);
     setPullRequestHistoryLoading(false);
     setCurrentRun((existing) => {
-      if (!existing || existing.status === 'Running' || existing.targetKind !== 'PullRequest') {
+      if (!shouldHidePullRequestRun(existing, normalizedUrl)) {
         return existing;
       }
 
@@ -101,6 +115,9 @@ export default function App() {
           }
 
           setPullRequestHistory(history);
+          if (!history.baselineRunId) {
+            setCurrentRun((existing) => (shouldHidePullRequestRun(existing, normalizedUrl) ? null : existing));
+          }
 
           if (history.baselineRunId && currentRun?.id !== history.baselineRunId) {
             try {
@@ -295,16 +312,16 @@ export default function App() {
           onStartPullRequestReview={handleStartPullRequestReview}
           onStartBranchReview={handleStartBranchReview}
         />
-        <ProgressStream events={events} run={currentRun} />
+        <ProgressStream events={events} run={displayedRun} />
       </div>
 
       <RunDetails
-        diffDownloadUrl={currentRun ? buildDiffDownloadUrl(currentRun.id) : undefined}
+        diffDownloadUrl={displayedRun ? buildDiffDownloadUrl(displayedRun.id) : undefined}
         onAskInlineQuestion={handleAskInlineQuestion}
         onPublishReport={handlePublishReport}
         onPublishInlineComment={handlePublishInlineComment}
-        reportDownloadUrl={currentRun ? buildReportDownloadUrl(currentRun.id) : undefined}
-        run={currentRun}
+        reportDownloadUrl={displayedRun ? buildReportDownloadUrl(displayedRun.id) : undefined}
+        run={displayedRun}
       />
     </main>
   );
