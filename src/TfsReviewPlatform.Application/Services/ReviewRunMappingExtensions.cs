@@ -148,6 +148,8 @@ public static class ReviewRunMappingExtensions
         {
             File = finding.File,
             LineHint = finding.LineHint,
+            StartLine = finding.StartLine,
+            EndLine = finding.EndLine,
             Category = finding.Category,
             Severity = finding.Severity,
             Title = finding.Title,

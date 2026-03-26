@@ -46,7 +46,7 @@ public sealed class MarkdownReportBuilder : IMarkdownReportBuilder
                 sb.AppendLine();
                 sb.AppendLine($"- Severity: `{finding.Severity}`");
                 sb.AppendLine($"- Category: `{finding.Category}`");
-                sb.AppendLine($"- Location: `{finding.LineHint}`");
+                sb.AppendLine($"- Location: `{RenderLocation(finding)}`");
                 sb.AppendLine();
                 sb.AppendLine(finding.Description);
                 sb.AppendLine();
@@ -128,7 +128,8 @@ public sealed class MarkdownReportBuilder : IMarkdownReportBuilder
         return findings
             .Select(finding =>
             {
-                var location = LineLocator.TryLocateByLineHint(diffText, finding.File, finding.LineHint, finding.ExistingCode)
+                var location = LineLocator.TryLocateByAbsoluteLine(diffText, finding.File, finding.StartLine, finding.ExistingCode)
+                               ?? LineLocator.TryLocateByLineHint(diffText, finding.File, finding.LineHint, finding.ExistingCode)
                                ?? LineLocator.TryLocate(diffText, finding.File, finding.ExistingCode)
                                ?? LineLocator.TryLocateFirstChangedLine(diffText, finding.File)
                                ?? (0, NormalizeFilePath(finding.File));
@@ -183,6 +184,18 @@ public sealed class MarkdownReportBuilder : IMarkdownReportBuilder
 
         var normalized = filePath.Replace("\\", "/", StringComparison.Ordinal).Trim();
         return normalized.StartsWith('/') ? normalized : $"/{normalized}";
+    }
+
+    private static string RenderLocation(ReviewFinding finding)
+    {
+        if (finding.StartLine > 0 && finding.EndLine >= finding.StartLine)
+        {
+            return finding.StartLine == finding.EndLine
+                ? finding.StartLine.ToString()
+                : $"{finding.StartLine}-{finding.EndLine}";
+        }
+
+        return finding.LineHint;
     }
 
     private static string RenderSeverity(FindingSeverity severity)
@@ -275,6 +288,29 @@ public sealed class MarkdownReportBuilder : IMarkdownReportBuilder
             }
 
             return null;
+        }
+
+        public static (int LineNumber, string FilePath)? TryLocateByAbsoluteLine(
+            string diffText,
+            string targetFile,
+            int absoluteLine,
+            string snippet)
+        {
+            if (string.IsNullOrWhiteSpace(targetFile) || absoluteLine <= 0)
+            {
+                return null;
+            }
+
+            var patchLines = EnumeratePatchLines(diffText, targetFile).ToArray();
+            var directMatch = patchLines.FirstOrDefault(line => line.AbsoluteLineNumber == absoluteLine && line.IsAddition);
+            if (directMatch is null)
+            {
+                return null;
+            }
+
+            return string.IsNullOrWhiteSpace(snippet) || IsSnippetCompatible(directMatch.Content, snippet)
+                ? (directMatch.AbsoluteLineNumber, directMatch.FilePath)
+                : null;
         }
 
         public static (int LineNumber, string FilePath)? TryLocate(string diffText, string targetFile, string snippet)

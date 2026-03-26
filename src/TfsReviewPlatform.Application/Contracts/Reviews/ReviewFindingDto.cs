@@ -8,6 +8,10 @@ public sealed class ReviewFindingDto
 
     public string LineHint { get; init; } = string.Empty;
 
+    public int StartLine { get; init; }
+
+    public int EndLine { get; init; }
+
     public FindingCategory Category { get; init; }
 
     public FindingSeverity Severity { get; init; }

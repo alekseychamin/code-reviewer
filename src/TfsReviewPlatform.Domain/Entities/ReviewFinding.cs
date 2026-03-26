@@ -10,4 +10,6 @@ public sealed record ReviewFinding(
     string Title,
     string Description,
     string ExistingCode,
-    string Suggestion);
+    string Suggestion,
+    int StartLine = 0,
+    int EndLine = 0);

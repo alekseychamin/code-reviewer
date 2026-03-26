@@ -15,6 +15,8 @@ export interface ProviderProfile {
 export interface ReviewFinding {
   file: string;
   lineHint: string;
+  startLine: number;
+  endLine: number;
   category: string;
   severity: string;
   title: string;

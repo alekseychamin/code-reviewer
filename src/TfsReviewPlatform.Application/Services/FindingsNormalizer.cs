@@ -68,7 +68,8 @@ public sealed class FindingsNormalizer : IFindingsNormalizer
             return null;
         }
 
-        return new ReviewFinding(
+        var kind = ReadString(element, "kind");
+        var finding = new ReviewFinding(
             file,
             ReadString(element, "line_hint") ?? ReadString(element, "location") ?? "Unknown",
             ParseCategory(ReadString(element, "type")),
@@ -76,7 +77,11 @@ public sealed class FindingsNormalizer : IFindingsNormalizer
             title,
             ReadString(element, "description") ?? ReadString(element, "problem") ?? string.Empty,
             ReadString(element, "existing_code") ?? ReadString(element, "bad_code") ?? string.Empty,
-            ReadString(element, "suggestion") ?? ReadString(element, "fix") ?? string.Empty);
+            ReadString(element, "suggestion") ?? ReadString(element, "fix") ?? string.Empty,
+            ReadInt(element, "start_line"),
+            ReadInt(element, "end_line"));
+
+        return ShouldKeepFinding(finding, kind) ? finding : null;
     }
 
     private static string? ReadString(JsonElement element, string propertyName)
@@ -84,6 +89,21 @@ public sealed class FindingsNormalizer : IFindingsNormalizer
         return element.TryGetProperty(propertyName, out var property) && property.ValueKind == JsonValueKind.String
             ? property.GetString()
             : null;
+    }
+
+    private static int ReadInt(JsonElement element, string propertyName)
+    {
+        if (!element.TryGetProperty(propertyName, out var property))
+        {
+            return 0;
+        }
+
+        return property.ValueKind switch
+        {
+            JsonValueKind.Number when property.TryGetInt32(out var number) => number,
+            JsonValueKind.String when int.TryParse(property.GetString(), out var parsed) => parsed,
+            _ => 0
+        };
     }
 
     private static FindingSeverity ParseSeverity(string? severity)
@@ -98,5 +118,22 @@ public sealed class FindingsNormalizer : IFindingsNormalizer
         return Enum.TryParse<FindingCategory>(category, true, out var parsed)
             ? parsed
             : FindingCategory.Bug;
+    }
+
+    private static bool ShouldKeepFinding(ReviewFinding finding, string? kind)
+    {
+        if (!string.IsNullOrWhiteSpace(kind) &&
+            !kind.Equals("Defect", StringComparison.OrdinalIgnoreCase) &&
+            !kind.Equals("Risk", StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        if (finding.Category == FindingCategory.CodeStyle)
+        {
+            return false;
+        }
+
+        return true;
     }
 }

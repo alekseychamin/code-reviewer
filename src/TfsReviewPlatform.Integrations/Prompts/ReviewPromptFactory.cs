@@ -48,23 +48,48 @@ public sealed class ReviewPromptFactory : IReviewPromptFactory
                 Review the supplied diff chunk and return ONLY a valid JSON array.
                 Review context:
                 """ + "\n" + reviewContext + "\n\n" + """
-                Focus on:
-                - Security, reliability, race conditions, N+1, blocking async calls, resource leaks
-                - Architecture regressions and broken test intent
-                Ignore purely cosmetic style issues.
+                Scope and priorities:
+                - Focus only on changed code in the supplied diff chunk, primarily added or modified logic
+                - Prioritize high-signal issues: security, reliability, race conditions, N+1, blocking async calls, resource leaks, architecture regressions, broken test intent, and real logic bugs
+                - Prefer returning fewer findings over noisy or speculative findings
+
+                Important review rules:
+                - Do not flag issues that are already fixed by the patch
+                - Do not suggest style-only, naming-only, formatting-only, comment-only, docstring-only, or type-hint-only changes
+                - Do not suggest adding imports, removing unused imports, or using a more specific exception type unless correctness directly depends on it
+                - Do not assume missing surrounding code is a bug; you only see a diff chunk, not the whole file or repository
+                - If the visible code ends at a scope boundary like if/for/try/method/class, do not treat that as incomplete code
+                - Do not question declarations, using directives, or helpers that may exist outside the shown diff unless the diff itself makes the defect clear
+                - Only report an issue when the visible changed code provides enough evidence
+                - All string fields must be plain text without markdown markers such as **, __, bullets, or fenced code blocks
 
                 JSON item schema:
                 {
+                  "kind": "Defect | Risk",
                   "file": "path/to/file.cs",
-                  "line_hint": "method or class name",
-                  "type": "Security | Performance | Architecture | Bug | Reliability | Logic | CodeStyle",
+                  "line_hint": "nearest method, class, or test name from the changed code",
+                  "start_line": 123,
+                  "end_line": 126,
+                  "type": "Security | Performance | Architecture | Bug | Reliability | Logic",
                   "severity": "Critical | High | Medium | Low",
-                  "title": "short title",
-                  "description": "why this matters",
-                  "existing_code": "code snippet from diff",
-                  "suggestion": "improved code or mitigation"
+                  "title": "short title, ideally 3-8 words",
+                  "description": "why this matters, concrete and concise",
+                  "existing_code": "code snippet from the changed lines only",
+                  "suggestion": "minimal mitigation or improved code"
                 }
 
+                Additional output rules:
+                - kind must be either Defect or Risk
+                - Every finding must describe a concrete defect or an operational risk directly evidenced by the changed code
+                - If an observation is mainly an improvement suggestion, refactoring idea, readability improvement, cleanup, or code-style preference, do not return it
+                - Only include findings that a human reviewer should realistically inspect before merge
+                - Do not propose alternative designs unless the current changed code is likely wrong, unsafe, or materially inefficient
+                - Do not suggest extra validation, null checks, logging, retries, caching, or abstractions unless the diff shows a realistic failing path
+                - Use Low severity sparingly; if the issue would not change a reviewer decision, omit it
+                - start_line and end_line must refer to the changed code in the new version of the file
+                - If you know only one exact line, set start_line and end_line to the same value
+                - suggestion must stay narrowly scoped to the reported defect or risk; use an empty string if no safe fix can be inferred
+                - If there are no clear issues, return []
                 If there are no issues, return [].
                 """,
             _ => string.Empty
