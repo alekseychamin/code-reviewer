@@ -1,3 +1,4 @@
+import { useEffect, useState } from 'react';
 import { MarkdownBlock } from './MarkdownBlock';
 import { MermaidDiagram } from './MermaidDiagram';
 import { ReviewedFilesWorkspace } from './ReviewedFilesWorkspace';
@@ -20,6 +21,12 @@ export function RunDetails({
   onPublishInlineComment,
   onAskInlineQuestion
 }: RunDetailsProps) {
+  const [isReportCollapsed, setIsReportCollapsed] = useState(true);
+
+  useEffect(() => {
+    setIsReportCollapsed(true);
+  }, [run?.id]);
+
   if (!run) {
     return (
       <section className="panel">
@@ -103,24 +110,37 @@ export function RunDetails({
       <div className="subsection">
         <div className="subsection-header">
           <h3>Итоговый отчёт</h3>
-          {run.targetKind === 'PullRequest' ? (
+          <div className="result-toolbar">
             <button
+              aria-expanded={!isReportCollapsed}
               className="secondary-button"
-              disabled={!run.hasMarkdownReportArtifact || run.publishSucceeded}
-              onClick={() => void onPublishReport()}
+              disabled={!run.hasMarkdownReportArtifact}
+              onClick={() => setIsReportCollapsed((value) => !value)}
               type="button"
             >
-              {run.publishSucceeded ? 'Отправлено в TFS' : 'Отправить отчёт в TFS'}
+              {isReportCollapsed ? 'Развернуть отчёт' : 'Свернуть отчёт'}
             </button>
-          ) : null}
+            {run.targetKind === 'PullRequest' ? (
+              <button
+                className="secondary-button"
+                disabled={!run.hasMarkdownReportArtifact || run.publishSucceeded}
+                onClick={() => void onPublishReport()}
+                type="button"
+              >
+                {run.publishSucceeded ? 'Отправлено в TFS' : 'Отправить отчёт в TFS'}
+              </button>
+            ) : null}
+          </div>
         </div>
-        <article className="result-card report-card">
-          <MarkdownBlock
-            content={run.markdownReport}
-            emptyText="Итоговый отчёт появится здесь после завершения синтеза."
-            normalize={false}
-          />
-        </article>
+        {!isReportCollapsed ? (
+          <article className="result-card report-card">
+            <MarkdownBlock
+              content={run.markdownReport}
+              emptyText="Итоговый отчёт появится здесь после завершения синтеза."
+              normalize={false}
+            />
+          </article>
+        ) : null}
       </div>
     </section>
   );
