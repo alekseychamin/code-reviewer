@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { ProgressStream } from './components/ProgressStream';
 import { ReviewForm } from './components/ReviewForm';
 import { RunDetails } from './components/RunDetails';
@@ -35,6 +35,7 @@ export default function App() {
   const [pullRequestHistoryLoading, setPullRequestHistoryLoading] = useState(false);
   const [pullRequestHistoryError, setPullRequestHistoryError] = useState<string | null>(null);
   const [pullRequestHistoryDeleting, setPullRequestHistoryDeleting] = useState(false);
+  const historyRequestIdRef = useRef(0);
 
   async function refreshRun(runId: string): Promise<void> {
     try {
@@ -57,23 +58,57 @@ export default function App() {
   useEffect(() => {
     const normalizedUrl = pullRequestUrl.trim();
     if (!normalizedUrl) {
+      historyRequestIdRef.current += 1;
       setPullRequestHistory(null);
       setPullRequestHistoryError(null);
       setPullRequestHistoryLoading(false);
+      setCurrentRun((existing) => {
+        if (!existing || existing.status === 'Running' || existing.targetKind !== 'PullRequest') {
+          return existing;
+        }
+
+        return null;
+      });
       return;
     }
 
+    historyRequestIdRef.current += 1;
+    const requestId = historyRequestIdRef.current;
+
+    setPullRequestHistory(null);
+    setPullRequestHistoryError(null);
+    setPullRequestHistoryLoading(false);
+    setCurrentRun((existing) => {
+      if (!existing || existing.status === 'Running' || existing.targetKind !== 'PullRequest') {
+        return existing;
+      }
+
+      return null;
+    });
+
     const timeoutId = window.setTimeout(() => {
+      if (historyRequestIdRef.current !== requestId) {
+        return;
+      }
+
       setPullRequestHistoryLoading(true);
       setPullRequestHistoryError(null);
 
       void getPullRequestReviewHistory(normalizedUrl)
         .then(async (history) => {
+          if (historyRequestIdRef.current !== requestId) {
+            return;
+          }
+
           setPullRequestHistory(history);
 
           if (history.baselineRunId && currentRun?.id !== history.baselineRunId) {
             try {
               const baselineRun = await getReviewRun(history.baselineRunId);
+              if (historyRequestIdRef.current !== requestId) {
+                return;
+              }
+
               setCurrentRun((existing) => {
                 if (existing?.status === 'Running') {
                   return existing;
@@ -86,10 +121,18 @@ export default function App() {
           }
         })
         .catch((reason) => {
+          if (historyRequestIdRef.current !== requestId) {
+            return;
+          }
+
           setPullRequestHistory(null);
           setPullRequestHistoryError(reason instanceof Error ? reason.message : String(reason));
         })
-        .finally(() => setPullRequestHistoryLoading(false));
+        .finally(() => {
+          if (historyRequestIdRef.current === requestId) {
+            setPullRequestHistoryLoading(false);
+          }
+        });
     }, 350);
 
     return () => {
