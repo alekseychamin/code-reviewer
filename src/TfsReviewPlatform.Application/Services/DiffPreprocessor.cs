@@ -63,13 +63,18 @@ public sealed class DiffPreprocessor(IOptions<ReviewPipelineOptions> options) : 
         {
             foreach (var fileDiffChunk in SplitOversizedFileDiff(fileDiff, maxCharacters))
             {
-                if (current.Length > 0 && current.Length + fileDiffChunk.Length > maxCharacters)
-                {
-                    chunks.Add(current.ToString());
-                    current.Clear();
-                }
+                var formattedChunks = FormatForChunkReview(fileDiffChunk, maxCharacters);
 
-                current.Append(fileDiffChunk);
+                foreach (var formattedChunk in formattedChunks)
+                {
+                    if (current.Length > 0 && current.Length + formattedChunk.Length > maxCharacters)
+                    {
+                        chunks.Add(current.ToString());
+                        current.Clear();
+                    }
+
+                    current.Append(formattedChunk);
+                }
             }
         }
 
@@ -142,6 +147,126 @@ public sealed class DiffPreprocessor(IOptions<ReviewPipelineOptions> options) : 
         }
 
         return results;
+    }
+
+    private static IReadOnlyList<string> FormatForChunkReview(string fileDiff, int maxCharacters)
+    {
+        var lines = fileDiff.Replace("\r\n", "\n", StringComparison.Ordinal).Split('\n');
+        var firstHunkIndex = Array.FindIndex(lines, line => line.StartsWith("@@ ", StringComparison.Ordinal));
+        if (firstHunkIndex < 0)
+        {
+            return SplitByCharacterBudget(fileDiff, maxCharacters);
+        }
+
+        var header = lines[..firstHunkIndex];
+        var hunks = ExtractHunks(lines[firstHunkIndex..]);
+        var filePath = ExtractChunkFilePath(header);
+        var builder = new StringBuilder();
+        builder.Append("## File: '")
+            .Append(filePath)
+            .AppendLine("'");
+
+        foreach (var hunk in hunks)
+        {
+            builder.AppendLine();
+            builder.AppendLine(hunk[0]);
+
+            var (newHunk, oldHunk) = BuildStructuredHunk(hunk);
+            builder.AppendLine("__new hunk__");
+            foreach (var line in newHunk)
+            {
+                builder.AppendLine(line);
+            }
+
+            if (oldHunk.Count > 0)
+            {
+                builder.AppendLine("__old hunk__");
+                foreach (var line in oldHunk)
+                {
+                    builder.AppendLine(line);
+                }
+            }
+        }
+
+        var formatted = builder.ToString();
+        return formatted.Length <= maxCharacters
+            ? [formatted]
+            : SplitByCharacterBudget(formatted, maxCharacters);
+    }
+
+    private static string ExtractChunkFilePath(IReadOnlyList<string> headerLines)
+    {
+        var diffHeader = headerLines.FirstOrDefault(line => line.StartsWith("diff --git ", StringComparison.Ordinal)) ?? string.Empty;
+        var match = Regex.Match(diffHeader, @"^diff --git a/(.+?) b/(.+)$");
+        if (match.Success)
+        {
+            return match.Groups[2].Value.Trim();
+        }
+
+        var plusPlusHeader = headerLines.FirstOrDefault(line => line.StartsWith("+++ ", StringComparison.Ordinal));
+        if (!string.IsNullOrWhiteSpace(plusPlusHeader))
+        {
+            return plusPlusHeader.Replace("+++ b/", string.Empty, StringComparison.Ordinal)
+                .Replace("+++ ", string.Empty, StringComparison.Ordinal)
+                .Trim();
+        }
+
+        return "unknown";
+    }
+
+    private static (IReadOnlyList<string> NewHunk, IReadOnlyList<string> OldHunk) BuildStructuredHunk(IReadOnlyList<string> hunk)
+    {
+        var newLines = new List<string>();
+        var oldLines = new List<string>();
+        var currentNewLine = ParseNewLineStart(hunk[0]);
+
+        foreach (var line in hunk.Skip(1))
+        {
+            if (line.StartsWith("+++", StringComparison.Ordinal) || line.StartsWith("---", StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            if (line.StartsWith("+", StringComparison.Ordinal))
+            {
+                newLines.Add($"{currentNewLine,4} +{line[1..]}");
+                currentNewLine++;
+                continue;
+            }
+
+            if (line.StartsWith("-", StringComparison.Ordinal))
+            {
+                oldLines.Add($"-{line[1..]}");
+                continue;
+            }
+
+            if (line.StartsWith(" ", StringComparison.Ordinal))
+            {
+                newLines.Add($"{currentNewLine,4}  {line[1..]}");
+                oldLines.Add($" {line[1..]}");
+                currentNewLine++;
+                continue;
+            }
+
+            if (line.StartsWith("\\", StringComparison.Ordinal))
+            {
+                newLines.Add(line);
+                if (oldLines.Count > 0)
+                {
+                    oldLines.Add(line);
+                }
+            }
+        }
+
+        return (newLines, oldLines);
+    }
+
+    private static int ParseNewLineStart(string hunkHeader)
+    {
+        var match = Regex.Match(hunkHeader, @"\+(\d+)");
+        return match.Success && int.TryParse(match.Groups[1].Value, out var value)
+            ? value
+            : 1;
     }
 
     private static IReadOnlyList<string> SplitByCharacterBudget(string content, int maxCharacters)

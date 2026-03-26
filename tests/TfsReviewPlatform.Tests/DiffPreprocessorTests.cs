@@ -133,4 +133,34 @@ public sealed class DiffPreprocessorTests
         Assert.Contains("RealService.cs", result.ReviewContextDiffText);
     }
 
+    [Fact]
+    public void Process_FormatsChunksForStructuredReviewConsumption()
+    {
+        var sut = new DiffPreprocessor(Microsoft.Extensions.Options.Options.Create(new ReviewPipelineOptions
+        {
+            MaxChunkCharacters = 4000
+        }));
+
+        var diff = """
+            diff --git a/src/App/Service.cs b/src/App/Service.cs
+            --- a/src/App/Service.cs
+            +++ b/src/App/Service.cs
+            @@ -10,2 +10,3 @@ public async Task Handle()
+             existing line
+            +new line 1
+            +new line 2
+            -old line 1
+            """;
+
+        var result = sut.Process(diff);
+
+        var chunk = Assert.Single(result.Chunks);
+        Assert.Contains("## File: 'src/App/Service.cs'", chunk);
+        Assert.Contains("__new hunk__", chunk);
+        Assert.Contains("__old hunk__", chunk);
+        Assert.Contains("  10  existing line", chunk);
+        Assert.Contains("  11 +new line 1", chunk);
+        Assert.Contains("-old line 1", chunk);
+    }
+
 }
