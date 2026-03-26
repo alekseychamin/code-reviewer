@@ -45,6 +45,7 @@ public sealed class ReviewPromptFactory : IReviewPromptFactory
                 """,
             ReviewPipelineStage.ChunkReview => """
                 You are a Principal .NET Architect and strict code reviewer.
+                Answer in Russian.
                 Review the supplied diff chunk and return ONLY a valid JSON array.
                 Review context:
                 """ + "\n" + reviewContext + "\n\n" + """
@@ -62,6 +63,10 @@ public sealed class ReviewPromptFactory : IReviewPromptFactory
                 - Do not question declarations, using directives, or helpers that may exist outside the shown diff unless the diff itself makes the defect clear
                 - Only report an issue when the visible changed code provides enough evidence
                 - All string fields must be plain text without markdown markers such as **, __, bullets, or fenced code blocks
+                - All human-readable output fields must be in Russian
+                - file must stay as the original file path from the diff
+                - existing_code must stay as the original code snippet from the diff
+                - line_hint may use method, class, or test identifiers from code and does not need translation
 
                 JSON item schema:
                 {
@@ -82,6 +87,7 @@ public sealed class ReviewPromptFactory : IReviewPromptFactory
                 - kind must be either Defect or Risk
                 - Every finding must describe a concrete defect or an operational risk directly evidenced by the changed code
                 - If an observation is mainly an improvement suggestion, refactoring idea, readability improvement, cleanup, or code-style preference, do not return it
+                - title, description, and suggestion must be written in Russian
                 - Only include findings that a human reviewer should realistically inspect before merge
                 - Do not propose alternative designs unless the current changed code is likely wrong, unsafe, or materially inefficient
                 - Do not suggest extra validation, null checks, logging, retries, caching, or abstractions unless the diff shows a realistic failing path

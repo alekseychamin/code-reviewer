@@ -17,21 +17,21 @@ public sealed class MarkdownReportBuilder : IMarkdownReportBuilder
         var critical = findings.Count(finding => finding.Severity == FindingSeverity.Critical);
         var high = findings.Count(finding => finding.Severity == FindingSeverity.High);
         var sb = new StringBuilder();
-        sb.AppendLine("# AI Code Review Report");
+        sb.AppendLine("# Отчёт AI-ревью");
         sb.AppendLine();
-        sb.AppendLine($"**Target:** {reviewTitle}");
+        sb.AppendLine($"**Цель:** {reviewTitle}");
         sb.AppendLine();
-        sb.AppendLine($"**Summary:** {(critical > 0 || high > 0 ? "Needs fixes before merge." : "No blocking issues found by automated review.")}");
+        sb.AppendLine($"**Итог:** {(critical > 0 || high > 0 ? "Нужны исправления до merge." : "Блокирующих проблем по результатам автоматического ревью не найдено.")}");
         sb.AppendLine();
         sb.AppendLine(description);
         sb.AppendLine();
-        sb.AppendLine($"**Findings:** {findings.Count} total, {critical} critical, {high} high.");
+        sb.AppendLine($"**Замечания:** всего {findings.Count}, критичных {critical}, высоких {high}.");
         sb.AppendLine();
         AppendComparisonSection(sb, comparison);
 
         if (findings.Count == 0)
         {
-            sb.AppendLine("No concrete defects were identified. A focused manual review is still recommended for business logic and test intent.");
+            sb.AppendLine("Конкретных дефектов не найдено. При этом для бизнес-логики и намерения тестов всё равно рекомендуется точечная ручная проверка.");
             return sb.ToString().Trim();
         }
 
@@ -44,9 +44,9 @@ public sealed class MarkdownReportBuilder : IMarkdownReportBuilder
             {
                 sb.AppendLine($"### {RenderSeverity(finding.Severity)} {finding.Title}");
                 sb.AppendLine();
-                sb.AppendLine($"- Severity: `{finding.Severity}`");
-                sb.AppendLine($"- Category: `{finding.Category}`");
-                sb.AppendLine($"- Location: `{RenderLocation(finding)}`");
+                sb.AppendLine($"- Критичность: `{TranslateSeverity(finding.Severity)}`");
+                sb.AppendLine($"- Категория: `{TranslateCategory(finding.Category)}`");
+                sb.AppendLine($"- Место: `{RenderLocation(finding)}`");
                 sb.AppendLine();
                 sb.AppendLine(finding.Description);
                 sb.AppendLine();
@@ -61,7 +61,7 @@ public sealed class MarkdownReportBuilder : IMarkdownReportBuilder
 
                 if (!string.IsNullOrWhiteSpace(finding.Suggestion))
                 {
-                    sb.AppendLine("Suggested fix:");
+                    sb.AppendLine("Предлагаемое исправление:");
                     sb.AppendLine();
                     sb.AppendLine("```csharp");
                     sb.AppendLine(finding.Suggestion.Trim());
@@ -83,26 +83,26 @@ public sealed class MarkdownReportBuilder : IMarkdownReportBuilder
         var critical = findings.Count(finding => finding.Severity == FindingSeverity.Critical);
         var high = findings.Count(finding => finding.Severity == FindingSeverity.High);
         var medium = findings.Count(finding => finding.Severity == FindingSeverity.Medium);
-        var status = critical > 0 ? "Needs changes" : high > 0 ? "Review carefully" : "Looks healthy";
+        var status = critical > 0 ? "Нужны изменения" : high > 0 ? "Нужно внимательно проверить" : "Выглядит стабильно";
 
         var sb = new StringBuilder();
         sb.AppendLine("## AI Code Review");
         sb.AppendLine();
-        sb.AppendLine($"**Status:** {status}");
-        sb.AppendLine($"**Target:** {reviewTitle}");
+        sb.AppendLine($"**Статус:** {status}");
+        sb.AppendLine($"**Цель:** {reviewTitle}");
         sb.AppendLine();
         sb.AppendLine(description);
         sb.AppendLine();
-        sb.AppendLine($"- Critical: {critical}");
-        sb.AppendLine($"- High: {high}");
-        sb.AppendLine($"- Medium: {medium}");
+        sb.AppendLine($"- Критичных: {critical}");
+        sb.AppendLine($"- Высоких: {high}");
+        sb.AppendLine($"- Средних: {medium}");
         sb.AppendLine();
         if (comparison?.PreviousRunId is not null)
         {
-            sb.AppendLine("### Since previous review");
-            sb.AppendLine($"- Still relevant: {comparison.StillRelevantFindingsCount}");
-            sb.AppendLine($"- Resolved: {comparison.ResolvedFindingsCount}");
-            sb.AppendLine($"- New: {comparison.NewFindingsCount}");
+            sb.AppendLine("### Изменения относительно предыдущего ревью");
+            sb.AppendLine($"- Всё ещё актуальны: {comparison.StillRelevantFindingsCount}");
+            sb.AppendLine($"- Исправлены: {comparison.ResolvedFindingsCount}");
+            sb.AppendLine($"- Новые: {comparison.NewFindingsCount}");
             sb.AppendLine();
         }
 
@@ -115,7 +115,7 @@ public sealed class MarkdownReportBuilder : IMarkdownReportBuilder
 
         if (findings.Count == 0)
         {
-            sb.AppendLine("- No concrete findings were generated.");
+            sb.AppendLine("- Конкретных замечаний не сформировано.");
         }
 
         return sb.ToString().Trim();
@@ -216,17 +216,17 @@ public sealed class MarkdownReportBuilder : IMarkdownReportBuilder
             return;
         }
 
-        sb.AppendLine("## Delta Since Previous Review");
+        sb.AppendLine("## Изменения относительно предыдущего ревью");
         sb.AppendLine();
-        sb.AppendLine($"- Previous findings: {comparison.PreviousFindingsCount}");
-        sb.AppendLine($"- Still relevant: {comparison.StillRelevantFindingsCount}");
-        sb.AppendLine($"- Resolved: {comparison.ResolvedFindingsCount}");
-        sb.AppendLine($"- New: {comparison.NewFindingsCount}");
+        sb.AppendLine($"- Замечаний раньше: {comparison.PreviousFindingsCount}");
+        sb.AppendLine($"- Всё ещё актуальны: {comparison.StillRelevantFindingsCount}");
+        sb.AppendLine($"- Исправлены: {comparison.ResolvedFindingsCount}");
+        sb.AppendLine($"- Новые: {comparison.NewFindingsCount}");
         sb.AppendLine();
 
-        AppendFindingList(sb, "New findings in this review", comparison.NewFindings);
-        AppendFindingList(sb, "Still relevant from previous review", comparison.StillRelevantFindings);
-        AppendFindingList(sb, "Resolved since previous review", comparison.ResolvedFindings);
+        AppendFindingList(sb, "Новые замечания в этом ревью", comparison.NewFindings);
+        AppendFindingList(sb, "Всё ещё актуальны с прошлого ревью", comparison.StillRelevantFindings);
+        AppendFindingList(sb, "Исправлены с прошлого ревью", comparison.ResolvedFindings);
     }
 
     private static void AppendFindingList(StringBuilder sb, string title, IReadOnlyList<ReviewFinding> findings)
@@ -245,10 +245,36 @@ public sealed class MarkdownReportBuilder : IMarkdownReportBuilder
 
         if (findings.Count > 5)
         {
-            sb.AppendLine($"- ... and {findings.Count - 5} more");
+            sb.AppendLine($"- ... и ещё {findings.Count - 5}");
         }
 
         sb.AppendLine();
+    }
+
+    private static string TranslateSeverity(FindingSeverity severity)
+    {
+        return severity switch
+        {
+            FindingSeverity.Critical => "Критично",
+            FindingSeverity.High => "Высокая",
+            FindingSeverity.Medium => "Средняя",
+            _ => "Низкая"
+        };
+    }
+
+    private static string TranslateCategory(FindingCategory category)
+    {
+        return category switch
+        {
+            FindingCategory.Security => "Безопасность",
+            FindingCategory.Performance => "Производительность",
+            FindingCategory.Architecture => "Архитектура",
+            FindingCategory.Bug => "Дефект",
+            FindingCategory.Reliability => "Надёжность",
+            FindingCategory.Logic => "Логика",
+            FindingCategory.CodeStyle => "Стиль кода",
+            _ => category.ToString()
+        };
     }
 
     private static class LineLocator
