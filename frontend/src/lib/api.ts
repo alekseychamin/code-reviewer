@@ -115,6 +115,12 @@ export async function publishInlineComment(runId: string, commentId: string): Pr
   });
 }
 
+export async function publishReport(runId: string): Promise<ReviewRun> {
+  return request<ReviewRun>(`/api/reviews/${runId}/report/publish`, {
+    method: 'POST'
+  });
+}
+
 export async function continueInlineDiscussion(runId: string, commentId: string, message: string): Promise<ReviewRun> {
   return request<ReviewRun>(`/api/reviews/${runId}/inline-comments/${commentId}/discussion`, {
     method: 'POST',

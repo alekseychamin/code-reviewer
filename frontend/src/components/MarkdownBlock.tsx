@@ -4,10 +4,11 @@ import remarkGfm from 'remark-gfm';
 interface MarkdownBlockProps {
   content: string;
   emptyText: string;
+  normalize?: boolean;
 }
 
-export function MarkdownBlock({ content, emptyText }: MarkdownBlockProps) {
-  const normalizedContent = normalizeMarkdownContent(content);
+export function MarkdownBlock({ content, emptyText, normalize = true }: MarkdownBlockProps) {
+  const normalizedContent = normalize ? normalizeMarkdownContent(content) : content.replace(/\r\n/g, '\n');
 
   if (!normalizedContent.trim()) {
     return <div className="empty-state compact">{emptyText}</div>;

@@ -10,6 +10,7 @@ import {
   fetchProviderProfiles,
   getReviewRun,
   publishInlineComment,
+  publishReport,
   startBranchReview,
   startPullRequestReview
 } from './lib/api';
@@ -137,6 +138,16 @@ export default function App() {
     setCurrentRun(run);
   }
 
+  async function handlePublishReport(): Promise<void> {
+    if (!currentRun) {
+      return;
+    }
+
+    setError(null);
+    const run = await publishReport(currentRun.id);
+    setCurrentRun(run);
+  }
+
   return (
     <main className="app-shell">
       <section className="hero">
@@ -164,6 +175,7 @@ export default function App() {
       <RunDetails
         diffDownloadUrl={currentRun ? buildDiffDownloadUrl(currentRun.id) : undefined}
         onAskInlineQuestion={handleAskInlineQuestion}
+        onPublishReport={handlePublishReport}
         onPublishInlineComment={handlePublishInlineComment}
         reportDownloadUrl={currentRun ? buildReportDownloadUrl(currentRun.id) : undefined}
         run={currentRun}

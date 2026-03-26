@@ -7,6 +7,7 @@ interface RunDetailsProps {
   run: ReviewRun | null;
   diffDownloadUrl?: string;
   reportDownloadUrl?: string;
+  onPublishReport: () => Promise<void>;
   onPublishInlineComment: (commentId: string) => Promise<void>;
   onAskInlineQuestion: (commentId: string, message: string) => Promise<void>;
 }
@@ -15,6 +16,7 @@ export function RunDetails({
   run,
   diffDownloadUrl,
   reportDownloadUrl,
+  onPublishReport,
   onPublishInlineComment,
   onAskInlineQuestion
 }: RunDetailsProps) {
@@ -96,6 +98,29 @@ export function RunDetails({
           onAskInlineQuestion={onAskInlineQuestion}
           onPublishInlineComment={onPublishInlineComment}
         />
+      </div>
+
+      <div className="subsection">
+        <div className="subsection-header">
+          <h3>Итоговый отчёт</h3>
+          {run.targetKind === 'PullRequest' ? (
+            <button
+              className="secondary-button"
+              disabled={!run.hasMarkdownReportArtifact || run.publishSucceeded}
+              onClick={() => void onPublishReport()}
+              type="button"
+            >
+              {run.publishSucceeded ? 'Отправлено в TFS' : 'Отправить отчёт в TFS'}
+            </button>
+          ) : null}
+        </div>
+        <article className="result-card report-card">
+          <MarkdownBlock
+            content={run.markdownReport}
+            emptyText="Итоговый отчёт появится здесь после завершения синтеза."
+            normalize={false}
+          />
+        </article>
       </div>
     </section>
   );
