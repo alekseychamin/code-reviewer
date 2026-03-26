@@ -102,4 +102,44 @@ public sealed class FindingsNormalizerTests
         Assert.Equal(FindingCategory.Bug, findings[0].Category);
         Assert.Equal(FindingSeverity.High, findings[0].Severity);
     }
+
+    [Fact]
+    public void Normalize_SkipsSelfDismissedFindings()
+    {
+        var sut = new FindingsNormalizer();
+        var responses = new[]
+        {
+            """
+            [
+              {
+                "kind": "Defect",
+                "file": "src/RegexService.cs",
+                "line_hint": "111",
+                "type": "Bug",
+                "severity": "Medium",
+                "title": "Missing regex initialization",
+                "description": "The new code uses a generated regex via partial method, which is fine. No defect.",
+                "existing_code": "var prIdRegex = MyRegex();",
+                "suggestion": ""
+              },
+              {
+                "kind": "Risk",
+                "file": "src/Service.cs",
+                "line_hint": "ExecuteAsync",
+                "type": "Bug",
+                "severity": "High",
+                "title": "Blocking async call",
+                "description": "Task.Result can deadlock.",
+                "existing_code": "var x = task.Result;",
+                "suggestion": "var x = await task;"
+              }
+            ]
+            """
+        };
+
+        var findings = sut.Normalize(responses);
+
+        Assert.Single(findings);
+        Assert.Equal("Blocking async call", findings[0].Title);
+    }
 }

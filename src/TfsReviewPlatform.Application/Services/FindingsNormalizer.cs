@@ -1,3 +1,4 @@
+using System.Text.RegularExpressions;
 using System.Text.Json;
 using TfsReviewPlatform.Application.Abstractions;
 using TfsReviewPlatform.Domain.Entities;
@@ -7,6 +8,10 @@ namespace TfsReviewPlatform.Application.Services;
 
 public sealed class FindingsNormalizer : IFindingsNormalizer
 {
+    private static readonly Regex SelfDismissedFindingRegex = new(
+        @"\b(no defect|no issue|no problem|nothing to fix|false positive|this is correct|this is valid|is likely correct|likely correct|which is fine|works correctly|fix is not needed)\b|(?:не дефект|нет проблемы|ошибки нет|всё корректно|все корректно|это корректно|исправление не требуется|ничего исправлять не нужно)",
+        RegexOptions.IgnoreCase | RegexOptions.CultureInvariant | RegexOptions.Compiled);
+
     public IReadOnlyList<ReviewFinding> Normalize(IEnumerable<string> rawResponses)
     {
         var findings = rawResponses
@@ -134,6 +139,17 @@ public sealed class FindingsNormalizer : IFindingsNormalizer
             return false;
         }
 
+        if (LooksSelfDismissed(finding))
+        {
+            return false;
+        }
+
         return true;
+    }
+
+    private static bool LooksSelfDismissed(ReviewFinding finding)
+    {
+        return SelfDismissedFindingRegex.IsMatch(finding.Description)
+               || SelfDismissedFindingRegex.IsMatch(finding.Suggestion);
     }
 }
