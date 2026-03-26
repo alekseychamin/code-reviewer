@@ -9,6 +9,7 @@ services:
       - ASPNETCORE_URLS=http://+:8080
       - OPENAI_API_KEY=${OPENAI_API_KEY:-}
       - AZURE_DEVOPS_TOKEN=${AZURE_DEVOPS_TOKEN:-}
+      - ConnectionStrings__ReviewHistory=${POSTGRES_CONNECTION_STRING:-}
       - ProviderCatalog__Profiles__1__BaseUrl=${LOCAL_OLLAMA_BASE_URL:-http://host.docker.internal:11434}
     extra_hosts:
       - "host.docker.internal:host-gateway"
@@ -37,3 +38,19 @@ services:
       - "11434:11434"
     profiles:
       - local-llm
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      - POSTGRES_DB=${POSTGRES_DB:-tfs_review}
+      - POSTGRES_USER=${POSTGRES_USER:-tfs_review}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-tfs_review}
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    profiles:
+      - history-db
+
+volumes:
+  postgres-data:

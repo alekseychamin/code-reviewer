@@ -10,7 +10,7 @@ Production-oriented AI code review platform built around:
 - review targets by PR URL and by local branch comparison
 - staged review pipeline with SSE progress streaming
 - markdown report generation plus summary and inline comment publishing
-- in-memory persistence with clean repository interfaces for later database migration
+- optional PostgreSQL persistence for durable review history, with in-memory fallback
 
 ## Solution layout
 
@@ -44,7 +44,7 @@ Production-oriented AI code review platform built around:
 
 1. Create a local secrets file:
    `cp .env.example .env`
-2. Fill in the values you need in `.env`, for example `OPENAI_API_KEY` and `AZURE_DEVOPS_TOKEN`.
+2. Fill in the values you need in `.env`, for example `OPENAI_API_KEY`, `AZURE_DEVOPS_TOKEN`, and optionally `POSTGRES_CONNECTION_STRING`.
 3. Start the stack:
    `docker compose up --build`
 
@@ -56,6 +56,12 @@ If you want to use the `ollama` service from docker compose instead, set:
 and start the Ollama profile too:
 `docker compose --profile local-llm up --build`
 
+If you want persistent review history in PostgreSQL, start the database profile too:
+`docker compose --profile history-db up --build`
+
+With the default `.env.example` values, the API will then store full review history, findings, diagrams, markdown reports, and inline discussion threads in PostgreSQL through:
+`POSTGRES_CONNECTION_STRING=Host=postgres;Port=5432;Database=tfs_review;Username=tfs_review;Password=tfs_review`
+
 `docker-compose.yml` now uses `env_file: .env`, so the same local file can hold LLM API keys, Azure DevOps/TFS tokens, and frontend runtime settings for local development. In compose mode the frontend uses same-origin `/api` requests and Vite proxies them to the `api` service, which is more reliable than calling `localhost:8080` directly from the browser. The pull request flow now reads Azure DevOps/TFS PAT from `AZURE_DEVOPS_TOKEN` on the backend, so the token no longer needs to be entered in the UI.
 
 ## Notes
@@ -63,5 +69,6 @@ and start the Ollama profile too:
 - `appsettings.json` seeds provider profiles and default stage routing.
 - To run fully on Ollama, select the `Local Ollama` provider profile in the UI or send `providerProfileId=ollama-local` to the API.
 - In docker compose, host Ollama is the default local target. The optional compose `ollama` service sits under the `local-llm` profile.
-- The backend stores review runs in memory today, but all persistence and external dependencies already sit behind interfaces.
+- Without `POSTGRES_CONNECTION_STRING`, the backend falls back to in-memory review storage.
+- With PostgreSQL enabled, review history persists across API restarts and stores service name, author, findings, diagrams, reports, and inline discussions.
 - The prompt design follows the existing Python prototype flow from `main.py` and `prompts.py`, translated into explicit pipeline stages and deterministic markdown generation.
