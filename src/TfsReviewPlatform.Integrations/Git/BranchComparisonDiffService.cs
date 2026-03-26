@@ -18,13 +18,39 @@ public sealed class BranchComparisonDiffService(ShellGitCommandRunner gitCommand
             ["diff", $"{targetBranch}...{sourceBranch}"],
             cancellationToken);
 
+        var authorName = await TryGetLatestAuthorAsync(repositoryPath, sourceBranch, cancellationToken);
+        var resolvedRepositoryName = repositoryName ?? Path.GetFileName(repositoryPath);
+
         return new DiffAcquisitionResult
         {
             DiffText = diffText,
             RepositoryPath = repositoryPath,
-            RepositoryName = repositoryName ?? Path.GetFileName(repositoryPath),
+            RepositoryName = resolvedRepositoryName,
+            ServiceName = resolvedRepositoryName,
+            AuthorName = authorName,
             SourceRef = sourceBranch,
             TargetRef = targetBranch
         };
+    }
+
+    private async Task<string?> TryGetLatestAuthorAsync(
+        string repositoryPath,
+        string sourceBranch,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            var author = await gitCommandRunner.RunAsync(
+                repositoryPath,
+                ["log", "-1", "--format=%an <%ae>", sourceBranch],
+                cancellationToken);
+
+            var trimmed = author.Trim();
+            return string.IsNullOrWhiteSpace(trimmed) ? null : trimmed;
+        }
+        catch
+        {
+            return null;
+        }
     }
 }

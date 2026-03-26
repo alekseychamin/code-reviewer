@@ -15,6 +15,10 @@ public interface IReviewOrchestrator
 
     Task<ReviewRunDto?> GetAsync(Guid runId, CancellationToken cancellationToken);
 
+    Task<ReviewHistoryDto> GetPullRequestHistoryAsync(string pullRequestUrl, CancellationToken cancellationToken);
+
+    Task DeletePullRequestHistoryAsync(string pullRequestUrl, CancellationToken cancellationToken);
+
     Task<ReviewRunDto> PublishInlineCommentAsync(Guid runId, Guid commentId, CancellationToken cancellationToken);
 
     Task<ReviewRunDto> PublishReportAsync(Guid runId, CancellationToken cancellationToken);

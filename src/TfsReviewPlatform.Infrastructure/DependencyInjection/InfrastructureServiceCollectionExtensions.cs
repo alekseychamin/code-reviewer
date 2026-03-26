@@ -1,3 +1,4 @@
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using TfsReviewPlatform.Application.Abstractions;
 using TfsReviewPlatform.Infrastructure.Persistence;
@@ -7,9 +8,19 @@ namespace TfsReviewPlatform.Infrastructure.DependencyInjection;
 
 public static class InfrastructureServiceCollectionExtensions
 {
-    public static IServiceCollection AddInfrastructure(this IServiceCollection services)
+    public static IServiceCollection AddInfrastructure(this IServiceCollection services, IConfiguration configuration)
     {
-        services.AddSingleton<IReviewRunRepository, InMemoryReviewRunRepository>();
+        var reviewHistoryConnectionString = configuration.GetConnectionString("ReviewHistory");
+
+        if (string.IsNullOrWhiteSpace(reviewHistoryConnectionString))
+        {
+            services.AddSingleton<IReviewRunRepository, InMemoryReviewRunRepository>();
+        }
+        else
+        {
+            services.AddSingleton<IReviewRunRepository>(_ => new PostgresReviewRunRepository(reviewHistoryConnectionString));
+        }
+
         services.AddSingleton<IReviewProgressStore, InMemoryReviewProgressStore>();
         services.AddSingleton<IProviderProfileRepository, InMemoryProviderProfileRepository>();
         services.AddSingleton<IBackgroundReviewScheduler, BackgroundReviewScheduler>();

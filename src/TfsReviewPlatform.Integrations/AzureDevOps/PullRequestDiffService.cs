@@ -36,6 +36,7 @@ public sealed class PullRequestDiffService(
                         ?? throw new InvalidOperationException("Azure DevOps response does not contain sourceRefName.");
         var targetRef = root.GetProperty("targetRefName").GetString()
                         ?? throw new InvalidOperationException("Azure DevOps response does not contain targetRefName.");
+        var authorName = TryReadAuthor(root);
 
         var tempDirectory = Path.Combine(Path.GetTempPath(), "tfs-review-platform", Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(tempDirectory);
@@ -71,6 +72,8 @@ public sealed class PullRequestDiffService(
             DiffText = diffText,
             RepositoryPath = tempDirectory,
             RepositoryName = reference.RepositoryName,
+            ServiceName = reference.RepositoryName,
+            AuthorName = authorName,
             PullRequestUrl = pullRequestUrl,
             SourceRef = "origin/__source__",
             TargetRef = "origin/__target__",
@@ -123,5 +126,31 @@ public sealed class PullRequestDiffService(
     {
         var compact = text.Replace('\n', ' ').Replace('\r', ' ').Trim();
         return compact.Length <= 400 ? compact : compact[..400];
+    }
+
+    private static string? TryReadAuthor(JsonElement root)
+    {
+        if (!root.TryGetProperty("createdBy", out var createdBy) || createdBy.ValueKind != JsonValueKind.Object)
+        {
+            return null;
+        }
+
+        var displayName = createdBy.TryGetProperty("displayName", out var displayNameElement) &&
+                          displayNameElement.ValueKind == JsonValueKind.String
+            ? displayNameElement.GetString()
+            : null;
+
+        var uniqueName = createdBy.TryGetProperty("uniqueName", out var uniqueNameElement) &&
+                         uniqueNameElement.ValueKind == JsonValueKind.String
+            ? uniqueNameElement.GetString()
+            : null;
+
+        return (displayName, uniqueName) switch
+        {
+            ({ Length: > 0 } name, { Length: > 0 } login) => $"{name} <{login}>",
+            ({ Length: > 0 } name, _) => name,
+            (_, { Length: > 0 } login) => login,
+            _ => null
+        };
     }
 }

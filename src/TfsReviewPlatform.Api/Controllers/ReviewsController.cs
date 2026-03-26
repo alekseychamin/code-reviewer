@@ -58,6 +58,39 @@ public sealed class ReviewsController(
         return run is null ? NotFound() : Ok(run);
     }
 
+    [HttpGet("history/pull-requests")]
+    [ProducesResponseType<ReviewHistoryDto>(StatusCodes.Status200OK)]
+    public async Task<ActionResult<ReviewHistoryDto>> GetPullRequestHistory(
+        [FromQuery] string pullRequestUrl,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            return Ok(await reviewOrchestrator.GetPullRequestHistoryAsync(pullRequestUrl, cancellationToken));
+        }
+        catch (InvalidOperationException exception)
+        {
+            return ValidationProblem(detail: exception.Message);
+        }
+    }
+
+    [HttpDelete("history/pull-requests")]
+    [ProducesResponseType(StatusCodes.Status204NoContent)]
+    public async Task<IActionResult> DeletePullRequestHistory(
+        [FromQuery] string pullRequestUrl,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            await reviewOrchestrator.DeletePullRequestHistoryAsync(pullRequestUrl, cancellationToken);
+            return NoContent();
+        }
+        catch (InvalidOperationException exception)
+        {
+            return ValidationProblem(detail: exception.Message);
+        }
+    }
+
     [HttpPost("{runId:guid}/inline-comments/{commentId:guid}/publish")]
     [ProducesResponseType<ReviewRunDto>(StatusCodes.Status200OK)]
     public async Task<ActionResult<ReviewRunDto>> PublishInlineComment(

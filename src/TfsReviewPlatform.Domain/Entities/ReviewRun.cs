@@ -19,6 +19,7 @@ public sealed class ReviewRun
         CurrentMessage = "Queued";
         CreatedAt = DateTimeOffset.UtcNow;
         UpdatedAt = CreatedAt;
+        ServiceName = target.RepositoryName ?? string.Empty;
     }
 
     public Guid Id { get; }
@@ -26,6 +27,10 @@ public sealed class ReviewRun
     public ReviewTargetDescriptor Target { get; }
 
     public string? ProviderProfileId { get; }
+
+    public string ServiceName { get; private set; }
+
+    public string? AuthorName { get; private set; }
 
     public ReviewRunStatus Status { get; private set; }
 
@@ -37,7 +42,7 @@ public sealed class ReviewRun
 
     public string? ErrorMessage { get; private set; }
 
-    public DateTimeOffset CreatedAt { get; }
+    public DateTimeOffset CreatedAt { get; private set; }
 
     public DateTimeOffset UpdatedAt { get; private set; }
 
@@ -46,6 +51,24 @@ public sealed class ReviewRun
     public ReviewArtifacts Artifacts { get; private set; } = new();
 
     public bool PublishSucceeded { get; private set; }
+
+    public void UpdateMetadata(string? serviceName, string? authorName)
+    {
+        lock (_gate)
+        {
+            if (!string.IsNullOrWhiteSpace(serviceName))
+            {
+                ServiceName = serviceName.Trim();
+            }
+
+            if (!string.IsNullOrWhiteSpace(authorName))
+            {
+                AuthorName = authorName.Trim();
+            }
+
+            UpdatedAt = DateTimeOffset.UtcNow;
+        }
+    }
 
     public void Start()
     {
@@ -113,6 +136,40 @@ public sealed class ReviewRun
             PublishSucceeded = true;
             UpdatedAt = DateTimeOffset.UtcNow;
         }
+    }
+
+    public static ReviewRun Restore(
+        Guid id,
+        ReviewTargetDescriptor target,
+        string? providerProfileId,
+        ReviewRunStatus status,
+        ReviewPipelineStage? currentStage,
+        int progressPercent,
+        string currentMessage,
+        string? errorMessage,
+        DateTimeOffset createdAt,
+        DateTimeOffset updatedAt,
+        IReadOnlyList<ReviewFinding> findings,
+        ReviewArtifacts artifacts,
+        bool publishSucceeded,
+        string serviceName,
+        string? authorName)
+    {
+        return new ReviewRun(id, target, providerProfileId)
+        {
+            Status = status,
+            CurrentStage = currentStage,
+            ProgressPercent = progressPercent,
+            CurrentMessage = currentMessage,
+            ErrorMessage = errorMessage,
+            Findings = findings,
+            Artifacts = artifacts,
+            PublishSucceeded = publishSucceeded,
+            CreatedAt = createdAt,
+            UpdatedAt = updatedAt,
+            ServiceName = serviceName,
+            AuthorName = authorName
+        };
     }
 
     public void Fail(string errorMessage)

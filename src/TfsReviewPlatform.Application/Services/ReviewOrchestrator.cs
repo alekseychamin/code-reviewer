@@ -90,6 +90,53 @@ public sealed class ReviewOrchestrator(
         return run?.ToDto();
     }
 
+    public async Task<ReviewHistoryDto> GetPullRequestHistoryAsync(string pullRequestUrl, CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(pullRequestUrl))
+        {
+            throw new InvalidOperationException("Pull request URL cannot be empty.");
+        }
+
+        var normalizedUrl = pullRequestUrl.Trim();
+        var target = new ReviewTargetDescriptor(
+            ReviewTargetKind.PullRequest,
+            normalizedUrl,
+            normalizedUrl,
+            null,
+            null,
+            null,
+            null);
+
+        var runs = await reviewRunRepository.ListForTargetAsync(target, 20, cancellationToken);
+        var baselineRunId = runs
+            .Where(run => run.Status == ReviewRunStatus.Completed)
+            .OrderByDescending(run => run.CreatedAt)
+            .Select(run => (Guid?)run.Id)
+            .FirstOrDefault();
+
+        return runs.ToHistoryDto(baselineRunId);
+    }
+
+    public async Task DeletePullRequestHistoryAsync(string pullRequestUrl, CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(pullRequestUrl))
+        {
+            throw new InvalidOperationException("Pull request URL cannot be empty.");
+        }
+
+        var normalizedUrl = pullRequestUrl.Trim();
+        var target = new ReviewTargetDescriptor(
+            ReviewTargetKind.PullRequest,
+            normalizedUrl,
+            normalizedUrl,
+            null,
+            null,
+            null,
+            null);
+
+        await reviewRunRepository.DeleteForTargetAsync(target, cancellationToken);
+    }
+
     public async Task<ReviewRunDto> PublishInlineCommentAsync(Guid runId, Guid commentId, CancellationToken cancellationToken)
     {
         var run = await reviewRunRepository.GetAsync(runId, cancellationToken)

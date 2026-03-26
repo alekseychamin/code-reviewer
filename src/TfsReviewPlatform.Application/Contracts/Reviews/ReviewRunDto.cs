@@ -14,6 +14,10 @@ public sealed class ReviewRunDto
 
     public string? ProviderProfileId { get; init; }
 
+    public string ServiceName { get; init; } = string.Empty;
+
+    public string? AuthorName { get; init; }
+
     public ReviewPipelineStage? CurrentStage { get; init; }
 
     public int ProgressPercent { get; init; }

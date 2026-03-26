@@ -9,6 +9,15 @@ public interface IReviewRunRepository
 
     Task<ReviewRun?> GetAsync(Guid id, CancellationToken cancellationToken);
 
+    Task<IReadOnlyList<ReviewRun>> ListForTargetAsync(
+        ReviewTargetDescriptor target,
+        int limit,
+        CancellationToken cancellationToken);
+
+    Task DeleteForTargetAsync(
+        ReviewTargetDescriptor target,
+        CancellationToken cancellationToken);
+
     Task<ReviewRun?> FindLatestCompletedForTargetAsync(
         ReviewTargetDescriptor target,
         DateTimeOffset createdBefore,

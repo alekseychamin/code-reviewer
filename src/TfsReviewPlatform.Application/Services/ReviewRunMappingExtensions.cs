@@ -1,10 +1,22 @@
 using TfsReviewPlatform.Application.Contracts.Reviews;
 using TfsReviewPlatform.Domain.Entities;
+using TfsReviewPlatform.Domain.Enums;
 
 namespace TfsReviewPlatform.Application.Services;
 
 public static class ReviewRunMappingExtensions
 {
+    public static ReviewHistoryDto ToHistoryDto(
+        this IReadOnlyList<ReviewRun> runs,
+        Guid? baselineRunId)
+    {
+        return new ReviewHistoryDto
+        {
+            BaselineRunId = baselineRunId,
+            Items = runs.Select(ToHistoryItemDto).ToArray()
+        };
+    }
+
     public static ReviewRunDto ToDto(this ReviewRun run)
     {
         return new ReviewRunDto
@@ -14,6 +26,8 @@ public static class ReviewRunMappingExtensions
             TargetKind = run.Target.Kind,
             Title = run.Target.Title,
             ProviderProfileId = run.ProviderProfileId,
+            ServiceName = run.ServiceName,
+            AuthorName = run.AuthorName,
             CurrentStage = run.CurrentStage,
             ProgressPercent = run.ProgressPercent,
             CurrentMessage = run.CurrentMessage,
@@ -103,6 +117,31 @@ public static class ReviewRunMappingExtensions
                     }).ToArray()
                 }).ToArray()
             }).ToArray()
+        };
+    }
+
+    private static ReviewHistoryItemDto ToHistoryItemDto(ReviewRun run)
+    {
+        var criticalCount = run.Findings.Count(finding =>
+            finding.Severity == FindingSeverity.Critical);
+        var highCount = run.Findings.Count(finding =>
+            finding.Severity == FindingSeverity.High);
+
+        return new ReviewHistoryItemDto
+        {
+            Id = run.Id,
+            Status = run.Status,
+            Title = run.Target.Title,
+            ServiceName = run.ServiceName,
+            AuthorName = run.AuthorName,
+            ProviderProfileId = run.ProviderProfileId,
+            CreatedAt = run.CreatedAt,
+            UpdatedAt = run.UpdatedAt,
+            FindingsCount = run.Findings.Count,
+            CriticalCount = criticalCount,
+            HighCount = highCount,
+            PublishSucceeded = run.PublishSucceeded,
+            HasMarkdownReportArtifact = !string.IsNullOrWhiteSpace(run.Artifacts.MarkdownReport)
         };
     }
 

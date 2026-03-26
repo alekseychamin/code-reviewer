@@ -40,6 +40,8 @@ public sealed class ReviewRunExecutor(
             await PersistAndPublishAsync(run, "Review started", ReviewPipelineStage.DiffAcquisition, 2, cancellationToken);
 
             diffResult = await AcquireDiffAsync(request, cancellationToken);
+            run.UpdateMetadata(diffResult.ServiceName, diffResult.AuthorName);
+            await reviewRunRepository.UpdateAsync(run, cancellationToken);
             await PersistAndPublishAsync(run, "Diff acquired", ReviewPipelineStage.Preprocessing, 15, cancellationToken);
 
             var preprocessed = diffPreprocessor.Process(diffResult.DiffText);
@@ -55,6 +57,45 @@ public sealed class ReviewRunExecutor(
                 ReviewPipelineStage.ChangeDescription,
                 30,
                 cancellationToken);
+
+            if (previousRun is not null && HasNoChangesSincePreviousReview(previousRun, preprocessed))
+            {
+                var reusedComparison = findingsComparisonService.Compare(
+                    previousRun.Id,
+                    previousRun.Findings,
+                    previousRun.Findings);
+                var reusedArtifacts = new ReviewArtifacts
+                {
+                    DiffText = previousRun.Artifacts.DiffText,
+                    ChangedFiles = previousRun.Artifacts.ChangedFiles,
+                    ChangeDescription = previousRun.Artifacts.ChangeDescription,
+                    ChangeDescriptionStructured = previousRun.Artifacts.ChangeDescriptionStructured,
+                    ChangeDiagramMermaid = previousRun.Artifacts.ChangeDiagramMermaid,
+                    MarkdownReport = previousRun.Artifacts.MarkdownReport,
+                    SummaryComment = previousRun.Artifacts.SummaryComment,
+                    InlineComments = previousRun.Artifacts.InlineComments,
+                    ReviewedFiles = previousRun.Artifacts.ReviewedFiles,
+                    FindingsComparison = reusedComparison
+                };
+
+                run.UpdateArtifacts(reusedArtifacts);
+                run.UpdateFindings(previousRun.Findings);
+                await reviewRunRepository.UpdateAsync(run, cancellationToken);
+                await PersistAndPublishAsync(
+                    run,
+                    "Новых изменений с прошлого завершённого ревью не найдено. Используем сохранённый результат.",
+                    ReviewPipelineStage.FinalSynthesis,
+                    95,
+                    cancellationToken);
+
+                run.Complete(reusedArtifacts, previousRun.Findings, false);
+                await reviewRunRepository.UpdateAsync(run, cancellationToken);
+                await reviewProgressStore.PublishAsync(
+                    new ReviewProgressUpdate(run.Id, run.Status, run.CurrentStage, run.ProgressPercent, run.CurrentMessage, DateTimeOffset.UtcNow, true),
+                    cancellationToken);
+                reviewProgressStore.Complete(run.Id);
+                return;
+            }
 
             var changeSummary = await GenerateChangeSummaryAsync(run.Target.Title, preprocessed, request, cancellationToken);
             var description = changeSummary.Description;
@@ -534,6 +575,26 @@ public sealed class ReviewRunExecutor(
         await reviewProgressStore.PublishAsync(
             new ReviewProgressUpdate(run.Id, run.Status, stage, percent, message, DateTimeOffset.UtcNow, false),
             cancellationToken);
+    }
+
+    private static bool HasNoChangesSincePreviousReview(ReviewRun previousRun, PreprocessedDiff preprocessed)
+    {
+        if (previousRun.Status != ReviewRunStatus.Completed)
+        {
+            return false;
+        }
+
+        if (string.IsNullOrWhiteSpace(previousRun.Artifacts.DiffText))
+        {
+            return false;
+        }
+
+        if (!string.Equals(previousRun.Artifacts.DiffText, preprocessed.FilteredDiffText, StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        return previousRun.Artifacts.ChangedFiles.SequenceEqual(preprocessed.ChangedFiles, StringComparer.Ordinal);
     }
 
     private async Task<IReadOnlyList<ReviewedFileArtifact>> BuildReviewedFilesAsync(

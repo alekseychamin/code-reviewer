@@ -22,7 +22,7 @@ builder.Services.AddCors(options =>
 });
 
 builder.Services.AddApplication(builder.Configuration);
-builder.Services.AddInfrastructure();
+builder.Services.AddInfrastructure(builder.Configuration);
 builder.Services.AddIntegrations();
 
 builder.Logging.ClearProviders();
