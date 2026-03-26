@@ -14,7 +14,7 @@ public sealed class ReviewExecutionRequest
 
     public PublishMode PublishMode { get; init; }
 
-    public string? AzureDevOpsAccessToken { get; init; }
+    public string? PullRequestAccessToken { get; init; }
 
     public IReadOnlyList<StageRouteOverrideDto> StageOverrides { get; init; } = [];
 }

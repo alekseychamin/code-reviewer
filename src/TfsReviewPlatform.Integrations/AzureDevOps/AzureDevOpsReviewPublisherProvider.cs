@@ -1,17 +1,29 @@
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using System.Text;
-using System.Text.Json;
-using TfsReviewPlatform.Application.Abstractions;
 using TfsReviewPlatform.Domain.Entities;
 using TfsReviewPlatform.Domain.Enums;
 using TfsReviewPlatform.Integrations.Llm;
+using TfsReviewPlatform.Integrations.Publishing;
 
 namespace TfsReviewPlatform.Integrations.AzureDevOps;
 
-public sealed class AzureDevOpsReviewPublisher(IHttpClientFactory httpClientFactory) : IReviewPublisher
+internal sealed class AzureDevOpsReviewPublisherProvider(IHttpClientFactory httpClientFactory) : IPullRequestReviewPublisherProvider
 {
     private const string ApiVersion = "6.0";
+
+    public bool CanHandle(string pullRequestUrl)
+    {
+        try
+        {
+            AzureDevOpsUrlParser.Parse(pullRequestUrl);
+            return true;
+        }
+        catch
+        {
+            return false;
+        }
+    }
 
     public async Task<bool> PublishReportAsync(
         string pullRequestUrl,
@@ -81,7 +93,6 @@ public sealed class AzureDevOpsReviewPublisher(IHttpClientFactory httpClientFact
         foreach (var inlineComment in inlineComments)
         {
             var success = await PostInlineThreadAsync(client, reference.BuildThreadsApiUrl(ApiVersion), inlineComment, cancellationToken);
-
             inlineSucceeded &= success;
         }
 

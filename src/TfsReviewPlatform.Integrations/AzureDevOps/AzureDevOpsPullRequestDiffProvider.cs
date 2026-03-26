@@ -3,27 +3,46 @@ using System.Text;
 using System.Text.Json;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
-using TfsReviewPlatform.Application.Abstractions;
 using TfsReviewPlatform.Application.Models;
 using TfsReviewPlatform.Integrations.Git;
 using TfsReviewPlatform.Integrations.Llm;
+using TfsReviewPlatform.Integrations.PullRequests;
 
 namespace TfsReviewPlatform.Integrations.AzureDevOps;
 
-public sealed class PullRequestDiffService(
+internal sealed class AzureDevOpsPullRequestDiffProvider(
     IHttpClientFactory httpClientFactory,
     ShellGitCommandRunner gitCommandRunner,
     IOptions<AzureDevOpsOptions> azureDevOpsOptions,
-    ILogger<PullRequestDiffService> logger)
-    : IPullRequestDiffService
+    ILogger<AzureDevOpsPullRequestDiffProvider> logger)
+    : IPullRequestDiffProvider
 {
     private static readonly string[] ApiVersionsToTry = ["7.0", "6.0", "5.1", "4.1"];
 
+    public bool CanHandle(string pullRequestUrl)
+    {
+        try
+        {
+            AzureDevOpsUrlParser.Parse(pullRequestUrl);
+            return true;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
     public async Task<DiffAcquisitionResult> GetDiffAsync(
         string pullRequestUrl,
-        string accessToken,
+        string? accessToken,
         CancellationToken cancellationToken)
     {
+        if (string.IsNullOrWhiteSpace(accessToken))
+        {
+            throw new InvalidOperationException(
+                "Для pull request из Azure DevOps/TFS требуется токен в запросе или переменная окружения AZURE_DEVOPS_TOKEN.");
+        }
+
         var reference = AzureDevOpsUrlParser.Parse(pullRequestUrl);
         var client = httpClientFactory.CreateClient(HttpClientNames.AzureDevOps);
         client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Basic", EncodePat(accessToken));

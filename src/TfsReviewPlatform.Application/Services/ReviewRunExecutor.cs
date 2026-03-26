@@ -161,13 +161,14 @@ public sealed class ReviewRunExecutor(
             var publishSucceeded = false;
             if (request.PublishMode != PublishMode.None &&
                 request.TargetKind == ReviewTargetKind.PullRequest &&
-                !string.IsNullOrWhiteSpace(request.AzureDevOpsAccessToken) &&
+                PullRequestPlatformDetector.Detect(request.Target.PullRequestUrl) == PullRequestPlatformKind.AzureDevOps &&
+                !string.IsNullOrWhiteSpace(request.PullRequestAccessToken) &&
                 !string.IsNullOrWhiteSpace(request.Target.PullRequestUrl))
             {
                 await PersistAndPublishAsync(run, "Publishing review comments", ReviewPipelineStage.Publish, 95, cancellationToken);
                 publishSucceeded = await reviewPublisher.PublishAsync(
                     request.Target.PullRequestUrl,
-                    request.AzureDevOpsAccessToken,
+                    request.PullRequestAccessToken,
                     request.PublishMode,
                     summaryComment,
                     inlineComments,
@@ -228,11 +229,10 @@ public sealed class ReviewRunExecutor(
     {
         return request.TargetKind switch
         {
-            ReviewTargetKind.PullRequest when !string.IsNullOrWhiteSpace(request.AzureDevOpsAccessToken) &&
-                                              !string.IsNullOrWhiteSpace(request.Target.PullRequestUrl) =>
+            ReviewTargetKind.PullRequest when !string.IsNullOrWhiteSpace(request.Target.PullRequestUrl) =>
                 await pullRequestDiffService.GetDiffAsync(
                     request.Target.PullRequestUrl,
-                    request.AzureDevOpsAccessToken,
+                    request.PullRequestAccessToken,
                     cancellationToken),
             ReviewTargetKind.BranchComparison when !string.IsNullOrWhiteSpace(request.Target.RepositoryPath) =>
                 await branchComparisonDiffService.GetDiffAsync(

@@ -13,6 +13,8 @@ public sealed class StartPullRequestReviewRequest
 
     public PublishMode PublishMode { get; init; }
 
+    public string? AccessToken { get; init; }
+
     public string? AzureDevOpsAccessToken { get; init; }
 
     public List<StageRouteOverrideDto> StageOverrides { get; init; } = [];

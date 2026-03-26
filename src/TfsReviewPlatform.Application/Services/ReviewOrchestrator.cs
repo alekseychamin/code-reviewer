@@ -32,12 +32,13 @@ public sealed class ReviewOrchestrator(
         StartPullRequestReviewRequest request,
         CancellationToken cancellationToken)
     {
+        var normalizedPullRequestUrl = PullRequestPlatformDetector.Normalize(request.PullRequestUrl);
         Validate(reviewRequestValidator.Validate(request));
 
         var target = new ReviewTargetDescriptor(
             ReviewTargetKind.PullRequest,
-            request.PullRequestUrl,
-            request.PullRequestUrl,
+            normalizedPullRequestUrl,
+            normalizedPullRequestUrl,
             null,
             null,
             null,
@@ -49,7 +50,9 @@ public sealed class ReviewOrchestrator(
             Target = target,
             ProviderProfileId = request.ProviderProfileId,
             PublishMode = request.PublishMode,
-            AzureDevOpsAccessToken = ResolveAzureDevOpsToken(request.AzureDevOpsAccessToken),
+            PullRequestAccessToken = ResolvePullRequestAccessToken(
+                normalizedPullRequestUrl,
+                request.AccessToken ?? request.AzureDevOpsAccessToken),
             StageOverrides = request.StageOverrides
         };
 
@@ -97,7 +100,7 @@ public sealed class ReviewOrchestrator(
             throw new InvalidOperationException("Pull request URL cannot be empty.");
         }
 
-        var normalizedUrl = pullRequestUrl.Trim();
+        var normalizedUrl = PullRequestPlatformDetector.Normalize(pullRequestUrl);
         var target = new ReviewTargetDescriptor(
             ReviewTargetKind.PullRequest,
             normalizedUrl,
@@ -124,7 +127,7 @@ public sealed class ReviewOrchestrator(
             throw new InvalidOperationException("Pull request URL cannot be empty.");
         }
 
-        var normalizedUrl = pullRequestUrl.Trim();
+        var normalizedUrl = PullRequestPlatformDetector.Normalize(pullRequestUrl);
         var target = new ReviewTargetDescriptor(
             ReviewTargetKind.PullRequest,
             normalizedUrl,
@@ -144,13 +147,13 @@ public sealed class ReviewOrchestrator(
 
         if (run.Target.Kind != ReviewTargetKind.PullRequest || string.IsNullOrWhiteSpace(run.Target.PullRequestUrl))
         {
-            throw new InvalidOperationException("Only pull request reviews can publish inline comments to TFS.");
+            throw new InvalidOperationException("Только pull request ревью можно публиковать обратно в исходную платформу.");
         }
 
-        var accessToken = ResolveAzureDevOpsToken(null);
+        var accessToken = ResolvePullRequestAccessToken(run.Target.PullRequestUrl, null);
         if (string.IsNullOrWhiteSpace(accessToken))
         {
-            throw new InvalidOperationException("AZURE_DEVOPS_TOKEN is required to publish an inline comment to TFS.");
+            throw new InvalidOperationException(BuildMissingPublishTokenMessage(run.Target.PullRequestUrl));
         }
 
         var thread = run.Artifacts.InlineComments.FirstOrDefault(item => item.Id == commentId)
@@ -169,7 +172,7 @@ public sealed class ReviewOrchestrator(
 
         if (!published)
         {
-            throw new InvalidOperationException("Failed to publish the inline comment to TFS.");
+            throw new InvalidOperationException(BuildPublishFailureMessage(run.Target.PullRequestUrl, "inline comment"));
         }
 
         var updatedArtifacts = ReplaceInlineComment(
@@ -192,7 +195,7 @@ public sealed class ReviewOrchestrator(
 
         if (run.Target.Kind != ReviewTargetKind.PullRequest || string.IsNullOrWhiteSpace(run.Target.PullRequestUrl))
         {
-            throw new InvalidOperationException("Only pull request reviews can publish the final report to TFS.");
+            throw new InvalidOperationException("Только pull request ревью можно публиковать итоговый отчёт обратно в исходную платформу.");
         }
 
         if (string.IsNullOrWhiteSpace(run.Artifacts.MarkdownReport))
@@ -205,10 +208,10 @@ public sealed class ReviewOrchestrator(
             return run.ToDto();
         }
 
-        var accessToken = ResolveAzureDevOpsToken(null);
+        var accessToken = ResolvePullRequestAccessToken(run.Target.PullRequestUrl, null);
         if (string.IsNullOrWhiteSpace(accessToken))
         {
-            throw new InvalidOperationException("AZURE_DEVOPS_TOKEN is required to publish the final report to TFS.");
+            throw new InvalidOperationException(BuildMissingPublishTokenMessage(run.Target.PullRequestUrl));
         }
 
         var published = await reviewPublisher.PublishReportAsync(
@@ -219,7 +222,7 @@ public sealed class ReviewOrchestrator(
 
         if (!published)
         {
-            throw new InvalidOperationException("Failed to publish the final report to TFS.");
+            throw new InvalidOperationException(BuildPublishFailureMessage(run.Target.PullRequestUrl, "report"));
         }
 
         run.MarkPublishSucceeded();
@@ -581,11 +584,43 @@ public sealed class ReviewOrchestrator(
         throw new InvalidOperationException(string.Join("; ", errors.SelectMany(item => item.Value.Select(message => $"{item.Key}: {message}"))));
     }
 
-    private static string? ResolveAzureDevOpsToken(string? requestToken)
+    private static string? ResolvePullRequestAccessToken(string? pullRequestUrl, string? requestToken)
     {
         return !string.IsNullOrWhiteSpace(requestToken)
             ? requestToken
-            : Environment.GetEnvironmentVariable("AZURE_DEVOPS_TOKEN");
+            : PullRequestPlatformDetector.Detect(pullRequestUrl) switch
+            {
+                PullRequestPlatformKind.AzureDevOps => Environment.GetEnvironmentVariable("AZURE_DEVOPS_TOKEN"),
+                PullRequestPlatformKind.GitHub => Environment.GetEnvironmentVariable("GITHUB_TOKEN"),
+                _ => null
+            };
+    }
+
+    private static string BuildMissingPublishTokenMessage(string? pullRequestUrl)
+    {
+        return PullRequestPlatformDetector.Detect(pullRequestUrl) switch
+        {
+            PullRequestPlatformKind.GitHub => "GITHUB_TOKEN требуется для публикации замечаний или итогового отчёта в GitHub.",
+            PullRequestPlatformKind.AzureDevOps => "AZURE_DEVOPS_TOKEN требуется для публикации замечаний или итогового отчёта в Azure DevOps/TFS.",
+            _ => "Требуется токен доступа для публикации замечаний или итогового отчёта обратно в pull request."
+        };
+    }
+
+    private static string BuildPublishFailureMessage(string? pullRequestUrl, string artifactType)
+    {
+        var subject = artifactType switch
+        {
+            "inline comment" => "замечание",
+            "report" => "итоговый отчёт",
+            _ => artifactType
+        };
+
+        return PullRequestPlatformDetector.Detect(pullRequestUrl) switch
+        {
+            PullRequestPlatformKind.GitHub => $"Не удалось опубликовать {subject} в GitHub.",
+            PullRequestPlatformKind.AzureDevOps => $"Не удалось опубликовать {subject} в Azure DevOps/TFS.",
+            _ => $"Не удалось опубликовать {subject} в pull request платформу."
+        };
     }
 
     private static ReviewArtifacts ReplaceInlineComment(ReviewArtifacts artifacts, InlineCommentDraft updatedThread)
