@@ -45,7 +45,7 @@ export default function App() {
   }
 
   useEffect(() => {
-    document.title = 'TFS AI Reviewer';
+    document.title = 'Code Reviewer';
   }, []);
 
   useEffect(() => {
@@ -229,12 +229,12 @@ export default function App() {
     <main className="app-shell">
       <section className="hero">
         <div>
-          <p className="eyebrow">TFS AI Reviewer</p>
+          <p className="eyebrow">AI Reviewer</p>
           <h1>🕵️‍♂️ Code Reviewer</h1>
         </div>
         <p className="hero-copy">
           Запускайте ревью по ссылке на pull request или по сравнению веток, отслеживайте прогресс по SSE и
-          публикуйте итоговый комментарий и inline-замечания обратно в Azure DevOps/TFS.
+          публикуйте итоговый комментарий и inline-замечания обратно в GitHub или Azure DevOps/TFS.
         </p>
       </section>
 

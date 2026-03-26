@@ -12,6 +12,8 @@ public sealed class ReviewRunDto
 
     public string Title { get; init; } = string.Empty;
 
+    public string? PullRequestUrl { get; init; }
+
     public string? ProviderProfileId { get; init; }
 
     public string ServiceName { get; init; } = string.Empty;

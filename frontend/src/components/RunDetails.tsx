@@ -22,6 +22,7 @@ export function RunDetails({
   onAskInlineQuestion
 }: RunDetailsProps) {
   const [isReportCollapsed, setIsReportCollapsed] = useState(true);
+  const publishTargetLabel = getPublishTargetLabel(run?.pullRequestUrl);
 
   useEffect(() => {
     setIsReportCollapsed(true);
@@ -102,6 +103,7 @@ export function RunDetails({
         <h3>Замечания по файлам</h3>
         <ReviewedFilesWorkspace
           files={run.reviewedFiles}
+          publishTargetLabel={publishTargetLabel}
           onAskInlineQuestion={onAskInlineQuestion}
           onPublishInlineComment={onPublishInlineComment}
         />
@@ -127,7 +129,9 @@ export function RunDetails({
                 onClick={() => void onPublishReport()}
                 type="button"
               >
-                {run.publishSucceeded ? 'Отправлено в TFS' : 'Отправить отчёт в TFS'}
+                {run.publishSucceeded
+                  ? `Отправлено в ${publishTargetLabel}`
+                  : `Отправить отчёт в ${publishTargetLabel}`}
               </button>
             ) : null}
           </div>
@@ -144,6 +148,14 @@ export function RunDetails({
       </div>
     </section>
   );
+}
+
+function getPublishTargetLabel(pullRequestUrl?: string): string {
+  if (!pullRequestUrl) {
+    return 'pull request';
+  }
+
+  return /github/i.test(pullRequestUrl) ? 'GitHub' : 'TFS';
 }
 
 function ChangeDescriptionBlock({

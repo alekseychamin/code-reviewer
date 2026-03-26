@@ -78,6 +78,7 @@ export interface ReviewRun {
   status: ReviewRunStatus;
   targetKind: ReviewTargetKind;
   title: string;
+  pullRequestUrl?: string;
   providerProfileId?: string;
   serviceName: string;
   authorName?: string;
@@ -141,6 +142,7 @@ export interface ReviewProgressEvent {
 
 export interface PullRequestReviewPayload {
   pullRequestUrl: string;
+  accessToken?: string;
   providerProfileId?: string;
   publishMode: PublishMode;
   stageOverrides: Array<{ stage: string; profileId: string; model?: string; temperature?: number }>;

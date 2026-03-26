@@ -138,7 +138,7 @@ export function ReviewForm({
                   setPullRequestUrl(value);
                   onPullRequestUrlChange(value);
                 }}
-                placeholder="https://tfs.example.local/.../_git/repo/pullrequest/42"
+                placeholder="https://tfs.example.local/.../_git/repo/pullrequest/42 или https://github.com/org/repo/pull/42"
               />
             </label>
             <PullRequestHistoryPanel

@@ -4,12 +4,14 @@ import { MarkdownBlock } from './MarkdownBlock';
 
 interface ReviewedFilesWorkspaceProps {
   files: ReviewedFile[];
+  publishTargetLabel: string;
   onPublishInlineComment: (commentId: string) => Promise<void>;
   onAskInlineQuestion: (commentId: string, message: string) => Promise<void>;
 }
 
 export function ReviewedFilesWorkspace({
   files,
+  publishTargetLabel,
   onPublishInlineComment,
   onAskInlineQuestion
 }: ReviewedFilesWorkspaceProps) {
@@ -241,6 +243,7 @@ export function ReviewedFilesWorkspace({
                         onSendQuestion={() => void handleAsk(thread.id)}
                         onToggleContext={() => toggleContext(thread.id)}
                         onToggleRemark={() => toggleRemark(thread.id)}
+                        publishTargetLabel={publishTargetLabel}
                         thread={thread}
                       />
                     ))}
@@ -257,6 +260,7 @@ export function ReviewedFilesWorkspace({
 
 interface InlineThreadCardProps {
   thread: InlineComment;
+  publishTargetLabel: string;
   draft: string;
   error: string;
   busy: boolean;
@@ -271,6 +275,7 @@ interface InlineThreadCardProps {
 
 function InlineThreadCard({
   thread,
+  publishTargetLabel,
   draft,
   error,
   busy,
@@ -301,7 +306,7 @@ function InlineThreadCard({
           <span className="secondary-chip">
             {thread.lineNumber > 0 ? `Строка ${thread.lineNumber}` : 'Уровень файла'}
           </span>
-          {thread.publishedToTfs ? <span className="secondary-chip success">Отправлено в TFS</span> : null}
+          {thread.publishedToTfs ? <span className="secondary-chip success">Отправлено в {publishTargetLabel}</span> : null}
           <span className="thread-accordion-caret">{expanded ? '−' : '+'}</span>
         </div>
       </button>
@@ -364,7 +369,9 @@ function InlineThreadCard({
               onClick={onPublish}
               type="button"
             >
-              {thread.publishedToTfs ? 'Отправлено в TFS' : 'Отправить в TFS'}
+              {thread.publishedToTfs
+                ? `Отправлено в ${publishTargetLabel}`
+                : `Отправить в ${publishTargetLabel}`}
             </button>
           </div>
 
