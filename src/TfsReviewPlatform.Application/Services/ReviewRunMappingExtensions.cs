@@ -24,7 +24,7 @@ public static class ReviewRunMappingExtensions
             Id = run.Id,
             Status = run.Status,
             TargetKind = run.Target.Kind,
-            Title = run.Target.Title,
+            Title = run.DisplayTitle,
             PullRequestUrl = run.Target.PullRequestUrl,
             ProviderProfileId = run.ProviderProfileId,
             ServiceName = run.ServiceName,
@@ -132,7 +132,7 @@ public static class ReviewRunMappingExtensions
         {
             Id = run.Id,
             Status = run.Status,
-            Title = run.Target.Title,
+            Title = run.DisplayTitle,
             ServiceName = run.ServiceName,
             AuthorName = run.AuthorName,
             ProviderProfileId = run.ProviderProfileId,

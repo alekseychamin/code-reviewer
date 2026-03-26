@@ -40,7 +40,7 @@ public sealed class ReviewRunExecutor(
             await PersistAndPublishAsync(run, "Review started", ReviewPipelineStage.DiffAcquisition, 2, cancellationToken);
 
             diffResult = await AcquireDiffAsync(request, cancellationToken);
-            run.UpdateMetadata(diffResult.ServiceName, diffResult.AuthorName);
+            run.UpdateMetadata(diffResult.ServiceName, diffResult.AuthorName, diffResult.PullRequestTitle);
             await reviewRunRepository.UpdateAsync(run, cancellationToken);
             await PersistAndPublishAsync(run, "Diff acquired", ReviewPipelineStage.Preprocessing, 15, cancellationToken);
 
@@ -97,7 +97,7 @@ public sealed class ReviewRunExecutor(
                 return;
             }
 
-            var changeSummary = await GenerateChangeSummaryAsync(run.Target.Title, preprocessed, request, cancellationToken);
+            var changeSummary = await GenerateChangeSummaryAsync(run.DisplayTitle, preprocessed, request, cancellationToken);
             var description = changeSummary.Description;
             run.UpdateArtifacts(new ReviewArtifacts
             {
@@ -140,8 +140,8 @@ public sealed class ReviewRunExecutor(
             await reviewRunRepository.UpdateAsync(run, cancellationToken);
             await PersistAndPublishAsync(run, "File review workspace generated", ReviewPipelineStage.FinalSynthesis, 90, cancellationToken);
 
-            var fullReport = markdownReportBuilder.BuildFullReport(run.Target.Title, description, findings, findingsComparison);
-            var summaryComment = markdownReportBuilder.BuildSummaryComment(run.Target.Title, description, findings, findingsComparison);
+            var fullReport = markdownReportBuilder.BuildFullReport(run.DisplayTitle, description, findings, findingsComparison);
+            var summaryComment = markdownReportBuilder.BuildSummaryComment(run.DisplayTitle, description, findings, findingsComparison);
             run.UpdateArtifacts(new ReviewArtifacts
             {
                 DiffText = preprocessed.FilteredDiffText,

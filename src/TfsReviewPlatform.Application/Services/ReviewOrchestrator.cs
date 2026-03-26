@@ -294,7 +294,7 @@ public sealed class ReviewOrchestrator(
                     If there is no code example, return an empty string in exampleCode and exampleCodeLanguage.
                     """,
                 UserPrompt = $"""
-                    Review target: {run.Target.Title}
+                    Review target: {run.DisplayTitle}
                     File: {thread.FilePath}
                     Inline finding title: {thread.Title}
                     Severity: {thread.Severity}

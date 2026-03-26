@@ -55,6 +55,9 @@ internal sealed class AzureDevOpsPullRequestDiffProvider(
                         ?? throw new InvalidOperationException("Azure DevOps response does not contain sourceRefName.");
         var targetRef = root.GetProperty("targetRefName").GetString()
                         ?? throw new InvalidOperationException("Azure DevOps response does not contain targetRefName.");
+        var pullRequestTitle = root.TryGetProperty("title", out var titleElement) && titleElement.ValueKind == JsonValueKind.String
+            ? titleElement.GetString()
+            : null;
         var authorName = TryReadAuthor(root);
 
         var tempDirectory = Path.Combine(Path.GetTempPath(), "tfs-review-platform", Guid.NewGuid().ToString("N"));
@@ -91,6 +94,7 @@ internal sealed class AzureDevOpsPullRequestDiffProvider(
             DiffText = diffText,
             RepositoryPath = tempDirectory,
             RepositoryName = reference.RepositoryName,
+            PullRequestTitle = pullRequestTitle,
             ServiceName = reference.RepositoryName,
             AuthorName = authorName,
             PullRequestUrl = pullRequestUrl,

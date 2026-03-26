@@ -47,7 +47,15 @@ export function RunDetails({
       <div className="panel-header">
         <div>
           <p className="eyebrow">Результаты</p>
-          <h2>{run.title}</h2>
+          <h2>
+            {run.targetKind === 'PullRequest' && run.pullRequestUrl ? (
+              <a className="result-title-link" href={run.pullRequestUrl} target="_blank" rel="noopener noreferrer">
+                {run.title}
+              </a>
+            ) : (
+              run.title
+            )}
+          </h2>
         </div>
         <div className="result-toolbar">
           <button

@@ -30,7 +30,11 @@ public sealed class ReviewRun
 
     public string ServiceName { get; private set; }
 
+    public string? PullRequestTitle { get; private set; }
+
     public string? AuthorName { get; private set; }
+
+    public string DisplayTitle => string.IsNullOrWhiteSpace(PullRequestTitle) ? Target.Title : PullRequestTitle;
 
     public ReviewRunStatus Status { get; private set; }
 
@@ -52,7 +56,7 @@ public sealed class ReviewRun
 
     public bool PublishSucceeded { get; private set; }
 
-    public void UpdateMetadata(string? serviceName, string? authorName)
+    public void UpdateMetadata(string? serviceName, string? authorName, string? pullRequestTitle)
     {
         lock (_gate)
         {
@@ -64,6 +68,11 @@ public sealed class ReviewRun
             if (!string.IsNullOrWhiteSpace(authorName))
             {
                 AuthorName = authorName.Trim();
+            }
+
+            if (!string.IsNullOrWhiteSpace(pullRequestTitle))
+            {
+                PullRequestTitle = pullRequestTitle.Trim();
             }
 
             UpdatedAt = DateTimeOffset.UtcNow;
@@ -153,7 +162,8 @@ public sealed class ReviewRun
         ReviewArtifacts artifacts,
         bool publishSucceeded,
         string serviceName,
-        string? authorName)
+        string? authorName,
+        string? pullRequestTitle)
     {
         return new ReviewRun(id, target, providerProfileId)
         {
@@ -168,7 +178,8 @@ public sealed class ReviewRun
             CreatedAt = createdAt,
             UpdatedAt = updatedAt,
             ServiceName = serviceName,
-            AuthorName = authorName
+            AuthorName = authorName,
+            PullRequestTitle = pullRequestTitle
         };
     }
 

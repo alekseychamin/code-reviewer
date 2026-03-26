@@ -194,7 +194,7 @@ public sealed class PostgresReviewRunRepository(string connectionString) : IRevi
         command.Parameters.AddWithValue("targetKey", BuildTargetKey(run.Target));
         command.Parameters.AddWithValue("targetKind", run.Target.Kind.ToString());
         command.Parameters.AddWithValue("status", run.Status.ToString());
-        command.Parameters.AddWithValue("title", run.Target.Title);
+        command.Parameters.AddWithValue("title", run.DisplayTitle);
         command.Parameters.AddWithValue("providerProfileId", (object?)run.ProviderProfileId ?? DBNull.Value);
         command.Parameters.AddWithValue("serviceName", string.IsNullOrWhiteSpace(run.ServiceName) ? DBNull.Value : run.ServiceName);
         command.Parameters.AddWithValue("authorName", string.IsNullOrWhiteSpace(run.AuthorName) ? DBNull.Value : run.AuthorName);
@@ -271,6 +271,7 @@ public sealed class PostgresReviewRunRepository(string connectionString) : IRevi
             Target = run.Target,
             ProviderProfileId = run.ProviderProfileId,
             ServiceName = run.ServiceName,
+            PullRequestTitle = run.PullRequestTitle,
             AuthorName = run.AuthorName,
             Status = run.Status,
             CurrentStage = run.CurrentStage,
@@ -307,7 +308,8 @@ public sealed class PostgresReviewRunRepository(string connectionString) : IRevi
             snapshot.Artifacts,
             snapshot.PublishSucceeded,
             snapshot.ServiceName,
-            snapshot.AuthorName);
+            snapshot.AuthorName,
+            snapshot.PullRequestTitle);
     }
 
     private static string BuildTargetKey(ReviewTargetDescriptor target)
@@ -335,6 +337,8 @@ public sealed class PostgresReviewRunRepository(string connectionString) : IRevi
         public string? ProviderProfileId { get; init; }
 
         public string ServiceName { get; init; } = string.Empty;
+
+        public string? PullRequestTitle { get; init; }
 
         public string? AuthorName { get; init; }
 

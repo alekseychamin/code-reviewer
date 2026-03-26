@@ -56,6 +56,9 @@ internal sealed class GitHubPullRequestDiffProvider(
                         ?? throw new InvalidOperationException("GitHub response does not contain base.ref.");
         var repositoryName = root.GetProperty("base").GetProperty("repo").GetProperty("name").GetString()
                              ?? reference.RepositoryName;
+        var pullRequestTitle = root.TryGetProperty("title", out var titleElement) && titleElement.ValueKind == JsonValueKind.String
+            ? titleElement.GetString()
+            : null;
         var authorName = TryReadAuthor(root);
 
         var tempDirectory = Path.Combine(Path.GetTempPath(), "tfs-review-platform", Guid.NewGuid().ToString("N"));
@@ -96,6 +99,7 @@ internal sealed class GitHubPullRequestDiffProvider(
             DiffText = diffText,
             RepositoryPath = tempDirectory,
             RepositoryName = repositoryName,
+            PullRequestTitle = pullRequestTitle,
             ServiceName = repositoryName,
             AuthorName = authorName,
             PullRequestUrl = pullRequestUrl,

@@ -166,7 +166,8 @@ export function ReviewedFilesWorkspace({
       </div>
 
       <div className="file-accordion-list">
-        {filesWithRemarks.map((file) => {
+        {filesWithRemarks.map((file, fileIndex) => {
+          const displayFileIndex = fileIndex + 1;
           const isOpen = expandedFilePath === file.filePath;
           const previewRemark = getPreviewRemark(file);
           const sortedThreads = sortThreads(file.inlineThreads);
@@ -182,6 +183,7 @@ export function ReviewedFilesWorkspace({
               <button className="file-accordion-toggle" onClick={() => toggleFile(file.filePath)} type="button">
                 <div className="file-accordion-main">
                   <div className="file-accordion-title-row">
+                    <span className="entity-number">Файл №{displayFileIndex}</span>
                     <strong>{file.displayName}</strong>
                     {getHighestSeverity(file) ? (
                       <span className={`severity severity-${getSeverityClass(getHighestSeverity(file))}`}>
@@ -213,6 +215,7 @@ export function ReviewedFilesWorkspace({
                 <div className="file-accordion-body">
                   <div className="file-review-header">
                     <div>
+                      <p className="entity-number">Файл №{displayFileIndex}</p>
                       <h3>{file.displayName}</h3>
                       <p>{file.filePath}</p>
                     </div>
@@ -225,13 +228,14 @@ export function ReviewedFilesWorkspace({
                   </div>
 
                   <div className="thread-list">
-                    {sortedThreads.map((thread) => (
+                    {sortedThreads.map((thread, threadIndex) => (
                       <InlineThreadCard
                         busy={!!busy[thread.id]}
                         contextExpanded={!!expandedContexts[thread.id]}
                         draft={drafts[thread.id] ?? ''}
                         error={errors[thread.id] ?? ''}
                         expanded={!!expandedRemarks[thread.id]}
+                        fileIndex={displayFileIndex}
                         key={thread.id}
                         onDraftChange={(value) =>
                           setDrafts((current) => ({
@@ -244,6 +248,7 @@ export function ReviewedFilesWorkspace({
                         onToggleContext={() => toggleContext(thread.id)}
                         onToggleRemark={() => toggleRemark(thread.id)}
                         publishTargetLabel={publishTargetLabel}
+                        threadIndex={threadIndex + 1}
                         thread={thread}
                       />
                     ))}
@@ -260,6 +265,8 @@ export function ReviewedFilesWorkspace({
 
 interface InlineThreadCardProps {
   thread: InlineComment;
+  fileIndex: number;
+  threadIndex: number;
   publishTargetLabel: string;
   draft: string;
   error: string;
@@ -275,6 +282,8 @@ interface InlineThreadCardProps {
 
 function InlineThreadCard({
   thread,
+  fileIndex,
+  threadIndex,
   publishTargetLabel,
   draft,
   error,
@@ -292,12 +301,14 @@ function InlineThreadCard({
       thread.existingCode?.trim() ||
       thread.suggestion?.trim()
   );
+  const severityClass = getSeverityClass(thread.severity);
 
   return (
-    <article className={`inline-thread-card simplified accordion${expanded ? ' open' : ''}`}>
+    <article className={`inline-thread-card simplified accordion severity-surface-${severityClass}${expanded ? ' open' : ''}`}>
       <button className="thread-accordion-toggle" onClick={onToggleRemark} type="button">
         <div className="thread-accordion-title">
-          <span className={`severity severity-${getSeverityClass(thread.severity)}`}>
+          <span className="entity-number">Замечание №{fileIndex}.{threadIndex}</span>
+          <span className={`severity severity-${severityClass}`}>
             {getSeverityLabel(thread.severity)}
           </span>
           <strong>{thread.title}</strong>

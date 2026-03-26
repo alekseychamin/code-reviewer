@@ -6,6 +6,8 @@ public sealed class DiffAcquisitionResult
 
     public required string RepositoryName { get; init; }
 
+    public string? PullRequestTitle { get; init; }
+
     public string ServiceName { get; init; } = string.Empty;
 
     public string? AuthorName { get; init; }

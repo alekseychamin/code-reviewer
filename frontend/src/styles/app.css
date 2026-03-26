@@ -117,6 +117,16 @@ pre {
   font-size: 1.15rem;
 }
 
+.result-title-link {
+  color: inherit;
+  text-decoration: none;
+}
+
+.result-title-link:hover {
+  color: var(--brand-strong);
+  text-decoration: underline;
+}
+
 .result-toolbar {
   display: flex;
   align-items: center;
@@ -737,6 +747,18 @@ button.primary {
   flex-wrap: wrap;
 }
 
+.entity-number {
+  display: inline-flex;
+  align-items: center;
+  padding: 4px 10px;
+  border-radius: 999px;
+  background: rgba(29, 36, 51, 0.06);
+  color: var(--muted);
+  font-size: 0.8rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+
 .file-accordion-path,
 .file-accordion-preview {
   margin: 0;
@@ -1079,6 +1101,7 @@ button.primary {
   background: rgba(255, 255, 255, 0.95);
   border: 1px solid rgba(197, 98, 50, 0.18);
   box-shadow: 0 10px 28px rgba(29, 36, 51, 0.08);
+  border-left-width: 5px;
 }
 
 .inline-thread-card.compact {
@@ -1091,6 +1114,30 @@ button.primary {
 
 .inline-thread-card.accordion {
   overflow: hidden;
+}
+
+.inline-thread-card.severity-surface-critical {
+  background: linear-gradient(180deg, rgba(180, 35, 24, 0.08), rgba(255, 255, 255, 0.96));
+  border-color: rgba(180, 35, 24, 0.22);
+  border-left-color: var(--critical);
+}
+
+.inline-thread-card.severity-surface-high {
+  background: linear-gradient(180deg, rgba(194, 65, 12, 0.08), rgba(255, 255, 255, 0.96));
+  border-color: rgba(194, 65, 12, 0.2);
+  border-left-color: var(--high);
+}
+
+.inline-thread-card.severity-surface-medium {
+  background: linear-gradient(180deg, rgba(181, 137, 0, 0.09), rgba(255, 255, 255, 0.96));
+  border-color: rgba(181, 137, 0, 0.22);
+  border-left-color: var(--medium);
+}
+
+.inline-thread-card.severity-surface-low {
+  background: linear-gradient(180deg, rgba(15, 123, 108, 0.08), rgba(255, 255, 255, 0.96));
+  border-color: rgba(15, 123, 108, 0.2);
+  border-left-color: var(--brand-strong);
 }
 
 .inline-thread-card header {
