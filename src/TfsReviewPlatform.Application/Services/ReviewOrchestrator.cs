@@ -138,6 +138,48 @@ public sealed class ReviewOrchestrator(
         return run.ToDto();
     }
 
+    public async Task<ReviewRunDto> PublishReportAsync(Guid runId, CancellationToken cancellationToken)
+    {
+        var run = await reviewRunRepository.GetAsync(runId, cancellationToken)
+                  ?? throw new InvalidOperationException($"Review run '{runId}' was not found.");
+
+        if (run.Target.Kind != ReviewTargetKind.PullRequest || string.IsNullOrWhiteSpace(run.Target.PullRequestUrl))
+        {
+            throw new InvalidOperationException("Only pull request reviews can publish the final report to TFS.");
+        }
+
+        if (string.IsNullOrWhiteSpace(run.Artifacts.MarkdownReport))
+        {
+            throw new InvalidOperationException("The final report is not ready yet.");
+        }
+
+        if (run.PublishSucceeded)
+        {
+            return run.ToDto();
+        }
+
+        var accessToken = ResolveAzureDevOpsToken(null);
+        if (string.IsNullOrWhiteSpace(accessToken))
+        {
+            throw new InvalidOperationException("AZURE_DEVOPS_TOKEN is required to publish the final report to TFS.");
+        }
+
+        var published = await reviewPublisher.PublishReportAsync(
+            run.Target.PullRequestUrl,
+            accessToken,
+            run.Artifacts.MarkdownReport,
+            cancellationToken);
+
+        if (!published)
+        {
+            throw new InvalidOperationException("Failed to publish the final report to TFS.");
+        }
+
+        run.MarkPublishSucceeded();
+        await reviewRunRepository.UpdateAsync(run, cancellationToken);
+        return run.ToDto();
+    }
+
     public async Task<ReviewRunDto> ContinueInlineDiscussionAsync(
         Guid runId,
         Guid commentId,

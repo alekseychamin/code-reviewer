@@ -13,6 +13,35 @@ public sealed class AzureDevOpsReviewPublisher(IHttpClientFactory httpClientFact
 {
     private const string ApiVersion = "6.0";
 
+    public async Task<bool> PublishReportAsync(
+        string pullRequestUrl,
+        string accessToken,
+        string reportContent,
+        CancellationToken cancellationToken)
+    {
+        var reference = AzureDevOpsUrlParser.Parse(pullRequestUrl);
+        var client = httpClientFactory.CreateClient(HttpClientNames.AzureDevOps);
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Basic", EncodePat(accessToken));
+
+        return await PostThreadAsync(
+            client,
+            reference.BuildThreadsApiUrl(ApiVersion),
+            new
+            {
+                comments = new[]
+                {
+                    new
+                    {
+                        parentCommentId = 0,
+                        content = reportContent,
+                        commentType = 1
+                    }
+                },
+                status = 1
+            },
+            cancellationToken);
+    }
+
     public async Task<bool> PublishAsync(
         string pullRequestUrl,
         string accessToken,

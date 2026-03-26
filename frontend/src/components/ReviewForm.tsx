@@ -2,7 +2,6 @@ import { useState } from 'react';
 import type {
   BranchReviewPayload,
   ProviderProfile,
-  PublishMode,
   PullRequestReviewPayload
 } from '../lib/types';
 
@@ -14,8 +13,6 @@ interface ReviewFormProps {
   onStartBranchReview: (payload: BranchReviewPayload) => Promise<void>;
 }
 
-const publishModes: PublishMode[] = ['None', 'SummaryOnly', 'SummaryAndInline'];
-
 export function ReviewForm({
   profiles,
   onStartPullRequestReview,
@@ -23,7 +20,6 @@ export function ReviewForm({
 }: ReviewFormProps) {
   const [mode, setMode] = useState<ReviewMode>('pullRequest');
   const [providerProfileId, setProviderProfileId] = useState('');
-  const [publishMode, setPublishMode] = useState<PublishMode>('None');
   const [pullRequestUrl, setPullRequestUrl] = useState('');
   const [repositoryPath, setRepositoryPath] = useState('');
   const [repositoryName, setRepositoryName] = useState('');
@@ -71,7 +67,7 @@ export function ReviewForm({
         await onStartPullRequestReview({
           pullRequestUrl,
           providerProfileId: providerProfileId || undefined,
-          publishMode,
+          publishMode: 'None',
           stageOverrides: []
         });
       } else {
@@ -169,21 +165,6 @@ export function ReviewForm({
             ))}
           </select>
         </label>
-
-        <label>
-          Режим публикации
-          <select
-            disabled={mode === 'branches'}
-            value={mode === 'branches' ? 'None' : publishMode}
-            onChange={(event) => setPublishMode(event.target.value as PublishMode)}
-          >
-            {publishModes.map((modeValue) => (
-              <option key={modeValue} value={modeValue}>
-                {translatePublishMode(modeValue)}
-              </option>
-            ))}
-          </select>
-        </label>
       </div>
 
       <div className="panel-footer">
@@ -195,17 +176,4 @@ export function ReviewForm({
       {submitError ? <div className="inline-error">{submitError}</div> : null}
     </section>
   );
-}
-
-function translatePublishMode(mode: PublishMode): string {
-  switch (mode) {
-    case 'None':
-      return 'Не публиковать';
-    case 'SummaryOnly':
-      return 'Только summary';
-    case 'SummaryAndInline':
-      return 'Summary и inline';
-    default:
-      return mode;
-  }
 }

@@ -5,6 +5,12 @@ namespace TfsReviewPlatform.Application.Abstractions;
 
 public interface IReviewPublisher
 {
+    Task<bool> PublishReportAsync(
+        string pullRequestUrl,
+        string accessToken,
+        string reportContent,
+        CancellationToken cancellationToken);
+
     Task<bool> PublishAsync(
         string pullRequestUrl,
         string accessToken,

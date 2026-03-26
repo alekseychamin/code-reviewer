@@ -106,6 +106,15 @@ public sealed class ReviewRun
         }
     }
 
+    public void MarkPublishSucceeded()
+    {
+        lock (_gate)
+        {
+            PublishSucceeded = true;
+            UpdatedAt = DateTimeOffset.UtcNow;
+        }
+    }
+
     public void Fail(string errorMessage)
     {
         lock (_gate)

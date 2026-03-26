@@ -75,6 +75,22 @@ public sealed class ReviewsController(
         }
     }
 
+    [HttpPost("{runId:guid}/report/publish")]
+    [ProducesResponseType<ReviewRunDto>(StatusCodes.Status200OK)]
+    public async Task<ActionResult<ReviewRunDto>> PublishReport(
+        Guid runId,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            return Ok(await reviewOrchestrator.PublishReportAsync(runId, cancellationToken));
+        }
+        catch (InvalidOperationException exception)
+        {
+            return ValidationProblem(detail: exception.Message);
+        }
+    }
+
     [HttpPost("{runId:guid}/inline-comments/{commentId:guid}/discussion")]
     [ProducesResponseType<ReviewRunDto>(StatusCodes.Status200OK)]
     public async Task<ActionResult<ReviewRunDto>> ContinueInlineDiscussion(

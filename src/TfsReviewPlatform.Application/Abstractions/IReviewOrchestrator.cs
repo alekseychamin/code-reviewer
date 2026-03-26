@@ -17,6 +17,8 @@ public interface IReviewOrchestrator
 
     Task<ReviewRunDto> PublishInlineCommentAsync(Guid runId, Guid commentId, CancellationToken cancellationToken);
 
+    Task<ReviewRunDto> PublishReportAsync(Guid runId, CancellationToken cancellationToken);
+
     Task<ReviewRunDto> ContinueInlineDiscussionAsync(
         Guid runId,
         Guid commentId,
