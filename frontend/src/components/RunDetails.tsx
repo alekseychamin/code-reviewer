@@ -21,10 +21,14 @@ export function RunDetails({
   onPublishInlineComment,
   onAskInlineQuestion
 }: RunDetailsProps) {
+  const [isDiagramCollapsed, setIsDiagramCollapsed] = useState(true);
+  const [isDescriptionCollapsed, setIsDescriptionCollapsed] = useState(true);
   const [isReportCollapsed, setIsReportCollapsed] = useState(true);
   const publishTargetLabel = getPublishTargetLabel(run?.pullRequestUrl);
 
   useEffect(() => {
+    setIsDiagramCollapsed(true);
+    setIsDescriptionCollapsed(true);
     setIsReportCollapsed(true);
   }, [run?.id]);
 
@@ -88,22 +92,52 @@ export function RunDetails({
 
       <div className="results-stack">
         <article className="result-card">
-          <h3>Диаграмма изменений</h3>
-          {run.changeDiagramMermaid ? (
-            <div className="diagram-card large">
-              <MermaidDiagram chart={run.changeDiagramMermaid} />
+          <div className="subsection-header">
+            <h3>Диаграмма изменений</h3>
+            <div className="result-toolbar">
+              <button
+                aria-expanded={!isDiagramCollapsed}
+                className="secondary-button"
+                disabled={!run.changeDiagramMermaid}
+                onClick={() => setIsDiagramCollapsed((value) => !value)}
+                type="button"
+              >
+                {isDiagramCollapsed ? 'Развернуть диаграмму' : 'Свернуть диаграмму'}
+              </button>
             </div>
-          ) : (
-            <div className="empty-state">Диаграмма появится здесь, как только этап описания изменений её вернёт.</div>
-          )}
+          </div>
+          {!isDiagramCollapsed ? (
+            run.changeDiagramMermaid ? (
+              <div className="diagram-card large">
+                <MermaidDiagram chart={run.changeDiagramMermaid} />
+              </div>
+            ) : (
+              <div className="empty-state">Диаграмма появится здесь, как только этап описания изменений её вернёт.</div>
+            )
+          ) : null}
         </article>
 
         <article className="result-card">
-          <h3>Описание изменений</h3>
-          <ChangeDescriptionBlock
-            content={run.changeDescriptionStructured}
-            fallback={run.changeDescription}
-          />
+          <div className="subsection-header">
+            <h3>Описание изменений</h3>
+            <div className="result-toolbar">
+              <button
+                aria-expanded={!isDescriptionCollapsed}
+                className="secondary-button"
+                disabled={!run.changeDescriptionStructured && !run.changeDescription}
+                onClick={() => setIsDescriptionCollapsed((value) => !value)}
+                type="button"
+              >
+                {isDescriptionCollapsed ? 'Развернуть описание' : 'Свернуть описание'}
+              </button>
+            </div>
+          </div>
+          {!isDescriptionCollapsed ? (
+            <ChangeDescriptionBlock
+              content={run.changeDescriptionStructured}
+              fallback={run.changeDescription}
+            />
+          ) : null}
         </article>
       </div>
 
