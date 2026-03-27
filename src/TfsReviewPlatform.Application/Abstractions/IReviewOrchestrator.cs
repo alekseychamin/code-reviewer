@@ -19,6 +19,25 @@ public interface IReviewOrchestrator
 
     Task DeletePullRequestHistoryAsync(string pullRequestUrl, CancellationToken cancellationToken);
 
+    Task<ReviewHistoryDto> GetBranchReviewHistoryAsync(
+        string repositoryName,
+        string sourceBranch,
+        string targetBranch,
+        CancellationToken cancellationToken);
+
+    Task DeleteBranchReviewHistoryAsync(
+        string repositoryName,
+        string sourceBranch,
+        string targetBranch,
+        CancellationToken cancellationToken);
+
+    Task<IReadOnlyList<string>> GetBranchRepositorySuggestionsAsync(string query, CancellationToken cancellationToken);
+
+    Task<IReadOnlyList<string>> GetBranchSourceSuggestionsAsync(
+        string repositoryName,
+        string query,
+        CancellationToken cancellationToken);
+
     Task<ReviewRunDto> PublishInlineCommentAsync(Guid runId, Guid commentId, CancellationToken cancellationToken);
 
     Task<ReviewRunDto> PublishReportAsync(Guid runId, CancellationToken cancellationToken);

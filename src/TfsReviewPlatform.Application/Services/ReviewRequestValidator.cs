@@ -53,9 +53,14 @@ public sealed class ReviewRequestValidator : IReviewRequestValidator
             errors["publishMode"] = ["Branch comparison reviews cannot publish directly to a pull request."];
         }
 
-        if (!Path.IsPathRooted(request.RepositoryPath))
+        if (string.IsNullOrWhiteSpace(request.RepositoryName))
         {
-            errors["repositoryPath"] = ["Repository path must be absolute."];
+            errors["repositoryName"] = ["Укажи название репозитория для сравнения веток."];
+        }
+        else if (request.RepositoryName.IndexOfAny([Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar]) >= 0 ||
+                 request.RepositoryName.Contains("..", StringComparison.Ordinal))
+        {
+            errors["repositoryName"] = ["Название репозитория должно быть именем папки без вложенных путей."];
         }
 
         return errors;

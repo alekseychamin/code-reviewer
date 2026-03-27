@@ -91,6 +91,69 @@ public sealed class ReviewsController(
         }
     }
 
+    [HttpGet("history/branch-comparisons")]
+    [ProducesResponseType<ReviewHistoryDto>(StatusCodes.Status200OK)]
+    public async Task<ActionResult<ReviewHistoryDto>> GetBranchHistory(
+        [FromQuery] string repositoryName,
+        [FromQuery] string sourceBranch,
+        [FromQuery] string targetBranch,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            return Ok(await reviewOrchestrator.GetBranchReviewHistoryAsync(repositoryName, sourceBranch, targetBranch, cancellationToken));
+        }
+        catch (InvalidOperationException exception)
+        {
+            return ValidationProblem(detail: exception.Message);
+        }
+    }
+
+    [HttpDelete("history/branch-comparisons")]
+    [ProducesResponseType(StatusCodes.Status204NoContent)]
+    public async Task<IActionResult> DeleteBranchHistory(
+        [FromQuery] string repositoryName,
+        [FromQuery] string sourceBranch,
+        [FromQuery] string targetBranch,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            await reviewOrchestrator.DeleteBranchReviewHistoryAsync(repositoryName, sourceBranch, targetBranch, cancellationToken);
+            return NoContent();
+        }
+        catch (InvalidOperationException exception)
+        {
+            return ValidationProblem(detail: exception.Message);
+        }
+    }
+
+    [HttpGet("branch-comparisons/repositories")]
+    [ProducesResponseType<IReadOnlyList<string>>(StatusCodes.Status200OK)]
+    public async Task<ActionResult<IReadOnlyList<string>>> GetBranchRepositorySuggestions(
+        [FromQuery] string? query,
+        CancellationToken cancellationToken)
+    {
+        return Ok(await reviewOrchestrator.GetBranchRepositorySuggestionsAsync(query ?? string.Empty, cancellationToken));
+    }
+
+    [HttpGet("branch-comparisons/branches")]
+    [ProducesResponseType<IReadOnlyList<string>>(StatusCodes.Status200OK)]
+    public async Task<ActionResult<IReadOnlyList<string>>> GetBranchSourceSuggestions(
+        [FromQuery] string repositoryName,
+        [FromQuery] string? query,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            return Ok(await reviewOrchestrator.GetBranchSourceSuggestionsAsync(repositoryName, query ?? string.Empty, cancellationToken));
+        }
+        catch (InvalidOperationException exception)
+        {
+            return ValidationProblem(detail: exception.Message);
+        }
+    }
+
     [HttpPost("{runId:guid}/inline-comments/{commentId:guid}/publish")]
     [ProducesResponseType<ReviewRunDto>(StatusCodes.Status200OK)]
     public async Task<ActionResult<ReviewRunDto>> PublishInlineComment(

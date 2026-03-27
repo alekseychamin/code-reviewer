@@ -14,6 +14,12 @@ public sealed class ReviewRunDto
 
     public string? PullRequestUrl { get; init; }
 
+    public string? RepositoryName { get; init; }
+
+    public string? SourceBranch { get; init; }
+
+    public string? TargetBranch { get; init; }
+
     public string? ProviderProfileId { get; init; }
 
     public string ServiceName { get; init; } = string.Empty;

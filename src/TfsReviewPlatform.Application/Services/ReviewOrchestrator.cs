@@ -17,6 +17,7 @@ public sealed class ReviewOrchestrator(
     IReviewRequestValidator reviewRequestValidator,
     IBackgroundReviewScheduler backgroundReviewScheduler,
     IReviewProgressStore reviewProgressStore,
+    IBranchRepositoryLookupService branchRepositoryLookupService,
     ILlmStageRouter llmStageRouter,
     ILlmCompletionService llmCompletionService,
     IReviewPublisher reviewPublisher,
@@ -28,6 +29,7 @@ public sealed class ReviewOrchestrator(
     {
         PropertyNameCaseInsensitive = true
     };
+    private const string RepositoriesRootEnvironmentVariable = "REPOSITORIES_ROOT";
 
     public async Task<ReviewRunDto> StartPullRequestReviewAsync(
         StartPullRequestReviewRequest request,
@@ -66,13 +68,14 @@ public sealed class ReviewOrchestrator(
     {
         Validate(reviewRequestValidator.Validate(request));
 
-        var title = $"{request.RepositoryName ?? Path.GetFileName(request.RepositoryPath)}: {request.SourceBranch} -> {request.TargetBranch}";
+        var repositoryPath = ResolveRepositoryPath(request.RepositoryName);
+        var title = $"{request.RepositoryName}: {request.SourceBranch} -> {request.TargetBranch}";
         var target = new ReviewTargetDescriptor(
             ReviewTargetKind.BranchComparison,
             title,
             null,
-            request.RepositoryPath,
-            request.RepositoryName ?? Path.GetFileName(request.RepositoryPath),
+            repositoryPath,
+            request.RepositoryName,
             request.SourceBranch,
             request.TargetBranch);
 
@@ -86,6 +89,39 @@ public sealed class ReviewOrchestrator(
         };
 
         return await EnqueueAsync(target, executionRequest, cancellationToken);
+    }
+
+    private static string ResolveRepositoryPath(string repositoryName)
+    {
+        var resolvedRoot = ResolveRepositoriesRootOrNull();
+        if (resolvedRoot is null)
+        {
+            throw new InvalidOperationException(
+                $"Для сравнения веток требуется переменная окружения {RepositoriesRootEnvironmentVariable} с корневой папкой репозиториев.");
+        }
+
+        var repositoryPath = Path.GetFullPath(Path.Combine(resolvedRoot, repositoryName));
+        var relativePath = Path.GetRelativePath(resolvedRoot, repositoryPath);
+        if (relativePath.StartsWith("..", StringComparison.Ordinal) || Path.IsPathRooted(relativePath))
+        {
+            throw new InvalidOperationException("Название репозитория должно указывать на папку внутри настроенного корня репозиториев.");
+        }
+
+        if (!Directory.Exists(repositoryPath))
+        {
+            throw new InvalidOperationException(
+                $"Репозиторий '{repositoryName}' не найден внутри '{resolvedRoot}'. Проверь настройку {RepositoriesRootEnvironmentVariable} и имя папки.");
+        }
+
+        return repositoryPath;
+    }
+
+    private static string? ResolveRepositoriesRootOrNull()
+    {
+        var repositoriesRoot = Environment.GetEnvironmentVariable(RepositoriesRootEnvironmentVariable)?.Trim();
+        return string.IsNullOrWhiteSpace(repositoriesRoot)
+            ? null
+            : Path.GetFullPath(repositoriesRoot);
     }
 
     public async Task<ReviewRunDto?> GetAsync(Guid runId, CancellationToken cancellationToken)
@@ -139,6 +175,112 @@ public sealed class ReviewOrchestrator(
             null);
 
         await reviewRunRepository.DeleteForTargetAsync(target, cancellationToken);
+    }
+
+    public async Task<ReviewHistoryDto> GetBranchReviewHistoryAsync(
+        string repositoryName,
+        string sourceBranch,
+        string targetBranch,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(repositoryName))
+        {
+            throw new InvalidOperationException("Название репозитория не может быть пустым.");
+        }
+
+        if (string.IsNullOrWhiteSpace(sourceBranch))
+        {
+            throw new InvalidOperationException("Исходная ветка не может быть пустой.");
+        }
+
+        if (string.IsNullOrWhiteSpace(targetBranch))
+        {
+            throw new InvalidOperationException("Целевая ветка не может быть пустой.");
+        }
+
+        var repositoryPath = ResolveRepositoryPath(repositoryName);
+        var title = $"{repositoryName}: {sourceBranch} -> {targetBranch}";
+        var target = new ReviewTargetDescriptor(
+            ReviewTargetKind.BranchComparison,
+            title,
+            null,
+            repositoryPath,
+            repositoryName,
+            sourceBranch,
+            targetBranch);
+
+        var runs = await reviewRunRepository.ListForTargetAsync(target, 20, cancellationToken);
+        var baselineRunId = runs
+            .Where(run => run.Status == ReviewRunStatus.Completed)
+            .OrderByDescending(run => run.CreatedAt)
+            .Select(run => (Guid?)run.Id)
+            .FirstOrDefault();
+
+        return runs.ToHistoryDto(baselineRunId);
+    }
+
+    public async Task DeleteBranchReviewHistoryAsync(
+        string repositoryName,
+        string sourceBranch,
+        string targetBranch,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(repositoryName))
+        {
+            throw new InvalidOperationException("Название репозитория не может быть пустым.");
+        }
+
+        if (string.IsNullOrWhiteSpace(sourceBranch))
+        {
+            throw new InvalidOperationException("Исходная ветка не может быть пустой.");
+        }
+
+        if (string.IsNullOrWhiteSpace(targetBranch))
+        {
+            throw new InvalidOperationException("Целевая ветка не может быть пустой.");
+        }
+
+        var repositoryPath = ResolveRepositoryPath(repositoryName);
+        var title = $"{repositoryName}: {sourceBranch} -> {targetBranch}";
+        var target = new ReviewTargetDescriptor(
+            ReviewTargetKind.BranchComparison,
+            title,
+            null,
+            repositoryPath,
+            repositoryName,
+            sourceBranch,
+            targetBranch);
+
+        await reviewRunRepository.DeleteForTargetAsync(target, cancellationToken);
+    }
+
+    public Task<IReadOnlyList<string>> GetBranchRepositorySuggestionsAsync(string query, CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+
+        var repositoriesRoot = ResolveRepositoriesRootOrNull();
+        if (repositoriesRoot is null)
+        {
+            return Task.FromResult<IReadOnlyList<string>>([]);
+        }
+
+        return branchRepositoryLookupService.GetRepositorySuggestionsAsync(repositoriesRoot, query, cancellationToken);
+    }
+
+    public Task<IReadOnlyList<string>> GetBranchSourceSuggestionsAsync(
+        string repositoryName,
+        string query,
+        CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+
+        if (string.IsNullOrWhiteSpace(repositoryName))
+        {
+            return Task.FromResult<IReadOnlyList<string>>([]);
+        }
+
+        var repositoryPath = ResolveRepositoryPath(repositoryName);
+        return branchRepositoryLookupService.GetBranchSuggestionsAsync(repositoryPath, query, cancellationToken);
     }
 
     public async Task<ReviewRunDto> PublishInlineCommentAsync(Guid runId, Guid commentId, CancellationToken cancellationToken)
