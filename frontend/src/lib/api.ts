@@ -132,6 +132,17 @@ export async function publishInlineComment(runId: string, commentId: string): Pr
   });
 }
 
+export async function setInlineCommentRelevance(
+  runId: string,
+  commentId: string,
+  isRelevant: boolean
+): Promise<ReviewRun> {
+  return request<ReviewRun>(`/api/reviews/${runId}/inline-comments/${commentId}/relevance`, {
+    method: 'POST',
+    body: JSON.stringify({ isRelevant })
+  });
+}
+
 export async function publishReport(runId: string): Promise<ReviewRun> {
   return request<ReviewRun>(`/api/reviews/${runId}/report/publish`, {
     method: 'POST'

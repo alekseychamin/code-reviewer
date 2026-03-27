@@ -6,6 +6,7 @@ interface ReviewedFilesWorkspaceProps {
   files: ReviewedFile[];
   publishTargetLabel: string;
   onPublishInlineComment: (commentId: string) => Promise<void>;
+  onSetInlineCommentRelevance: (commentId: string, isRelevant: boolean) => Promise<void>;
   onAskInlineQuestion: (commentId: string, message: string) => Promise<void>;
 }
 
@@ -13,6 +14,7 @@ export function ReviewedFilesWorkspace({
   files,
   publishTargetLabel,
   onPublishInlineComment,
+  onSetInlineCommentRelevance,
   onAskInlineQuestion
 }: ReviewedFilesWorkspaceProps) {
   const [expandedFilePath, setExpandedFilePath] = useState<string>('');
@@ -109,6 +111,22 @@ export function ReviewedFilesWorkspace({
     try {
       await onAskInlineQuestion(commentId, message);
       setDrafts((current) => ({ ...current, [commentId]: '' }));
+    } catch (error) {
+      setErrors((current) => ({
+        ...current,
+        [commentId]: error instanceof Error ? error.message : String(error)
+      }));
+    } finally {
+      setBusy((current) => ({ ...current, [commentId]: false }));
+    }
+  }
+
+  async function handleRelevanceToggle(commentId: string, isRelevant: boolean): Promise<void> {
+    setBusy((current) => ({ ...current, [commentId]: true }));
+    setErrors((current) => ({ ...current, [commentId]: '' }));
+
+    try {
+      await onSetInlineCommentRelevance(commentId, isRelevant);
     } catch (error) {
       setErrors((current) => ({
         ...current,
@@ -244,6 +262,7 @@ export function ReviewedFilesWorkspace({
                           }))
                         }
                         onPublish={() => void handlePublish(thread.id)}
+                        onSetRelevant={(isRelevant) => void handleRelevanceToggle(thread.id, isRelevant)}
                         onSendQuestion={() => void handleAsk(thread.id)}
                         onToggleContext={() => toggleContext(thread.id)}
                         onToggleRemark={() => toggleRemark(thread.id)}
@@ -275,6 +294,7 @@ interface InlineThreadCardProps {
   contextExpanded: boolean;
   onDraftChange: (value: string) => void;
   onPublish: () => void;
+  onSetRelevant: (isRelevant: boolean) => void;
   onSendQuestion: () => void;
   onToggleRemark: () => void;
   onToggleContext: () => void;
@@ -292,6 +312,7 @@ function InlineThreadCard({
   contextExpanded,
   onDraftChange,
   onPublish,
+  onSetRelevant,
   onSendQuestion,
   onToggleRemark,
   onToggleContext
@@ -304,7 +325,11 @@ function InlineThreadCard({
   const severityClass = getSeverityClass(thread.severity);
 
   return (
-    <article className={`inline-thread-card simplified accordion severity-surface-${severityClass}${expanded ? ' open' : ''}`}>
+    <article
+      className={`inline-thread-card simplified accordion severity-surface-${severityClass}${expanded ? ' open' : ''}${
+        thread.isRelevant ? '' : ' inactive'
+      }`}
+    >
       <button className="thread-accordion-toggle" onClick={onToggleRemark} type="button">
         <div className="thread-accordion-title">
           <span className="entity-number">Замечание №{fileIndex}.{threadIndex}</span>
@@ -318,6 +343,7 @@ function InlineThreadCard({
             {thread.lineNumber > 0 ? `Строка ${thread.lineNumber}` : 'Уровень файла'}
           </span>
           {thread.publishedToTfs ? <span className="secondary-chip success">Отправлено в {publishTargetLabel}</span> : null}
+          {!thread.isRelevant ? <span className="secondary-chip muted">Неактуально</span> : null}
           <span className="thread-accordion-caret">{expanded ? '−' : '+'}</span>
         </div>
       </button>
@@ -376,7 +402,15 @@ function InlineThreadCard({
           <div className="thread-actions">
             <button
               className="secondary-button"
-              disabled={thread.publishedToTfs || busy}
+              disabled={busy}
+              onClick={() => onSetRelevant(!thread.isRelevant)}
+              type="button"
+            >
+              {thread.isRelevant ? 'Отметить как неактуальное' : 'Вернуть в актуальные'}
+            </button>
+            <button
+              className="secondary-button"
+              disabled={thread.publishedToTfs || busy || !thread.isRelevant}
               onClick={onPublish}
               type="button"
             >

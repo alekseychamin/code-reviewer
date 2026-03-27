@@ -13,6 +13,7 @@ import {
   getReviewRun,
   publishInlineComment,
   publishReport,
+  setInlineCommentRelevance,
   startBranchReview,
   startPullRequestReview
 } from './lib/api';
@@ -259,6 +260,16 @@ export default function App() {
     setCurrentRun(run);
   }
 
+  async function handleSetInlineCommentRelevance(commentId: string, isRelevant: boolean): Promise<void> {
+    if (!currentRun) {
+      return;
+    }
+
+    setError(null);
+    const run = await setInlineCommentRelevance(currentRun.id, commentId, isRelevant);
+    setCurrentRun(run);
+  }
+
   async function handleDeletePullRequestHistory(url: string): Promise<void> {
     const normalizedUrl = url.trim();
     if (!normalizedUrl) {
@@ -320,6 +331,7 @@ export default function App() {
         onAskInlineQuestion={handleAskInlineQuestion}
         onPublishReport={handlePublishReport}
         onPublishInlineComment={handlePublishInlineComment}
+        onSetInlineCommentRelevance={handleSetInlineCommentRelevance}
         reportDownloadUrl={displayedRun ? buildReportDownloadUrl(displayedRun.id) : undefined}
         run={displayedRun}
       />

@@ -917,6 +917,10 @@ button.primary {
   color: #117a37;
 }
 
+.secondary-chip.muted {
+  color: #6f7888;
+}
+
 .file-review-surface {
   display: grid;
   gap: 12px;
@@ -1138,6 +1142,22 @@ button.primary {
   background: linear-gradient(180deg, rgba(15, 123, 108, 0.08), rgba(255, 255, 255, 0.96));
   border-color: rgba(15, 123, 108, 0.2);
   border-left-color: var(--brand-strong);
+}
+
+.inline-thread-card.inactive {
+  background: linear-gradient(180deg, rgba(120, 126, 138, 0.08), rgba(248, 249, 251, 0.98));
+  border-color: rgba(120, 126, 138, 0.22);
+  border-left-color: rgba(120, 126, 138, 0.6);
+}
+
+.inline-thread-card.inactive .thread-accordion-title strong,
+.inline-thread-card.inactive .thread-accordion-preview,
+.inline-thread-card.inactive .thread-accordion-body {
+  color: #667085;
+}
+
+.inline-thread-card.inactive .thread-message.user {
+  background: rgba(120, 126, 138, 0.08);
 }
 
 .inline-thread-card header {

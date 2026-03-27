@@ -27,17 +27,22 @@ export interface ReviewFinding {
 
 export interface InlineComment {
   id: string;
+  findingId: string;
   filePath: string;
   lineNumber: number;
   title: string;
   severity: string;
+  category: string;
   content: string;
   existingCode: string;
   suggestion: string;
+  startLine: number;
+  endLine: number;
   contextBlock: string;
   contextStartLine: number;
   contextEndLine: number;
   relevantDiffHunk: string;
+  isRelevant: boolean;
   publishedToTfs: boolean;
   publishedAt?: string;
   messages: ReviewCommentMessage[];

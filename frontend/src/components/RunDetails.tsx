@@ -10,6 +10,7 @@ interface RunDetailsProps {
   reportDownloadUrl?: string;
   onPublishReport: () => Promise<void>;
   onPublishInlineComment: (commentId: string) => Promise<void>;
+  onSetInlineCommentRelevance: (commentId: string, isRelevant: boolean) => Promise<void>;
   onAskInlineQuestion: (commentId: string, message: string) => Promise<void>;
 }
 
@@ -19,6 +20,7 @@ export function RunDetails({
   reportDownloadUrl,
   onPublishReport,
   onPublishInlineComment,
+  onSetInlineCommentRelevance,
   onAskInlineQuestion
 }: RunDetailsProps) {
   const [isDiagramCollapsed, setIsDiagramCollapsed] = useState(true);
@@ -148,6 +150,7 @@ export function RunDetails({
           publishTargetLabel={publishTargetLabel}
           onAskInlineQuestion={onAskInlineQuestion}
           onPublishInlineComment={onPublishInlineComment}
+          onSetInlineCommentRelevance={onSetInlineCommentRelevance}
         />
       </div>
 
