@@ -645,7 +645,13 @@ public sealed class ReviewRunExecutor(
         string fullContent,
         string diffPatch)
     {
-        var context = ContextExtractor.Build(thread.LineNumber, fullContent, diffPatch, thread.ExistingCode);
+        var context = ContextExtractor.Build(
+            thread.LineNumber,
+            thread.StartLine,
+            thread.EndLine,
+            fullContent,
+            diffPatch,
+            thread.ExistingCode);
         var relevantDiffHunk = ContextExtractor.BuildRelevantDiffHunk(
             thread.LineNumber,
             diffPatch,
@@ -788,11 +794,13 @@ public sealed class ReviewRunExecutor(
     {
         public static (string Block, int StartLine, int EndLine) Build(
             int lineNumber,
+            int startLine,
+            int endLine,
             string fullContent,
             string diffPatch,
             string snippet)
         {
-            var fromFile = BuildFromFullFile(lineNumber, fullContent);
+            var fromFile = BuildFromFullFile(lineNumber, startLine, endLine, fullContent, snippet);
             if (!string.IsNullOrWhiteSpace(fromFile.Block))
             {
                 return fromFile;
@@ -801,35 +809,63 @@ public sealed class ReviewRunExecutor(
             return BuildFromPatch(diffPatch, snippet);
         }
 
-        private static (string Block, int StartLine, int EndLine) BuildFromFullFile(int lineNumber, string fullContent)
+        private static (string Block, int StartLine, int EndLine) BuildFromFullFile(
+            int lineNumber,
+            int startLine,
+            int endLine,
+            string fullContent,
+            string snippet)
         {
-            if (string.IsNullOrWhiteSpace(fullContent) || lineNumber <= 0)
+            if (string.IsNullOrWhiteSpace(fullContent))
             {
                 return (string.Empty, 0, 0);
             }
 
             var lines = fullContent.Replace("\r\n", "\n", StringComparison.Ordinal).Split('\n');
-            if (lineNumber > lines.Length)
+            var snippetRange = TryLocateSnippetRangeInFile(lines, snippet);
+            var anchorStartLine = startLine > 0 ? Math.Min(startLine, lines.Length) : 0;
+            var anchorEndLine = endLine > 0 ? Math.Min(endLine, lines.Length) : 0;
+
+            if (anchorStartLine == 0 && snippetRange is not null)
+            {
+                anchorStartLine = snippetRange.Value.StartLine;
+                anchorEndLine = snippetRange.Value.EndLine;
+            }
+
+            if (anchorStartLine == 0 && lineNumber > 0 && lineNumber <= lines.Length)
+            {
+                anchorStartLine = lineNumber;
+                anchorEndLine = lineNumber;
+            }
+
+            if (anchorStartLine <= 0)
             {
                 return (string.Empty, 0, 0);
             }
 
-            var startLine = Math.Max(1, lineNumber - 6);
-            var endLine = Math.Min(lines.Length, lineNumber + 10);
+            anchorEndLine = anchorEndLine >= anchorStartLine ? anchorEndLine : anchorStartLine;
 
-            var declarationStart = FindDeclarationStart(lines, lineNumber);
+            var blockStartLine = Math.Max(1, anchorStartLine - 6);
+            var blockEndLine = Math.Min(lines.Length, anchorEndLine + 10);
+
+            var declarationStart = FindDeclarationStart(lines, anchorStartLine);
             if (declarationStart > 0)
             {
-                startLine = Math.Min(startLine, declarationStart);
+                blockStartLine = Math.Min(blockStartLine, declarationStart);
             }
 
-            var contextLines = new List<string>(endLine - startLine + 1);
-            for (var currentLine = startLine; currentLine <= endLine; currentLine++)
+            if (anchorEndLine > blockEndLine)
+            {
+                blockEndLine = anchorEndLine;
+            }
+
+            var contextLines = new List<string>(blockEndLine - blockStartLine + 1);
+            for (var currentLine = blockStartLine; currentLine <= blockEndLine; currentLine++)
             {
                 contextLines.Add($"{currentLine,4}: {lines[currentLine - 1]}");
             }
 
-            return (string.Join('\n', contextLines), startLine, endLine);
+            return (string.Join('\n', contextLines), blockStartLine, blockEndLine);
         }
 
         private static int FindDeclarationStart(IReadOnlyList<string> lines, int lineNumber)
@@ -939,6 +975,58 @@ public sealed class ReviewRunExecutor(
             return new string(value.Where(character => !char.IsWhiteSpace(character)).ToArray())
                 .Trim()
                 .ToLowerInvariant();
+        }
+
+        private static (int StartLine, int EndLine)? TryLocateSnippetRangeInFile(IReadOnlyList<string> lines, string snippet)
+        {
+            if (string.IsNullOrWhiteSpace(snippet) || lines.Count == 0)
+            {
+                return null;
+            }
+
+            var snippetCandidates = snippet
+                .Replace("\r\n", "\n", StringComparison.Ordinal)
+                .Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                .Select(NormalizeForMatch)
+                .Where(line => !string.IsNullOrWhiteSpace(line))
+                .Distinct()
+                .OrderByDescending(line => line.Length)
+                .Take(6)
+                .ToArray();
+
+            if (snippetCandidates.Length == 0)
+            {
+                return null;
+            }
+
+            var matchedLines = new List<int>(snippetCandidates.Length);
+            foreach (var candidate in snippetCandidates)
+            {
+                for (var index = 0; index < lines.Count; index++)
+                {
+                    var normalizedLine = NormalizeForMatch(lines[index]);
+                    if (string.IsNullOrWhiteSpace(normalizedLine))
+                    {
+                        continue;
+                    }
+
+                    if (!normalizedLine.Contains(candidate, StringComparison.Ordinal) &&
+                        !candidate.Contains(normalizedLine, StringComparison.Ordinal))
+                    {
+                        continue;
+                    }
+
+                    matchedLines.Add(index + 1);
+                    break;
+                }
+            }
+
+            if (matchedLines.Count == 0)
+            {
+                return null;
+            }
+
+            return (matchedLines.Min(), matchedLines.Max());
         }
 
         public static string BuildRelevantDiffHunk(
