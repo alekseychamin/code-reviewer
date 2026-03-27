@@ -565,8 +565,9 @@ public sealed class ReviewOrchestrator(
                 SystemPrompt = """
                     You are a Principal .NET reviewer continuing a global review discussion for an already prepared code review.
                     Answer in Russian.
-                    Stay grounded in the prepared diff, change summary, change diagram, current findings, and discussion history.
+                    Stay grounded in the prepared diff, current findings, and discussion history.
                     Give concrete, implementation-level advice.
+                    Focus on the user's follow-up request against the already prepared review context rather than re-summarizing the whole change.
                     If the user explicitly asks to search for additional defects, you may return new_findings, but only for concrete review-worthy issues.
                     Do not return style-only, cleanup-only, comment-only, or speculative findings.
                     If there are no new review-worthy issues, return an empty new_findings array.
@@ -605,17 +606,6 @@ public sealed class ReviewOrchestrator(
                     """,
                 UserPrompt = $"""
                     Review target: {run.DisplayTitle}
-                    Service: {run.ServiceName}
-                    Author: {run.AuthorName ?? "<unknown>"}
-
-                    Change summary:
-                    {TrimForPrompt(run.Artifacts.ChangeDescription, 6000)}
-
-                    Change diagram:
-                    {TrimForPrompt(run.Artifacts.ChangeDiagramMermaid ?? string.Empty, 4000)}
-
-                    Changed files:
-                    {TrimForPrompt(string.Join('\n', run.Artifacts.ChangedFiles), 4000)}
 
                     Current findings:
                     {TrimForPrompt(BuildFindingsSummary(run), 10000)}
