@@ -324,6 +324,7 @@ function InlineThreadCard({
       thread.suggestion?.trim()
   );
   const severityClass = getSeverityClass(thread.severity);
+  const highlightedContext = buildHighlightedContext(thread);
 
   return (
     <article
@@ -371,11 +372,13 @@ function InlineThreadCard({
                       ? ` (${thread.contextStartLine}-${thread.contextEndLine})`
                       : ''}
                   </p>
-                  <pre>{thread.contextBlock}</pre>
+                  <pre className={highlightedContext.didHighlight ? 'thread-context-highlighted' : undefined}>
+                    {highlightedContext.content}
+                  </pre>
                 </div>
               ) : null}
 
-              {thread.existingCode ? (
+              {thread.existingCode && !highlightedContext.didHighlight ? (
                 <div className="thread-snippet">
                   <p>Проблемный фрагмент</p>
                   <pre>{thread.existingCode}</pre>
@@ -526,6 +529,128 @@ function getHighestSeverity(file: ReviewedFile): string | undefined {
   return [...file.inlineThreads]
     .sort((left, right) => getSeverityRank(right.severity) - getSeverityRank(left.severity))[0]
     ?.severity;
+}
+
+function buildHighlightedContext(thread: InlineComment): { content: React.ReactNode; didHighlight: boolean } {
+  const normalizedContext = thread.contextBlock ?? '';
+  const normalizedExistingCode = thread.existingCode?.trim() ?? '';
+
+  if (!normalizedContext || !normalizedExistingCode) {
+    return highlightContextByLineRange(
+      normalizedContext,
+      thread.startLine,
+      thread.endLine,
+      thread.contextStartLine
+    );
+  }
+
+  const lineRangeHighlight = highlightContextByLineRange(
+    normalizedContext,
+    thread.startLine,
+    thread.endLine,
+    thread.contextStartLine
+  );
+  if (lineRangeHighlight.didHighlight) {
+    return lineRangeHighlight;
+  }
+
+  const exactIndex = normalizedContext.indexOf(normalizedExistingCode);
+  if (exactIndex >= 0) {
+    const before = normalizedContext.slice(0, exactIndex);
+    const match = normalizedContext.slice(exactIndex, exactIndex + normalizedExistingCode.length);
+    const after = normalizedContext.slice(exactIndex + normalizedExistingCode.length);
+
+    return {
+      didHighlight: true,
+      content: (
+        <>
+          {before}
+          <mark className="thread-problem-highlight">{match}</mark>
+          {after}
+        </>
+      )
+    };
+  }
+
+  const problematicLines = new Set(
+    normalizedExistingCode
+      .split('\n')
+      .map((line) => line.trim())
+      .filter((line) => line.length > 0)
+  );
+
+  if (problematicLines.size === 0) {
+    return { content: normalizedContext, didHighlight: false };
+  }
+
+  const contextLines = normalizedContext.split('\n');
+  let highlightedLinesCount = 0;
+  const content = contextLines.map((line, index) => {
+    const trimmed = line.trim();
+    const shouldHighlight = trimmed.length > 0 && problematicLines.has(trimmed);
+
+    if (shouldHighlight) {
+      highlightedLinesCount += 1;
+    }
+
+    return (
+      <span key={`context-line-${index}`} className="thread-context-line">
+        {shouldHighlight ? <mark className="thread-problem-highlight">{line}</mark> : line}
+        {index < contextLines.length - 1 ? '\n' : null}
+      </span>
+    );
+  });
+
+  return {
+    content,
+    didHighlight: highlightedLinesCount > 0
+  };
+}
+
+function highlightContextByLineRange(
+  contextBlock: string,
+  startLine?: number,
+  endLine?: number,
+  contextStartLine?: number
+): { content: React.ReactNode; didHighlight: boolean } {
+  if (!contextBlock || !startLine || startLine <= 0) {
+    return { content: contextBlock, didHighlight: false };
+  }
+
+  const normalizedEndLine = endLine && endLine >= startLine ? endLine : startLine;
+  const contextLines = contextBlock.split('\n');
+  let highlightedLinesCount = 0;
+  let fallbackLineNumber = contextStartLine && contextStartLine > 0 ? contextStartLine : 0;
+
+  const content = contextLines.map((line, index) => {
+    const prefixedLineMatch = line.match(/^\s*(\d+):\s?(.*)$/);
+    const lineNumber = prefixedLineMatch
+      ? Number(prefixedLineMatch[1])
+      : fallbackLineNumber > 0
+        ? fallbackLineNumber
+        : 0;
+
+    if (!prefixedLineMatch && fallbackLineNumber > 0) {
+      fallbackLineNumber += 1;
+    }
+
+    const shouldHighlight = lineNumber >= startLine && lineNumber <= normalizedEndLine;
+    if (shouldHighlight) {
+      highlightedLinesCount += 1;
+    }
+
+    return (
+      <span key={`context-range-line-${index}`} className="thread-context-line">
+        {shouldHighlight ? <mark className="thread-problem-highlight">{line}</mark> : line}
+        {index < contextLines.length - 1 ? '\n' : null}
+      </span>
+    );
+  });
+
+  return {
+    content,
+    didHighlight: highlightedLinesCount > 0
+  };
 }
 
 function getPreviewRemark(file: ReviewedFile): InlineComment | undefined {
