@@ -19,6 +19,7 @@ export interface ReviewFinding {
   endLine: number;
   category: string;
   severity: string;
+  source: string;
   title: string;
   description: string;
   existingCode: string;
@@ -33,6 +34,7 @@ export interface InlineComment {
   title: string;
   severity: string;
   category: string;
+  source: string;
   content: string;
   existingCode: string;
   suggestion: string;
@@ -64,6 +66,8 @@ export interface InlineDiscussionStructuredContent {
   publishToTfsReason: string;
   exampleCodeLanguage: string;
   exampleCode: string;
+  addedFindingsCount: number;
+  addedFindings: string[];
 }
 
 export interface ReviewedFile {
@@ -106,6 +110,7 @@ export interface ReviewRun {
   publishSucceeded: boolean;
   changedFiles: string[];
   findings: ReviewFinding[];
+  reviewDiscussionMessages: ReviewCommentMessage[];
   inlineComments: InlineComment[];
   reviewedFiles: ReviewedFile[];
 }

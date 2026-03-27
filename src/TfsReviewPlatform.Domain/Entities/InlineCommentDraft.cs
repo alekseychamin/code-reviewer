@@ -6,6 +6,7 @@ public sealed record InlineCommentDraft(
     int LineNumber,
     string Title,
     string Severity,
+    string Source,
     string Content,
     string ExistingCode,
     string Suggestion,

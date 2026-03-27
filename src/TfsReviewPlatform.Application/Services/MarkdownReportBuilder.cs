@@ -46,6 +46,7 @@ public sealed class MarkdownReportBuilder : IMarkdownReportBuilder
                 sb.AppendLine();
                 sb.AppendLine($"- Критичность: `{TranslateSeverity(finding.Severity)}`");
                 sb.AppendLine($"- Категория: `{TranslateCategory(finding.Category)}`");
+                sb.AppendLine($"- Источник: `{TranslateSource(finding.Source)}`");
                 sb.AppendLine($"- Место: `{RenderLocation(finding)}`");
                 sb.AppendLine();
                 sb.AppendLine(finding.Description);
@@ -140,6 +141,7 @@ public sealed class MarkdownReportBuilder : IMarkdownReportBuilder
                     location.LineNumber,
                     finding.Title,
                     finding.Severity.ToString(),
+                    finding.Source.ToString(),
                     $"**{finding.Severity}: {finding.Title}**\n\n{finding.Description}",
                     finding.ExistingCode,
                     finding.Suggestion,
@@ -279,6 +281,15 @@ public sealed class MarkdownReportBuilder : IMarkdownReportBuilder
             FindingCategory.Logic => "Логика",
             FindingCategory.CodeStyle => "Стиль кода",
             _ => category.ToString()
+        };
+    }
+
+    private static string TranslateSource(ReviewFindingSource source)
+    {
+        return source switch
+        {
+            ReviewFindingSource.FollowUpDiscussion => "Добавлено после уточнения",
+            _ => "Первичное ревью"
         };
     }
 

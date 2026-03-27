@@ -7,6 +7,7 @@ public sealed record ReviewFinding(
     string LineHint,
     FindingCategory Category,
     FindingSeverity Severity,
+    ReviewFindingSource Source,
     string Title,
     string Description,
     string ExistingCode,

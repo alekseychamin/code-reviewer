@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { MarkdownBlock } from './MarkdownBlock';
 import { MermaidDiagram } from './MermaidDiagram';
-import { ReviewedFilesWorkspace } from './ReviewedFilesWorkspace';
+import { ReviewedFilesWorkspace, ThreadMessageBody } from './ReviewedFilesWorkspace';
 import type { ChangeDescriptionStructuredContent, ReviewRun } from '../lib/types';
 
 interface RunDetailsProps {
@@ -12,6 +12,7 @@ interface RunDetailsProps {
   onPublishInlineComment: (commentId: string) => Promise<void>;
   onSetInlineCommentRelevance: (commentId: string, isRelevant: boolean) => Promise<void>;
   onAskInlineQuestion: (commentId: string, message: string) => Promise<void>;
+  onAskReviewQuestion: (message: string) => Promise<void>;
 }
 
 export function RunDetails({
@@ -21,18 +22,45 @@ export function RunDetails({
   onPublishReport,
   onPublishInlineComment,
   onSetInlineCommentRelevance,
-  onAskInlineQuestion
+  onAskInlineQuestion,
+  onAskReviewQuestion
 }: RunDetailsProps) {
   const [isDiagramCollapsed, setIsDiagramCollapsed] = useState(true);
   const [isDescriptionCollapsed, setIsDescriptionCollapsed] = useState(true);
+  const [isDiscussionCollapsed, setIsDiscussionCollapsed] = useState(true);
   const [isReportCollapsed, setIsReportCollapsed] = useState(true);
+  const [discussionDraft, setDiscussionDraft] = useState('');
+  const [discussionBusy, setDiscussionBusy] = useState(false);
+  const [discussionError, setDiscussionError] = useState('');
   const publishTargetLabel = getPublishTargetLabel(run?.pullRequestUrl);
 
   useEffect(() => {
     setIsDiagramCollapsed(true);
     setIsDescriptionCollapsed(true);
+    setIsDiscussionCollapsed(true);
     setIsReportCollapsed(true);
+    setDiscussionDraft('');
+    setDiscussionBusy(false);
+    setDiscussionError('');
   }, [run?.id]);
+
+  async function handleAskReviewQuestion(): Promise<void> {
+    const message = discussionDraft.trim();
+    if (!message) {
+      return;
+    }
+
+    setDiscussionBusy(true);
+    setDiscussionError('');
+    try {
+      await onAskReviewQuestion(message);
+      setDiscussionDraft('');
+    } catch (error) {
+      setDiscussionError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setDiscussionBusy(false);
+    }
+  }
 
   if (!run) {
     return (
@@ -152,6 +180,66 @@ export function RunDetails({
           onPublishInlineComment={onPublishInlineComment}
           onSetInlineCommentRelevance={onSetInlineCommentRelevance}
         />
+      </div>
+
+      <div className="subsection">
+        <div className="subsection-header">
+          <div>
+            <h3>Спросить LLM по ревью</h3>
+            <p>Вопрос будет задан по уже подготовленному diff, описанию изменений, диаграмме и текущим замечаниям.</p>
+          </div>
+          <div className="result-toolbar">
+            <button
+              aria-expanded={!isDiscussionCollapsed}
+              className="secondary-button"
+              onClick={() => setIsDiscussionCollapsed((value) => !value)}
+              type="button"
+            >
+              {isDiscussionCollapsed ? 'Развернуть диалог' : 'Свернуть диалог'}
+            </button>
+          </div>
+        </div>
+        {!isDiscussionCollapsed ? (
+          <article className="result-card">
+            {run.reviewDiscussionMessages.length > 0 ? (
+              <div className="thread-messages">
+                {run.reviewDiscussionMessages.map((message, index) => (
+                  <div className={`thread-message ${message.role}`} key={`review-discussion-${index}`}>
+                    <strong>{message.role === 'assistant' ? 'LLM' : 'Вы'}</strong>
+                    <ThreadMessageBody message={message} />
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div className="empty-state compact">
+                Здесь можно задать уточняющий вопрос по ревью. Если LLM найдёт новые дефекты или риски, они будут добавлены в список замечаний.
+              </div>
+            )}
+
+            <label className="thread-chat-box review-chat-box">
+              <span>Вопрос по ревью</span>
+              <textarea
+                onChange={(event) => setDiscussionDraft(event.target.value)}
+                placeholder="Например: проверь ещё раз безопасность, найди дополнительные race condition или оцени риски null-handling..."
+                rows={4}
+                value={discussionDraft}
+              />
+            </label>
+
+            <div className="thread-actions">
+              <button
+                className="primary"
+                disabled={discussionBusy || !discussionDraft.trim()}
+                onClick={() => void handleAskReviewQuestion()}
+                type="button"
+              >
+                {discussionBusy ? 'Думаю...' : 'Спросить LLM по ревью'}
+              </button>
+            </div>
+
+            {discussionError ? <div className="thread-error">{discussionError}</div> : null}
+          </article>
+        ) : null}
       </div>
 
       <div className="subsection">

@@ -73,6 +73,7 @@ public sealed class ReviewRunExecutor(
                     ChangeDiagramMermaid = previousRun.Artifacts.ChangeDiagramMermaid,
                     MarkdownReport = previousRun.Artifacts.MarkdownReport,
                     SummaryComment = previousRun.Artifacts.SummaryComment,
+                    ReviewDiscussionMessages = previousRun.Artifacts.ReviewDiscussionMessages,
                     InlineComments = previousRun.Artifacts.InlineComments,
                     ReviewedFiles = previousRun.Artifacts.ReviewedFiles,
                     FindingsComparison = reusedComparison

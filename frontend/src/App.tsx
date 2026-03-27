@@ -6,6 +6,7 @@ import {
   buildDiffDownloadUrl,
   buildEventsUrl,
   buildReportDownloadUrl,
+  continueReviewDiscussion,
   continueInlineDiscussion,
   deleteBranchReviewHistory,
   deletePullRequestReviewHistory,
@@ -471,6 +472,16 @@ export default function App() {
     setCurrentRun(run);
   }
 
+  async function handleAskReviewQuestion(message: string): Promise<void> {
+    if (!currentRun) {
+      return;
+    }
+
+    setError(null);
+    const run = await continueReviewDiscussion(currentRun.id, message);
+    setCurrentRun(run);
+  }
+
   async function handlePublishReport(): Promise<void> {
     if (!currentRun) {
       return;
@@ -599,6 +610,7 @@ export default function App() {
       <RunDetails
         diffDownloadUrl={displayedRun ? buildDiffDownloadUrl(displayedRun.id) : undefined}
         onAskInlineQuestion={handleAskInlineQuestion}
+        onAskReviewQuestion={handleAskReviewQuestion}
         onPublishReport={handlePublishReport}
         onPublishInlineComment={handlePublishInlineComment}
         onSetInlineCommentRelevance={handleSetInlineCommentRelevance}

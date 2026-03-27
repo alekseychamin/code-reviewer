@@ -62,6 +62,13 @@ public static class ReviewRunMappingExtensions
                     StillRelevantFindings = run.Artifacts.FindingsComparison.StillRelevantFindings.Select(MapFinding).ToArray(),
                     ResolvedFindings = run.Artifacts.FindingsComparison.ResolvedFindings.Select(MapFinding).ToArray()
                 },
+            ReviewDiscussionMessages = run.Artifacts.ReviewDiscussionMessages.Select(message => new ReviewCommentMessageDto
+            {
+                Role = message.Role,
+                Content = message.Content,
+                CreatedAt = message.CreatedAt,
+                StructuredContent = MapStructuredContent(message.StructuredContent)
+            }).ToArray(),
             InlineComments = run.Artifacts.InlineComments.Select(comment => new InlineCommentDto
             {
                 Id = comment.Id,
@@ -70,6 +77,7 @@ public static class ReviewRunMappingExtensions
                 LineNumber = comment.LineNumber,
                 Title = comment.Title,
                 Severity = comment.Severity,
+                Source = comment.Source,
                 Category = comment.Category,
                 Content = comment.Content,
                 ExistingCode = comment.ExistingCode,
@@ -109,6 +117,7 @@ public static class ReviewRunMappingExtensions
                     LineNumber = comment.LineNumber,
                     Title = comment.Title,
                     Severity = comment.Severity,
+                    Source = comment.Source,
                     Category = comment.Category,
                     Content = comment.Content,
                     ExistingCode = comment.ExistingCode,
@@ -175,7 +184,9 @@ public static class ReviewRunMappingExtensions
             ShouldPublishToTfs = content.ShouldPublishToTfs,
             PublishToTfsReason = content.PublishToTfsReason,
             ExampleCodeLanguage = content.ExampleCodeLanguage,
-            ExampleCode = content.ExampleCode
+            ExampleCode = content.ExampleCode,
+            AddedFindingsCount = content.AddedFindingsCount,
+            AddedFindings = content.AddedFindings
         };
     }
 
@@ -207,6 +218,7 @@ public static class ReviewRunMappingExtensions
             EndLine = finding.EndLine,
             Category = finding.Category,
             Severity = finding.Severity,
+            Source = finding.Source,
             Title = finding.Title,
             Description = finding.Description,
             ExistingCode = finding.ExistingCode,

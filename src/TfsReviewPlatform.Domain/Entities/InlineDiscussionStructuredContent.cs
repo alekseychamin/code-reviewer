@@ -17,4 +17,8 @@ public sealed class InlineDiscussionStructuredContent
     public string ExampleCodeLanguage { get; init; } = string.Empty;
 
     public string ExampleCode { get; init; } = string.Empty;
+
+    public int AddedFindingsCount { get; init; }
+
+    public IReadOnlyList<string> AddedFindings { get; init; } = [];
 }

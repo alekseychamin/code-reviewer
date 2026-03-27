@@ -205,6 +205,13 @@ export async function continueInlineDiscussion(runId: string, commentId: string,
   });
 }
 
+export async function continueReviewDiscussion(runId: string, message: string): Promise<ReviewRun> {
+  return request<ReviewRun>(`/api/reviews/${runId}/discussion`, {
+    method: 'POST',
+    body: JSON.stringify({ message })
+  });
+}
+
 export function buildDiffDownloadUrl(runId: string): string {
   return buildUrl(`/api/reviews/${runId}/artifacts/diff`);
 }

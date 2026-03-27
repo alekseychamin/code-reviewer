@@ -325,6 +325,8 @@ function InlineThreadCard({
   );
   const severityClass = getSeverityClass(thread.severity);
   const highlightedContext = buildHighlightedContext(thread);
+  const sourceLabel = getFindingSourceLabel(thread.source);
+  const sourceClass = thread.source === 'FollowUpDiscussion' ? 'source-followup' : 'source-initial';
 
   return (
     <article
@@ -341,6 +343,7 @@ function InlineThreadCard({
           <strong>{thread.title}</strong>
         </div>
         <div className="thread-meta">
+          <span className={`secondary-chip ${sourceClass}`}>{sourceLabel}</span>
           <span className="secondary-chip">
             {thread.lineNumber > 0 ? `Строка ${thread.lineNumber}` : 'Уровень файла'}
           </span>
@@ -453,7 +456,11 @@ function InlineThreadCard({
   );
 }
 
-function ThreadMessageBody({ message }: { message: ReviewCommentMessage }) {
+function getFindingSourceLabel(source: string): string {
+  return source === 'FollowUpDiscussion' ? 'После уточнения' : 'Первичное ревью';
+}
+
+export function ThreadMessageBody({ message }: { message: ReviewCommentMessage }) {
   if (message.role === 'assistant' && message.structuredContent) {
     return <StructuredInlineDiscussion content={message.structuredContent} />;
   }
@@ -461,7 +468,7 @@ function ThreadMessageBody({ message }: { message: ReviewCommentMessage }) {
   return <MarkdownBlock content={message.content} emptyText="" />;
 }
 
-function StructuredInlineDiscussion({ content }: { content: InlineDiscussionStructuredContent }) {
+export function StructuredInlineDiscussion({ content }: { content: InlineDiscussionStructuredContent }) {
   const hasPublishDecision =
     typeof content.shouldPublishToTfs === 'boolean' || Boolean(content.publishToTfsReason?.trim());
 
@@ -519,6 +526,20 @@ function StructuredInlineDiscussion({ content }: { content: InlineDiscussionStru
           <pre>
             <code>{content.exampleCode}</code>
           </pre>
+        </section>
+      ) : null}
+
+      {content.addedFindingsCount > 0 ? (
+        <section className="structured-discussion-section">
+          <h4>Новые замечания</h4>
+          <p>LLM добавил замечаний: {content.addedFindingsCount}</p>
+          {content.addedFindings?.length ? (
+            <ul>
+              {content.addedFindings.map((item, index) => (
+                <li key={`added-finding-${index}`}>{item}</li>
+              ))}
+            </ul>
+          ) : null}
         </section>
       ) : null}
     </div>

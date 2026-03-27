@@ -54,6 +54,11 @@ public interface IReviewOrchestrator
         ContinueInlineDiscussionRequest request,
         CancellationToken cancellationToken);
 
+    Task<ReviewRunDto> ContinueReviewDiscussionAsync(
+        Guid runId,
+        ContinueReviewDiscussionRequest request,
+        CancellationToken cancellationToken);
+
     Task<ArtifactDownloadResult?> GetDiffDownloadAsync(Guid runId, CancellationToken cancellationToken);
 
     Task<ArtifactDownloadResult?> GetMarkdownReportDownloadAsync(Guid runId, CancellationToken cancellationToken);

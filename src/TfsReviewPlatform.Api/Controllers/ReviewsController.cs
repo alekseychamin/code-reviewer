@@ -205,6 +205,23 @@ public sealed class ReviewsController(
         }
     }
 
+    [HttpPost("{runId:guid}/discussion")]
+    [ProducesResponseType<ReviewRunDto>(StatusCodes.Status200OK)]
+    public async Task<ActionResult<ReviewRunDto>> ContinueReviewDiscussion(
+        Guid runId,
+        [FromBody] ContinueReviewDiscussionRequest request,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            return Ok(await reviewOrchestrator.ContinueReviewDiscussionAsync(runId, request, cancellationToken));
+        }
+        catch (InvalidOperationException exception)
+        {
+            return ValidationProblem(detail: exception.Message);
+        }
+    }
+
     [HttpPost("{runId:guid}/inline-comments/{commentId:guid}/relevance")]
     [ProducesResponseType<ReviewRunDto>(StatusCodes.Status200OK)]
     public async Task<ActionResult<ReviewRunDto>> SetInlineCommentRelevance(

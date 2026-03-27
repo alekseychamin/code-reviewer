@@ -20,6 +20,8 @@ public sealed class ReviewOrchestrator(
     IBranchRepositoryLookupService branchRepositoryLookupService,
     ILlmStageRouter llmStageRouter,
     ILlmCompletionService llmCompletionService,
+    IFindingsNormalizer findingsNormalizer,
+    IFindingsComparisonService findingsComparisonService,
     IReviewPublisher reviewPublisher,
     IMarkdownReportBuilder markdownReportBuilder,
     ILogger<ReviewOrchestrator> logger)
@@ -530,6 +532,165 @@ public sealed class ReviewOrchestrator(
         return run.ToDto();
     }
 
+    public async Task<ReviewRunDto> ContinueReviewDiscussionAsync(
+        Guid runId,
+        ContinueReviewDiscussionRequest request,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(request.Message))
+        {
+            throw new InvalidOperationException("Discussion message cannot be empty.");
+        }
+
+        var run = await reviewRunRepository.GetAsync(runId, cancellationToken)
+                  ?? throw new InvalidOperationException($"Review run '{runId}' was not found.");
+
+        var selection = await llmStageRouter.ResolveAsync(
+            ReviewPipelineStage.ChunkReview,
+            run.ProviderProfileId,
+            [],
+            cancellationToken);
+
+        var history = string.Join(
+            "\n\n",
+            run.Artifacts.ReviewDiscussionMessages.Select(message => $"{message.Role.ToUpperInvariant()}:\n{message.Content}"));
+
+        var assistantReply = await llmCompletionService.CompleteAsync(
+            selection.Profile,
+            new LlmChatRequest
+            {
+                Model = selection.Model,
+                Temperature = 0.2,
+                ExpectJson = true,
+                SystemPrompt = """
+                    You are a Principal .NET reviewer continuing a global review discussion for an already prepared code review.
+                    Answer in Russian.
+                    Stay grounded in the prepared diff, change summary, change diagram, current findings, and discussion history.
+                    Give concrete, implementation-level advice.
+                    If the user explicitly asks to search for additional defects, you may return new_findings, but only for concrete review-worthy issues.
+                    Do not return style-only, cleanup-only, comment-only, or speculative findings.
+                    If there are no new review-worthy issues, return an empty new_findings array.
+                    If the provided review context is not enough, say exactly what is missing.
+                    Return JSON only.
+                    Do not return markdown.
+                    All string values must be plain text without markdown emphasis markers such as **, __, or backticks.
+                    Use this exact schema:
+                    {
+                      "summary": "short direct answer for the user",
+                      "problems": ["specific problem or implication", "another problem if needed"],
+                      "risk": "concrete risk or impact",
+                      "recommendations": ["actionable recommendation", "second recommendation if needed"],
+                      "shouldPublishToTfs": true,
+                      "publishToTfsReason": "why this should or should not be published",
+                      "exampleCodeLanguage": "csharp",
+                      "exampleCode": "optional code example, otherwise empty string",
+                      "new_findings": [
+                        {
+                          "kind": "Defect or Risk",
+                          "file": "relative/path/to/file.cs",
+                          "line_hint": "Line 123",
+                          "start_line": 123,
+                          "end_line": 126,
+                          "type": "Bug or Reliability or Logic or Security or Performance or Architecture",
+                          "severity": "Critical or High or Medium or Low",
+                          "title": "short issue title",
+                          "description": "why this is a problem",
+                          "existing_code": "problematic changed code only",
+                          "suggestion": "minimal concrete fix"
+                        }
+                      ]
+                    }
+                    Keep arrays short.
+                    If there is no code example, return an empty string in exampleCode and exampleCodeLanguage.
+                    """,
+                UserPrompt = $"""
+                    Review target: {run.DisplayTitle}
+                    Service: {run.ServiceName}
+                    Author: {run.AuthorName ?? "<unknown>"}
+
+                    Change summary:
+                    {TrimForPrompt(run.Artifacts.ChangeDescription, 6000)}
+
+                    Change diagram:
+                    {TrimForPrompt(run.Artifacts.ChangeDiagramMermaid ?? string.Empty, 4000)}
+
+                    Changed files:
+                    {TrimForPrompt(string.Join('\n', run.Artifacts.ChangedFiles), 4000)}
+
+                    Current findings:
+                    {TrimForPrompt(BuildFindingsSummary(run), 10000)}
+
+                    Prepared review diff:
+                    {TrimForPrompt(run.Artifacts.DiffText, 22000)}
+
+                    Discussion history:
+                    {TrimForPrompt(history, 12000)}
+
+                    User question:
+                    {request.Message}
+                    """
+            },
+            cancellationToken);
+
+        var parsedResult = ParseReviewDiscussionResult(assistantReply, findingsNormalizer);
+        var uniqueNewFindings = GetUniqueNewFindings(run.Findings, parsedResult.NewFindings);
+        var structuredReply = WithAddedFindingsCount(
+            parsedResult.StructuredContent,
+            uniqueNewFindings.Count,
+            BuildAddedFindingSummaries(uniqueNewFindings));
+        var renderedReply = structuredReply is null
+            ? assistantReply
+            : RenderInlineDiscussionMarkdown(structuredReply);
+
+        var updatedMessages = run.Artifacts.ReviewDiscussionMessages
+            .Concat(
+                [
+                    new ReviewCommentMessage("user", request.Message.Trim(), DateTimeOffset.UtcNow),
+                    new ReviewCommentMessage("assistant", renderedReply, DateTimeOffset.UtcNow, structuredReply)
+                ])
+            .ToArray();
+        var mergedFindings = uniqueNewFindings.Count == 0
+            ? run.Findings
+            : run.Findings.Concat(uniqueNewFindings).ToArray();
+        var mergedInlineComments = uniqueNewFindings.Count == 0
+            ? run.Artifacts.InlineComments
+            : MergeInlineComments(run.Artifacts, uniqueNewFindings, markdownReportBuilder);
+        var mergedReviewedFiles = uniqueNewFindings.Count == 0
+            ? run.Artifacts.ReviewedFiles
+            : MergeReviewedFiles(run.Artifacts.ReviewedFiles, mergedInlineComments);
+        var relevantFindings = mergedInlineComments.Count > 0
+            ? BuildRelevantFindings(new ReviewArtifacts { InlineComments = mergedInlineComments })
+            : mergedFindings;
+        var findingsComparison = await RebuildFindingsComparisonAsync(run, mergedFindings, cancellationToken);
+
+        run.UpdateFindings(mergedFindings);
+        run.UpdateArtifacts(new ReviewArtifacts
+        {
+            DiffText = run.Artifacts.DiffText,
+            ChangedFiles = run.Artifacts.ChangedFiles,
+            ChangeDescription = run.Artifacts.ChangeDescription,
+            ChangeDescriptionStructured = run.Artifacts.ChangeDescriptionStructured,
+            ChangeDiagramMermaid = run.Artifacts.ChangeDiagramMermaid,
+            MarkdownReport = markdownReportBuilder.BuildFullReport(
+                run.DisplayTitle,
+                run.Artifacts.ChangeDescription,
+                relevantFindings,
+                findingsComparison),
+            SummaryComment = markdownReportBuilder.BuildSummaryComment(
+                run.DisplayTitle,
+                run.Artifacts.ChangeDescription,
+                relevantFindings,
+                findingsComparison),
+            ReviewDiscussionMessages = updatedMessages,
+            InlineComments = mergedInlineComments,
+            ReviewedFiles = mergedReviewedFiles,
+            FindingsComparison = findingsComparison
+        });
+
+        await reviewRunRepository.UpdateAsync(run, cancellationToken);
+        return run.ToDto();
+    }
+
     private static InlineDiscussionStructuredContent? ParseInlineDiscussionStructuredContent(string rawResponse)
     {
         if (string.IsNullOrWhiteSpace(rawResponse))
@@ -540,41 +701,8 @@ public sealed class ReviewOrchestrator(
         try
         {
             var json = ExtractJsonObject(rawResponse);
-            var payload = JsonSerializer.Deserialize<InlineDiscussionResponsePayload>(json, InlineDiscussionJsonOptions);
-            if (payload is null)
-            {
-                return null;
-            }
-
-            var problems = NormalizeList(payload.Problems);
-            var recommendations = NormalizeList(payload.Recommendations);
-            var summary = payload.Summary?.Trim() ?? string.Empty;
-            var risk = payload.Risk?.Trim() ?? string.Empty;
-            var publishReason = payload.PublishToTfsReason?.Trim() ?? string.Empty;
-            var exampleCode = payload.ExampleCode?.Trim() ?? string.Empty;
-            var exampleLanguage = payload.ExampleCodeLanguage?.Trim() ?? string.Empty;
-
-            if (string.IsNullOrWhiteSpace(summary)
-                && problems.Count == 0
-                && string.IsNullOrWhiteSpace(risk)
-                && recommendations.Count == 0
-                && string.IsNullOrWhiteSpace(publishReason)
-                && string.IsNullOrWhiteSpace(exampleCode))
-            {
-                return null;
-            }
-
-            return new InlineDiscussionStructuredContent
-            {
-                Summary = summary,
-                Problems = problems,
-                Risk = risk,
-                Recommendations = recommendations,
-                ShouldPublishToTfs = payload.ShouldPublishToTfs,
-                PublishToTfsReason = publishReason,
-                ExampleCodeLanguage = exampleLanguage,
-                ExampleCode = exampleCode
-            };
+            using var document = JsonDocument.Parse(json);
+            return ParseInlineDiscussionStructuredContent(document.RootElement);
         }
         catch (JsonException)
         {
@@ -645,6 +773,21 @@ public sealed class ReviewOrchestrator(
             builder.AppendLine(content.ExampleCodeLanguage);
             builder.AppendLine(content.ExampleCode);
             builder.AppendLine("```");
+            builder.AppendLine();
+        }
+
+        if (content.AddedFindingsCount > 0)
+        {
+            builder.AppendLine("### Новые замечания");
+            builder.AppendLine($"LLM добавил замечаний: {content.AddedFindingsCount}");
+            if (content.AddedFindings.Count > 0)
+            {
+                builder.AppendLine();
+                foreach (var addedFinding in content.AddedFindings)
+                {
+                    builder.AppendLine($"- {addedFinding}");
+                }
+            }
         }
 
         return builder.ToString().Trim();
@@ -688,6 +831,92 @@ public sealed class ReviewOrchestrator(
             ?? [];
     }
 
+    private static InlineDiscussionStructuredContent? ParseInlineDiscussionStructuredContent(
+        JsonElement root,
+        int addedFindingsCount = 0,
+        IReadOnlyList<string>? addedFindings = null)
+    {
+        if (root.ValueKind != JsonValueKind.Object)
+        {
+            return null;
+        }
+
+        var payload = JsonSerializer.Deserialize<InlineDiscussionResponsePayload>(root.GetRawText(), InlineDiscussionJsonOptions);
+        if (payload is null)
+        {
+            return null;
+        }
+
+        var problems = NormalizeList(payload.Problems);
+        var recommendations = NormalizeList(payload.Recommendations);
+        var summary = payload.Summary?.Trim() ?? string.Empty;
+        var risk = payload.Risk?.Trim() ?? string.Empty;
+        var publishReason = payload.PublishToTfsReason?.Trim() ?? string.Empty;
+        var exampleCode = payload.ExampleCode?.Trim() ?? string.Empty;
+        var exampleLanguage = payload.ExampleCodeLanguage?.Trim() ?? string.Empty;
+        var addedFindingItems = addedFindings ?? [];
+
+        if (string.IsNullOrWhiteSpace(summary)
+            && problems.Count == 0
+            && string.IsNullOrWhiteSpace(risk)
+            && recommendations.Count == 0
+            && string.IsNullOrWhiteSpace(publishReason)
+            && string.IsNullOrWhiteSpace(exampleCode)
+            && addedFindingsCount == 0
+            && addedFindingItems.Count == 0)
+        {
+            return null;
+        }
+
+        return new InlineDiscussionStructuredContent
+        {
+            Summary = summary,
+            Problems = problems,
+            Risk = risk,
+            Recommendations = recommendations,
+            ShouldPublishToTfs = payload.ShouldPublishToTfs,
+            PublishToTfsReason = publishReason,
+            ExampleCodeLanguage = exampleLanguage,
+            ExampleCode = exampleCode,
+            AddedFindingsCount = addedFindingsCount,
+            AddedFindings = addedFindingItems
+        };
+    }
+
+    private static ParsedReviewDiscussionResult ParseReviewDiscussionResult(
+        string rawResponse,
+        IFindingsNormalizer findingsNormalizer)
+    {
+        if (string.IsNullOrWhiteSpace(rawResponse))
+        {
+            return new ParsedReviewDiscussionResult(null, []);
+        }
+
+        try
+        {
+            var json = ExtractJsonObject(rawResponse);
+            using var document = JsonDocument.Parse(json);
+            var root = document.RootElement;
+
+            var newFindings = root.TryGetProperty("new_findings", out var newFindingsNode) &&
+                              newFindingsNode.ValueKind == JsonValueKind.Array
+                ? findingsNormalizer.Normalize([newFindingsNode.GetRawText()])
+                    .Select(finding => finding with { Source = ReviewFindingSource.FollowUpDiscussion })
+                    .ToArray()
+                : [];
+
+            var structuredContent = ParseInlineDiscussionStructuredContent(
+                root,
+                newFindings.Length,
+                BuildAddedFindingSummaries(newFindings));
+            return new ParsedReviewDiscussionResult(structuredContent, newFindings);
+        }
+        catch (JsonException)
+        {
+            return new ParsedReviewDiscussionResult(ParseInlineDiscussionStructuredContent(rawResponse), []);
+        }
+    }
+
     private sealed class InlineDiscussionResponsePayload
     {
         public string? Summary { get; init; }
@@ -705,6 +934,54 @@ public sealed class ReviewOrchestrator(
         public string? ExampleCodeLanguage { get; init; }
 
         public string? ExampleCode { get; init; }
+    }
+
+    private sealed record ParsedReviewDiscussionResult(
+        InlineDiscussionStructuredContent? StructuredContent,
+        IReadOnlyList<ReviewFinding> NewFindings);
+
+    private static InlineDiscussionStructuredContent? WithAddedFindingsCount(
+        InlineDiscussionStructuredContent? content,
+        int addedFindingsCount,
+        IReadOnlyList<string>? addedFindings = null)
+    {
+        if (content is null)
+        {
+            return addedFindingsCount <= 0
+                ? null
+                : new InlineDiscussionStructuredContent
+                {
+                    AddedFindingsCount = addedFindingsCount,
+                    AddedFindings = addedFindings ?? []
+                };
+        }
+
+        return new InlineDiscussionStructuredContent
+        {
+            Summary = content.Summary,
+            Problems = content.Problems,
+            Risk = content.Risk,
+            Recommendations = content.Recommendations,
+            ShouldPublishToTfs = content.ShouldPublishToTfs,
+            PublishToTfsReason = content.PublishToTfsReason,
+            ExampleCodeLanguage = content.ExampleCodeLanguage,
+            ExampleCode = content.ExampleCode,
+            AddedFindingsCount = addedFindingsCount,
+            AddedFindings = addedFindings ?? content.AddedFindings
+        };
+    }
+
+    private static IReadOnlyList<string> BuildAddedFindingSummaries(IReadOnlyList<ReviewFinding> findings)
+    {
+        return findings
+            .Select(finding =>
+            {
+                var location = finding.StartLine > 0
+                    ? $" (строка {finding.StartLine})"
+                    : string.Empty;
+                return $"{finding.File}{location}: {finding.Title}";
+            })
+            .ToArray();
     }
 
     public async Task<ArtifactDownloadResult?> GetDiffDownloadAsync(Guid runId, CancellationToken cancellationToken)
@@ -840,6 +1117,7 @@ public sealed class ReviewOrchestrator(
             ChangeDiagramMermaid = artifacts.ChangeDiagramMermaid,
             MarkdownReport = artifacts.MarkdownReport,
             SummaryComment = artifacts.SummaryComment,
+            ReviewDiscussionMessages = artifacts.ReviewDiscussionMessages,
             InlineComments = inlineComments,
             ReviewedFiles = reviewedFiles,
             FindingsComparison = artifacts.FindingsComparison
@@ -865,6 +1143,7 @@ public sealed class ReviewOrchestrator(
                 artifacts.ChangeDescription,
                 relevantFindings,
                 relevantComparison),
+            ReviewDiscussionMessages = artifacts.ReviewDiscussionMessages,
             InlineComments = inlineComments,
             ReviewedFiles = reviewedFiles,
             FindingsComparison = relevantComparison
@@ -895,6 +1174,7 @@ public sealed class ReviewOrchestrator(
             lineHint,
             Enum.TryParse<FindingCategory>(comment.Category, true, out var category) ? category : FindingCategory.Bug,
             Enum.TryParse<FindingSeverity>(comment.Severity, true, out var severity) ? severity : FindingSeverity.Medium,
+            ParseFindingSource(comment.Source),
             comment.Title,
             description,
             comment.ExistingCode,
@@ -902,6 +1182,383 @@ public sealed class ReviewOrchestrator(
             comment.StartLine > 0 ? comment.StartLine : comment.LineNumber,
             comment.EndLine > 0 ? comment.EndLine : (comment.StartLine > 0 ? comment.StartLine : comment.LineNumber),
             comment.FindingId);
+    }
+
+    private async Task<FindingsComparisonSnapshot?> RebuildFindingsComparisonAsync(
+        ReviewRun run,
+        IReadOnlyList<ReviewFinding> mergedFindings,
+        CancellationToken cancellationToken)
+    {
+        var previousRunId = run.Artifacts.FindingsComparison?.PreviousRunId;
+        if (previousRunId is null)
+        {
+            return run.Artifacts.FindingsComparison;
+        }
+
+        var previousRun = await reviewRunRepository.GetAsync(previousRunId.Value, cancellationToken);
+        return previousRun is null
+            ? run.Artifacts.FindingsComparison
+            : findingsComparisonService.Compare(previousRun.Id, previousRun.Findings, mergedFindings);
+    }
+
+    private static IReadOnlyList<ReviewFinding> GetUniqueNewFindings(
+        IReadOnlyList<ReviewFinding> existingFindings,
+        IReadOnlyList<ReviewFinding> candidateFindings)
+    {
+        if (candidateFindings.Count == 0)
+        {
+            return [];
+        }
+
+        var existingKeys = existingFindings
+            .Select(BuildSemanticFindingKey)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+        return candidateFindings
+            .Where(finding => existingKeys.Add(BuildSemanticFindingKey(finding)))
+            .ToArray();
+    }
+
+    private static IReadOnlyList<InlineCommentDraft> MergeInlineComments(
+        ReviewArtifacts artifacts,
+        IReadOnlyList<ReviewFinding> newFindings,
+        IMarkdownReportBuilder markdownReportBuilder)
+    {
+        if (newFindings.Count == 0)
+        {
+            return artifacts.InlineComments;
+        }
+
+        var newComments = markdownReportBuilder.BuildInlineComments(newFindings, artifacts.DiffText)
+            .Select(comment => EnrichInlineComment(comment, artifacts.ReviewedFiles))
+            .ToArray();
+
+        return artifacts.InlineComments
+            .Concat(newComments)
+            .OrderBy(comment => NormalizePath(comment.FilePath), StringComparer.OrdinalIgnoreCase)
+            .ThenBy(comment => comment.LineNumber)
+            .ThenBy(comment => comment.Title, StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+    }
+
+    private static IReadOnlyList<ReviewedFileArtifact> MergeReviewedFiles(
+        IReadOnlyList<ReviewedFileArtifact> reviewedFiles,
+        IReadOnlyList<InlineCommentDraft> inlineComments)
+    {
+        return reviewedFiles
+            .Select(file => new ReviewedFileArtifact
+            {
+                FilePath = file.FilePath,
+                DisplayName = file.DisplayName,
+                ChangeType = file.ChangeType,
+                AddedLines = file.AddedLines,
+                DeletedLines = file.DeletedLines,
+                DiffPatch = file.DiffPatch,
+                FullContent = file.FullContent,
+                ChangedLineNumbers = file.ChangedLineNumbers,
+                InlineThreads = inlineComments
+                    .Where(comment => PathsMatch(comment.FilePath, file.FilePath))
+                    .OrderBy(comment => comment.LineNumber)
+                    .ThenBy(comment => comment.Title, StringComparer.OrdinalIgnoreCase)
+                    .ToArray()
+            })
+            .ToArray();
+    }
+
+    private static InlineCommentDraft EnrichInlineComment(
+        InlineCommentDraft thread,
+        IReadOnlyList<ReviewedFileArtifact> reviewedFiles)
+    {
+        var file = reviewedFiles.FirstOrDefault(item => PathsMatch(item.FilePath, thread.FilePath));
+        if (file is null)
+        {
+            return thread;
+        }
+
+        var context = GlobalContextExtractor.Build(
+            thread.LineNumber,
+            thread.StartLine,
+            thread.EndLine,
+            file.FullContent,
+            file.DiffPatch,
+            thread.ExistingCode);
+        var provisionalThread = thread with
+        {
+            ContextBlock = context.Block,
+            ContextStartLine = context.StartLine,
+            ContextEndLine = context.EndLine
+        };
+
+        return provisionalThread with
+        {
+            RelevantDiffHunk = ExtractRelevantDiffHunk(file.DiffPatch, provisionalThread)
+        };
+    }
+
+    private static string BuildSemanticFindingKey(ReviewFinding finding)
+    {
+        return string.Join(
+            "|",
+            NormalizePath(finding.File),
+            finding.Title.Trim(),
+            finding.StartLine.ToString(CultureInfo.InvariantCulture),
+            finding.EndLine.ToString(CultureInfo.InvariantCulture),
+            NormalizeMatchValue(finding.ExistingCode));
+    }
+
+    private static string NormalizeMatchValue(string value)
+    {
+        return new string(value.Where(character => !char.IsWhiteSpace(character)).ToArray())
+            .Trim()
+            .ToLowerInvariant();
+    }
+
+    private static ReviewFindingSource ParseFindingSource(string? source)
+    {
+        return Enum.TryParse<ReviewFindingSource>(source, true, out var parsed)
+            ? parsed
+            : ReviewFindingSource.InitialReview;
+    }
+
+    private static class GlobalContextExtractor
+    {
+        public static (string Block, int StartLine, int EndLine) Build(
+            int lineNumber,
+            int startLine,
+            int endLine,
+            string fullContent,
+            string diffPatch,
+            string snippet)
+        {
+            var fromFile = BuildFromFullFile(lineNumber, startLine, endLine, fullContent, snippet);
+            if (!string.IsNullOrWhiteSpace(fromFile.Block))
+            {
+                return fromFile;
+            }
+
+            return BuildFromPatch(diffPatch, snippet);
+        }
+
+        private static (string Block, int StartLine, int EndLine) BuildFromFullFile(
+            int lineNumber,
+            int startLine,
+            int endLine,
+            string fullContent,
+            string snippet)
+        {
+            if (string.IsNullOrWhiteSpace(fullContent))
+            {
+                return (string.Empty, 0, 0);
+            }
+
+            var lines = fullContent.Replace("\r\n", "\n", StringComparison.Ordinal).Split('\n');
+            var snippetRange = TryLocateSnippetRangeInFile(lines, snippet);
+            var anchorStartLine = startLine > 0 ? Math.Min(startLine, lines.Length) : 0;
+            var anchorEndLine = endLine > 0 ? Math.Min(endLine, lines.Length) : 0;
+
+            if (anchorStartLine == 0 && snippetRange is not null)
+            {
+                anchorStartLine = snippetRange.Value.StartLine;
+                anchorEndLine = snippetRange.Value.EndLine;
+            }
+
+            if (anchorStartLine == 0 && lineNumber > 0 && lineNumber <= lines.Length)
+            {
+                anchorStartLine = lineNumber;
+                anchorEndLine = lineNumber;
+            }
+
+            if (anchorStartLine <= 0)
+            {
+                return (string.Empty, 0, 0);
+            }
+
+            anchorEndLine = anchorEndLine >= anchorStartLine ? anchorEndLine : anchorStartLine;
+
+            var blockStartLine = Math.Max(1, anchorStartLine - 6);
+            var blockEndLine = Math.Min(lines.Length, anchorEndLine + 10);
+            var declarationStart = FindDeclarationStart(lines, anchorStartLine);
+            if (declarationStart > 0)
+            {
+                blockStartLine = Math.Min(blockStartLine, declarationStart);
+            }
+
+            var contextLines = new List<string>(blockEndLine - blockStartLine + 1);
+            for (var currentLine = blockStartLine; currentLine <= blockEndLine; currentLine++)
+            {
+                contextLines.Add($"{currentLine,4}: {lines[currentLine - 1]}");
+            }
+
+            return (string.Join('\n', contextLines), blockStartLine, blockEndLine);
+        }
+
+        private static int FindDeclarationStart(IReadOnlyList<string> lines, int lineNumber)
+        {
+            var minLine = Math.Max(1, lineNumber - 12);
+            for (var currentLine = lineNumber; currentLine >= minLine; currentLine--)
+            {
+                var trimmed = lines[currentLine - 1].Trim();
+                if (string.IsNullOrWhiteSpace(trimmed))
+                {
+                    continue;
+                }
+
+                if (trimmed.Contains(" class ", StringComparison.Ordinal) ||
+                    trimmed.StartsWith("class ", StringComparison.Ordinal) ||
+                    trimmed.Contains(" record ", StringComparison.Ordinal) ||
+                    trimmed.StartsWith("record ", StringComparison.Ordinal) ||
+                    trimmed.Contains(" interface ", StringComparison.Ordinal) ||
+                    trimmed.StartsWith("interface ", StringComparison.Ordinal) ||
+                    trimmed.Contains(" enum ", StringComparison.Ordinal) ||
+                    trimmed.StartsWith("public ", StringComparison.Ordinal) ||
+                    trimmed.StartsWith("private ", StringComparison.Ordinal) ||
+                    trimmed.StartsWith("protected ", StringComparison.Ordinal) ||
+                    trimmed.StartsWith("internal ", StringComparison.Ordinal))
+                {
+                    return currentLine;
+                }
+            }
+
+            return 0;
+        }
+
+        private static (string Block, int StartLine, int EndLine) BuildFromPatch(string diffPatch, string snippet)
+        {
+            if (string.IsNullOrWhiteSpace(diffPatch))
+            {
+                return (string.Empty, 0, 0);
+            }
+
+            var lines = diffPatch.Replace("\r\n", "\n", StringComparison.Ordinal).Split('\n');
+            var anchorIndex = FindAnchorIndex(lines, snippet);
+            if (anchorIndex < 0)
+            {
+                anchorIndex = Array.FindIndex(lines, line => line.StartsWith("@@", StringComparison.Ordinal));
+            }
+
+            if (anchorIndex < 0)
+            {
+                return (string.Empty, 0, 0);
+            }
+
+            var startIndex = Math.Max(0, anchorIndex - 4);
+            var endIndex = Math.Min(lines.Length - 1, anchorIndex + 8);
+            return (string.Join('\n', lines[startIndex..(endIndex + 1)]), 0, 0);
+        }
+
+        private static int FindAnchorIndex(IReadOnlyList<string> lines, string snippet)
+        {
+            if (string.IsNullOrWhiteSpace(snippet))
+            {
+                return -1;
+            }
+
+            var snippetCandidates = snippet
+                .Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                .Select(NormalizeForMatch)
+                .Where(line => !string.IsNullOrWhiteSpace(line))
+                .OrderByDescending(line => line.Length)
+                .Take(3)
+                .ToArray();
+
+            if (snippetCandidates.Length == 0)
+            {
+                return -1;
+            }
+
+            var bestIndex = -1;
+            var bestScore = 0d;
+            for (var index = 0; index < lines.Count; index++)
+            {
+                var diffLine = lines[index];
+                if (!(diffLine.StartsWith("+", StringComparison.Ordinal) || diffLine.StartsWith(" ", StringComparison.Ordinal)))
+                {
+                    continue;
+                }
+
+                var normalizedDiffLine = NormalizeForMatch(diffLine[1..]);
+                foreach (var candidate in snippetCandidates)
+                {
+                    var score = normalizedDiffLine.Contains(candidate, StringComparison.Ordinal) ||
+                                candidate.Contains(normalizedDiffLine, StringComparison.Ordinal)
+                        ? 0.95d
+                        : 0d;
+                    if (score > bestScore)
+                    {
+                        bestScore = score;
+                        bestIndex = index;
+                    }
+                }
+            }
+
+            return bestIndex;
+        }
+
+        private static (int StartLine, int EndLine)? TryLocateSnippetRangeInFile(IReadOnlyList<string> lines, string snippet)
+        {
+            if (string.IsNullOrWhiteSpace(snippet) || lines.Count == 0)
+            {
+                return null;
+            }
+
+            var snippetCandidates = snippet
+                .Replace("\r\n", "\n", StringComparison.Ordinal)
+                .Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                .Select(NormalizeForMatch)
+                .Where(line => !string.IsNullOrWhiteSpace(line))
+                .Distinct()
+                .OrderByDescending(line => line.Length)
+                .Take(6)
+                .ToArray();
+
+            if (snippetCandidates.Length == 0)
+            {
+                return null;
+            }
+
+            var matchedLines = new List<int>(snippetCandidates.Length);
+            foreach (var candidate in snippetCandidates)
+            {
+                for (var index = 0; index < lines.Count; index++)
+                {
+                    var normalizedLine = NormalizeForMatch(lines[index]);
+                    if (string.IsNullOrWhiteSpace(normalizedLine))
+                    {
+                        continue;
+                    }
+
+                    if (!normalizedLine.Contains(candidate, StringComparison.Ordinal) &&
+                        !candidate.Contains(normalizedLine, StringComparison.Ordinal))
+                    {
+                        continue;
+                    }
+
+                    matchedLines.Add(index + 1);
+                    break;
+                }
+            }
+
+            return matchedLines.Count == 0
+                ? null
+                : (matchedLines.Min(), matchedLines.Max());
+        }
+    }
+
+    private static string BuildFindingsSummary(ReviewRun run)
+    {
+        var findings = run.Artifacts.InlineComments.Count > 0
+            ? BuildRelevantFindings(run.Artifacts)
+            : run.Findings;
+
+        if (findings.Count == 0)
+        {
+            return "<no findings>";
+        }
+
+        return string.Join(
+            "\n",
+            findings.Select((finding, index) =>
+                $"{index + 1}. [{finding.Severity}] {finding.File}:{finding.StartLine}-{finding.EndLine} | {finding.Title} | {finding.Description}"));
     }
 
     private static string ExtractFindingDescription(InlineCommentDraft comment)

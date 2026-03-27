@@ -79,6 +79,7 @@ public sealed class FindingsNormalizer : IFindingsNormalizer
             ReadString(element, "line_hint") ?? ReadString(element, "location") ?? "Unknown",
             ParseCategory(ReadString(element, "type")),
             ParseSeverity(ReadString(element, "severity")),
+            ReviewFindingSource.InitialReview,
             title,
             ReadString(element, "description") ?? ReadString(element, "problem") ?? string.Empty,
             ReadString(element, "existing_code") ?? ReadString(element, "bad_code") ?? string.Empty,

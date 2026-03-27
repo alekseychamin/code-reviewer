@@ -14,6 +14,8 @@ public sealed class InlineCommentDto
 
     public string Severity { get; init; } = string.Empty;
 
+    public string Source { get; init; } = string.Empty;
+
     public string Category { get; init; } = string.Empty;
 
     public string Content { get; init; } = string.Empty;
