@@ -544,92 +544,88 @@ public sealed class ReviewOrchestrator(
 
         var run = await reviewRunRepository.GetAsync(runId, cancellationToken)
                   ?? throw new InvalidOperationException($"Review run '{runId}' was not found.");
-
         var selection = await llmStageRouter.ResolveAsync(
             ReviewPipelineStage.ChunkReview,
             run.ProviderProfileId,
             [],
             cancellationToken);
 
-        var history = string.Join(
-            "\n\n",
-            run.Artifacts.ReviewDiscussionMessages.Select(message => $"{message.Role.ToUpperInvariant()}:\n{message.Content}"));
-
-        var assistantReply = await llmCompletionService.CompleteAsync(
-            selection.Profile,
-            new LlmChatRequest
-            {
-                Model = selection.Model,
-                Temperature = 0.2,
-                ExpectJson = true,
-                SystemPrompt = """
-                    You are a Principal .NET reviewer continuing a global review discussion for an already prepared code review.
-                    Answer in Russian.
-                    Stay grounded in the prepared diff, current findings, and discussion history.
-                    Give concrete, implementation-level advice.
-                    Focus on the user's follow-up request against the already prepared review context rather than re-summarizing the whole change.
-                    If the user explicitly asks to search for additional defects, you may return new_findings, but only for concrete review-worthy issues.
-                    Do not return style-only, cleanup-only, comment-only, or speculative findings.
-                    If there are no new review-worthy issues, return an empty new_findings array.
-                    If the provided review context is not enough, say exactly what is missing.
-                    Return JSON only.
-                    Do not return markdown.
-                    All string values must be plain text without markdown emphasis markers such as **, __, or backticks.
-                    Use this exact schema:
-                    {
-                      "summary": "short direct answer for the user",
-                      "problems": ["specific problem or implication", "another problem if needed"],
-                      "risk": "concrete risk or impact",
-                      "recommendations": ["actionable recommendation", "second recommendation if needed"],
-                      "shouldPublishToTfs": true,
-                      "publishToTfsReason": "why this should or should not be published",
-                      "exampleCodeLanguage": "csharp",
-                      "exampleCode": "optional code example, otherwise empty string",
-                      "new_findings": [
+        var followUpChunks = SelectFollowUpChunks(run.Artifacts, request.Message);
+        var chunkReplies = new List<ParsedReviewDiscussionResult>(followUpChunks.Count);
+        var rawChunkReplies = new List<string>(followUpChunks.Count);
+        for (var index = 0; index < followUpChunks.Count; index++)
+        {
+            var assistantReply = await llmCompletionService.CompleteAsync(
+                selection.Profile,
+                new LlmChatRequest
+                {
+                    Model = selection.Model,
+                    Temperature = 0.2,
+                    ExpectJson = true,
+                    SystemPrompt = """
+                        You are a Principal .NET reviewer continuing a global review discussion for an already prepared diff chunk.
+                        Answer in Russian.
+                        Stay grounded in the provided prepared diff chunk and the user's follow-up question.
+                        Give concrete, implementation-level advice.
+                        Focus only on what can be justified from this chunk.
+                        If the user explicitly asks to search for additional defects, you may return new_findings, but only for concrete review-worthy issues visible in this chunk.
+                        Do not return style-only, cleanup-only, comment-only, or speculative findings.
+                        If there are no new review-worthy issues in this chunk, return an empty new_findings array.
+                        If the diff chunk is not enough to answer reliably, say exactly what is missing.
+                        Return JSON only.
+                        Do not return markdown.
+                        All string values must be plain text without markdown emphasis markers such as **, __, or backticks.
+                        Use this exact schema:
                         {
-                          "kind": "Defect or Risk",
-                          "file": "relative/path/to/file.cs",
-                          "line_hint": "Line 123",
-                          "start_line": 123,
-                          "end_line": 126,
-                          "type": "Bug or Reliability or Logic or Security or Performance or Architecture",
-                          "severity": "Critical or High or Medium or Low",
-                          "title": "short issue title",
-                          "description": "why this is a problem",
-                          "existing_code": "problematic changed code only",
-                          "suggestion": "minimal concrete fix"
+                          "summary": "short direct answer for the user",
+                          "problems": ["specific problem or implication", "another problem if needed"],
+                          "risk": "concrete risk or impact",
+                          "recommendations": ["actionable recommendation", "second recommendation if needed"],
+                          "shouldPublishToTfs": true,
+                          "publishToTfsReason": "why this should or should not be published",
+                          "exampleCodeLanguage": "csharp",
+                          "exampleCode": "optional code example, otherwise empty string",
+                          "new_findings": [
+                            {
+                              "kind": "Defect or Risk",
+                              "file": "relative/path/to/file.cs",
+                              "line_hint": "Line 123",
+                              "start_line": 123,
+                              "end_line": 126,
+                              "type": "Bug or Reliability or Logic or Security or Performance or Architecture",
+                              "severity": "Critical or High or Medium or Low",
+                              "title": "short issue title",
+                              "description": "why this is a problem",
+                              "existing_code": "problematic changed code only",
+                              "suggestion": "minimal concrete fix"
+                            }
+                          ]
                         }
-                      ]
-                    }
-                    Keep arrays short.
-                    If there is no code example, return an empty string in exampleCode and exampleCodeLanguage.
-                    """,
-                UserPrompt = $"""
-                    Review target: {run.DisplayTitle}
+                        Keep arrays short.
+                        If there is no code example, return an empty string in exampleCode and exampleCodeLanguage.
+                        """,
+                    UserPrompt = $"""
+                        Prepared review diff chunk {index + 1} of {followUpChunks.Count}:
+                        {followUpChunks[index]}
 
-                    Current findings:
-                    {TrimForPrompt(BuildFindingsSummary(run), 10000)}
+                        User question:
+                        {request.Message}
+                        """
+                },
+                cancellationToken);
 
-                    Prepared review diff:
-                    {TrimForPrompt(run.Artifacts.DiffText, 22000)}
+            rawChunkReplies.Add(assistantReply);
+            chunkReplies.Add(ParseReviewDiscussionResult(assistantReply, findingsNormalizer));
+        }
 
-                    Discussion history:
-                    {TrimForPrompt(history, 12000)}
-
-                    User question:
-                    {request.Message}
-                    """
-            },
-            cancellationToken);
-
-        var parsedResult = ParseReviewDiscussionResult(assistantReply, findingsNormalizer);
-        var uniqueNewFindings = GetUniqueNewFindings(run.Findings, parsedResult.NewFindings);
+        var parsedResult = MergeReviewDiscussionResults(chunkReplies);
+        var uniqueNewFindings = ReconcileNewFindings(run.Findings, parsedResult.NewFindings);
         var structuredReply = WithAddedFindingsCount(
             parsedResult.StructuredContent,
             uniqueNewFindings.Count,
             BuildAddedFindingSummaries(uniqueNewFindings));
         var renderedReply = structuredReply is null
-            ? assistantReply
+            ? string.Join("\n\n", rawChunkReplies.Where(reply => !string.IsNullOrWhiteSpace(reply)).Select(reply => reply.Trim()))
             : RenderInlineDiscussionMarkdown(structuredReply);
 
         var updatedMessages = run.Artifacts.ReviewDiscussionMessages
@@ -657,6 +653,7 @@ public sealed class ReviewOrchestrator(
         run.UpdateArtifacts(new ReviewArtifacts
         {
             DiffText = run.Artifacts.DiffText,
+            PreparedChunks = run.Artifacts.PreparedChunks,
             ChangedFiles = run.Artifacts.ChangedFiles,
             ChangeDescription = run.Artifacts.ChangeDescription,
             ChangeDescriptionStructured = run.Artifacts.ChangeDescriptionStructured,
@@ -1101,6 +1098,7 @@ public sealed class ReviewOrchestrator(
         var provisionalArtifacts = new ReviewArtifacts
         {
             DiffText = artifacts.DiffText,
+            PreparedChunks = artifacts.PreparedChunks,
             ChangedFiles = artifacts.ChangedFiles,
             ChangeDescription = artifacts.ChangeDescription,
             ChangeDescriptionStructured = artifacts.ChangeDescriptionStructured,
@@ -1119,6 +1117,7 @@ public sealed class ReviewOrchestrator(
         return new ReviewArtifacts
         {
             DiffText = artifacts.DiffText,
+            PreparedChunks = artifacts.PreparedChunks,
             ChangedFiles = artifacts.ChangedFiles,
             ChangeDescription = artifacts.ChangeDescription,
             ChangeDescriptionStructured = artifacts.ChangeDescriptionStructured,
@@ -1191,7 +1190,7 @@ public sealed class ReviewOrchestrator(
             : findingsComparisonService.Compare(previousRun.Id, previousRun.Findings, mergedFindings);
     }
 
-    private static IReadOnlyList<ReviewFinding> GetUniqueNewFindings(
+    private static IReadOnlyList<ReviewFinding> ReconcileNewFindings(
         IReadOnlyList<ReviewFinding> existingFindings,
         IReadOnlyList<ReviewFinding> candidateFindings)
     {
@@ -1200,12 +1199,191 @@ public sealed class ReviewOrchestrator(
             return [];
         }
 
-        var existingKeys = existingFindings
-            .Select(BuildSemanticFindingKey)
-            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var acceptedFindings = new List<ReviewFinding>();
+        foreach (var candidate in candidateFindings)
+        {
+            var duplicate = existingFindings.Any(existing => AreLikelyDuplicateFindings(existing, candidate)) ||
+                            acceptedFindings.Any(existing => AreLikelyDuplicateFindings(existing, candidate));
+            if (duplicate)
+            {
+                continue;
+            }
 
-        return candidateFindings
-            .Where(finding => existingKeys.Add(BuildSemanticFindingKey(finding)))
+            acceptedFindings.Add(candidate);
+        }
+
+        return acceptedFindings;
+    }
+
+    private static IReadOnlyList<string> SelectFollowUpChunks(ReviewArtifacts artifacts, string question)
+    {
+        var chunks = artifacts.PreparedChunks;
+        if (chunks.Count == 0)
+        {
+            var fallback = TrimForPrompt(artifacts.DiffText, 22000);
+            return string.IsNullOrWhiteSpace(fallback) ? [] : [fallback];
+        }
+
+        return IsGeneralFollowUpQuestion(question)
+            ? chunks
+            : SelectRelevantChunks(chunks, question, 4);
+    }
+
+    private static IReadOnlyList<string> SelectRelevantChunks(
+        IReadOnlyList<string> chunks,
+        string question,
+        int maxChunks)
+    {
+        if (chunks.Count == 0)
+        {
+            return [];
+        }
+
+        var normalizedQuestion = NormalizeForSimilarity(question);
+        var questionTokens = TokenizeForSimilarity(question);
+        var rankedChunks = chunks
+            .Select((chunk, index) => new RankedChunk(index, chunk, ComputeChunkRelevanceScore(chunk, normalizedQuestion, questionTokens)))
+            .OrderByDescending(item => item.Score)
+            .ThenBy(item => item.Index)
+            .Take(Math.Max(1, maxChunks))
+            .ToArray();
+
+        var selected = rankedChunks
+            .Where(item => item.Score > 0d)
+            .Select(item => item.Chunk)
+            .ToArray();
+
+        if (selected.Length > 0)
+        {
+            return selected;
+        }
+
+        return chunks.Take(Math.Max(1, maxChunks)).ToArray();
+    }
+
+    private static double ComputeChunkRelevanceScore(
+        string chunk,
+        string normalizedQuestion,
+        HashSet<string> questionTokens)
+    {
+        var normalizedChunk = NormalizeForSimilarity(chunk);
+        if (string.IsNullOrWhiteSpace(normalizedChunk))
+        {
+            return 0d;
+        }
+
+        var score = 0d;
+        foreach (var token in questionTokens)
+        {
+            if (normalizedChunk.Contains(token, StringComparison.Ordinal))
+            {
+                score += token.Length >= 10 ? 1.2d : 0.75d;
+            }
+        }
+
+        var chunkTokens = TokenizeForSimilarity(chunk);
+        var overlap = questionTokens.Count > 0 && chunkTokens.Count > 0
+            ? (2d * questionTokens.Intersect(chunkTokens).Count()) / (questionTokens.Count + chunkTokens.Count)
+            : 0d;
+        score += overlap * 3d;
+
+        foreach (Match match in Regex.Matches(normalizedQuestion, @"[a-z_][a-z0-9_]{3,}", RegexOptions.CultureInvariant))
+        {
+            if (normalizedChunk.Contains(match.Value, StringComparison.Ordinal))
+            {
+                score += 0.5d;
+            }
+        }
+
+        return score;
+    }
+
+    private static bool IsGeneralFollowUpQuestion(string question)
+    {
+        if (string.IsNullOrWhiteSpace(question))
+        {
+            return true;
+        }
+
+        var normalizedQuestion = NormalizeForSimilarity(question);
+        var hasSpecificFileAnchor =
+            normalizedQuestion.Contains(".cs", StringComparison.Ordinal) ||
+            normalizedQuestion.Contains("/", StringComparison.Ordinal) ||
+            normalizedQuestion.Contains("\\", StringComparison.Ordinal);
+        var hasSpecificLineAnchor = Regex.IsMatch(normalizedQuestion, @"\b(строк|line)\s*\d+\b", RegexOptions.CultureInvariant);
+        var hasSpecificMethodAnchor = Regex.IsMatch(question, @"\b[A-Za-z_][A-Za-z0-9_]{4,}\s*\(", RegexOptions.CultureInvariant);
+        var hasSpecificIdentifierAnchor = Regex.IsMatch(question, @"\b[a-z]+[A-Z][A-Za-z0-9]+\b", RegexOptions.CultureInvariant);
+
+        return !(hasSpecificFileAnchor || hasSpecificLineAnchor || hasSpecificMethodAnchor || hasSpecificIdentifierAnchor);
+    }
+
+    private static ParsedReviewDiscussionResult MergeReviewDiscussionResults(
+        IReadOnlyList<ParsedReviewDiscussionResult> results)
+    {
+        if (results.Count == 0)
+        {
+            return new ParsedReviewDiscussionResult(null, []);
+        }
+
+        var structuredResults = results
+            .Select(result => result.StructuredContent)
+            .Where(content => content is not null)
+            .Cast<InlineDiscussionStructuredContent>()
+            .ToArray();
+
+        var mergedContent = structuredResults.Length == 0
+            ? null
+            : new InlineDiscussionStructuredContent
+            {
+                Summary = JoinDistinctSentences(structuredResults.Select(content => content.Summary)),
+                Problems = JoinDistinctItems(structuredResults.SelectMany(content => content.Problems)),
+                Risk = JoinDistinctSentences(structuredResults.Select(content => content.Risk)),
+                Recommendations = JoinDistinctItems(structuredResults.SelectMany(content => content.Recommendations)),
+                ShouldPublishToTfs = MergePublishDecision(structuredResults),
+                PublishToTfsReason = JoinDistinctSentences(structuredResults.Select(content => content.PublishToTfsReason)),
+                ExampleCodeLanguage = structuredResults
+                    .Select(content => content.ExampleCodeLanguage)
+                    .FirstOrDefault(language => !string.IsNullOrWhiteSpace(language)) ?? string.Empty,
+                ExampleCode = structuredResults
+                    .Select(content => content.ExampleCode)
+                    .FirstOrDefault(code => !string.IsNullOrWhiteSpace(code)) ?? string.Empty
+            };
+
+        return new ParsedReviewDiscussionResult(
+            mergedContent,
+            results.SelectMany(result => result.NewFindings).ToArray());
+    }
+
+    private static bool? MergePublishDecision(IReadOnlyList<InlineDiscussionStructuredContent> results)
+    {
+        var decisions = results
+            .Where(content => content.ShouldPublishToTfs.HasValue)
+            .Select(content => content.ShouldPublishToTfs!.Value)
+            .Distinct()
+            .ToArray();
+
+        return decisions.Length switch
+        {
+            0 => null,
+            1 => decisions[0],
+            _ => true
+        };
+    }
+
+    private static string JoinDistinctSentences(IEnumerable<string> items)
+    {
+        var normalized = JoinDistinctItems(items);
+        return string.Join(' ', normalized);
+    }
+
+    private static IReadOnlyList<string> JoinDistinctItems(IEnumerable<string> items)
+    {
+        return items
+            .Select(item => item?.Trim())
+            .Where(item => !string.IsNullOrWhiteSpace(item))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .Take(6)
+            .Cast<string>()
             .ToArray();
     }
 
@@ -1359,15 +1537,37 @@ public sealed class ReviewOrchestrator(
         };
     }
 
-    private static string BuildSemanticFindingKey(ReviewFinding finding)
+    private static bool AreLikelyDuplicateFindings(ReviewFinding existing, ReviewFinding candidate)
     {
-        return string.Join(
-            "|",
-            NormalizePath(finding.File),
-            finding.Title.Trim(),
-            finding.StartLine.ToString(CultureInfo.InvariantCulture),
-            finding.EndLine.ToString(CultureInfo.InvariantCulture),
-            NormalizeMatchValue(finding.ExistingCode));
+        var existingFile = NormalizePath(existing.File);
+        var candidateFile = NormalizePath(candidate.File);
+        if (!existingFile.Equals(candidateFile, StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        var titleScore = ComputeTextSimilarity(existing.Title, candidate.Title);
+        var descriptionScore = ComputeTextSimilarity(existing.Description, candidate.Description);
+        var codeScore = ComputeTextSimilarity(existing.ExistingCode, candidate.ExistingCode);
+        var exactCodeMatch = HasMeaningfulExactCodeMatch(existing.ExistingCode, candidate.ExistingCode);
+        var rangeOverlap = RangesOverlapOrNear(existing, candidate, 3);
+
+        if (exactCodeMatch && (titleScore >= 0.35d || descriptionScore >= 0.35d || rangeOverlap))
+        {
+            return true;
+        }
+
+        if (rangeOverlap && (titleScore >= 0.45d || descriptionScore >= 0.55d || codeScore >= 0.55d))
+        {
+            return true;
+        }
+
+        if (titleScore >= 0.8d && (descriptionScore >= 0.45d || codeScore >= 0.45d))
+        {
+            return true;
+        }
+
+        return false;
     }
 
     private static string NormalizeMatchValue(string value)
@@ -1377,12 +1577,103 @@ public sealed class ReviewOrchestrator(
             .ToLowerInvariant();
     }
 
+    private static bool HasMeaningfulExactCodeMatch(string left, string right)
+    {
+        var normalizedLeft = NormalizeMatchValue(left);
+        var normalizedRight = NormalizeMatchValue(right);
+        if (normalizedLeft.Length < 12 || normalizedRight.Length < 12)
+        {
+            return false;
+        }
+
+        return normalizedLeft.Equals(normalizedRight, StringComparison.Ordinal) ||
+               normalizedLeft.Contains(normalizedRight, StringComparison.Ordinal) ||
+               normalizedRight.Contains(normalizedLeft, StringComparison.Ordinal);
+    }
+
+    private static bool RangesOverlapOrNear(ReviewFinding left, ReviewFinding right, int tolerance)
+    {
+        var leftRange = ResolveFindingRange(left);
+        var rightRange = ResolveFindingRange(right);
+        if (leftRange is null || rightRange is null)
+        {
+            return false;
+        }
+
+        return leftRange.Value.StartLine <= rightRange.Value.EndLine + tolerance &&
+               rightRange.Value.StartLine <= leftRange.Value.EndLine + tolerance;
+    }
+
+    private static (int StartLine, int EndLine)? ResolveFindingRange(ReviewFinding finding)
+    {
+        if (finding.StartLine > 0 && finding.EndLine >= finding.StartLine)
+        {
+            return (finding.StartLine, finding.EndLine);
+        }
+
+        var lineHint = TryParseLineHint(finding.LineHint);
+        return lineHint is > 0
+            ? (lineHint.Value, lineHint.Value)
+            : null;
+    }
+
+    private static int? TryParseLineHint(string? lineHint)
+    {
+        if (string.IsNullOrWhiteSpace(lineHint))
+        {
+            return null;
+        }
+
+        var match = Regex.Match(lineHint, @"\d+", RegexOptions.CultureInvariant);
+        return match.Success && int.TryParse(match.Value, NumberStyles.Integer, CultureInfo.InvariantCulture, out var line)
+            ? line
+            : null;
+    }
+
+    private static double ComputeTextSimilarity(string? left, string? right)
+    {
+        var leftTokens = TokenizeForSimilarity(left);
+        var rightTokens = TokenizeForSimilarity(right);
+        if (leftTokens.Count == 0 || rightTokens.Count == 0)
+        {
+            return 0d;
+        }
+
+        var intersection = leftTokens.Intersect(rightTokens).Count();
+        if (intersection == 0)
+        {
+            return 0d;
+        }
+
+        return (2d * intersection) / (leftTokens.Count + rightTokens.Count);
+    }
+
+    private static HashSet<string> TokenizeForSimilarity(string? value)
+    {
+        return Regex.Split(NormalizeForSimilarity(value), @"[^a-z0-9_]+", RegexOptions.CultureInvariant)
+            .Where(token => token.Length >= 3)
+            .ToHashSet(StringComparer.Ordinal);
+    }
+
+    private static string NormalizeForSimilarity(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return string.Empty;
+        }
+
+        var normalized = value.Replace("\\", "/", StringComparison.Ordinal).Trim().ToLowerInvariant();
+        return Regex.Replace(normalized, @"\s+", " ");
+    }
+
     private static ReviewFindingSource ParseFindingSource(string? source)
     {
         return Enum.TryParse<ReviewFindingSource>(source, true, out var parsed)
             ? parsed
             : ReviewFindingSource.InitialReview;
     }
+
+    private sealed record RankedChunk(int Index, string Chunk, double Score);
 
     private static class GlobalContextExtractor
     {
