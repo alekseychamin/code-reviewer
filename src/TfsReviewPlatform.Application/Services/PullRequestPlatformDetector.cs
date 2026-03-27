@@ -22,6 +22,22 @@ public static class PullRequestPlatformDetector
             return PullRequestPlatformKind.GitHub;
         }
 
+        var mergeRequestIndex = Array.FindIndex(segments, value =>
+            string.Equals(value, "merge_requests", StringComparison.OrdinalIgnoreCase));
+        if (mergeRequestIndex >= 0)
+        {
+            var projectSegmentCount =
+                mergeRequestIndex > 0 &&
+                string.Equals(segments[mergeRequestIndex - 1], "-", StringComparison.OrdinalIgnoreCase)
+                    ? mergeRequestIndex - 1
+                    : mergeRequestIndex;
+
+            if (projectSegmentCount >= 2 && mergeRequestIndex + 1 < segments.Length)
+            {
+                return PullRequestPlatformKind.GitLab;
+            }
+        }
+
         if (segments.Contains("_git", StringComparer.OrdinalIgnoreCase) &&
             segments.Contains("pullrequest", StringComparer.OrdinalIgnoreCase))
         {
@@ -37,6 +53,7 @@ public static class PullRequestPlatformDetector
         {
             PullRequestPlatformKind.AzureDevOps => NormalizeAzureDevOps(pullRequestUrl),
             PullRequestPlatformKind.GitHub => NormalizeGitHub(pullRequestUrl),
+            PullRequestPlatformKind.GitLab => NormalizeGitLab(pullRequestUrl),
             _ => pullRequestUrl.Trim()
         };
     }
@@ -72,5 +89,34 @@ public static class PullRequestPlatformDetector
 
         var hostRoot = $"{uri.Scheme}://{uri.Host}{(uri.IsDefaultPort ? string.Empty : $":{uri.Port}")}";
         return $"{hostRoot}/{segments[0]}/{segments[1]}/pull/{segments[3]}";
+    }
+
+    private static string NormalizeGitLab(string pullRequestUrl)
+    {
+        var uri = new Uri(pullRequestUrl);
+        var segments = uri.AbsolutePath.Trim('/').Split('/', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        var mergeRequestIndex = Array.FindIndex(segments, value =>
+            string.Equals(value, "merge_requests", StringComparison.OrdinalIgnoreCase));
+
+        if (mergeRequestIndex < 0 || mergeRequestIndex + 1 >= segments.Length)
+        {
+            return pullRequestUrl.Trim();
+        }
+
+        var projectSegmentCount =
+            mergeRequestIndex > 0 &&
+            string.Equals(segments[mergeRequestIndex - 1], "-", StringComparison.OrdinalIgnoreCase)
+                ? mergeRequestIndex - 1
+                : mergeRequestIndex;
+
+        if (projectSegmentCount < 2)
+        {
+            return pullRequestUrl.Trim();
+        }
+
+        var hostRoot = $"{uri.Scheme}://{uri.Host}{(uri.IsDefaultPort ? string.Empty : $":{uri.Port}")}";
+        var projectPath = string.Join('/', segments.Take(projectSegmentCount));
+        var mergeRequestId = segments[mergeRequestIndex + 1];
+        return $"{hostRoot}/{projectPath}/-/merge_requests/{mergeRequestId}";
     }
 }

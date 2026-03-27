@@ -4,5 +4,6 @@ public enum PullRequestPlatformKind
 {
     Unknown = 0,
     AzureDevOps = 1,
-    GitHub = 2
+    GitHub = 2,
+    GitLab = 3
 }

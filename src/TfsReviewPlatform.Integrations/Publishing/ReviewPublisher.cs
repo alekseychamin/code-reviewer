@@ -57,7 +57,7 @@ internal sealed class ReviewPublisher(IEnumerable<IPullRequestReviewPublisherPro
         if (provider is null)
         {
             throw new InvalidOperationException(
-                $"Pull request URL '{pullRequestUrl}' is not supported for publishing yet. Supported platforms: Azure DevOps/TFS, GitHub.");
+                $"Pull request URL '{pullRequestUrl}' is not supported for publishing yet. Supported platforms: Azure DevOps/TFS, GitHub, GitLab.");
         }
 
         return provider;

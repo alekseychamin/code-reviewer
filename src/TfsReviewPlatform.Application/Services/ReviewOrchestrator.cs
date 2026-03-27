@@ -624,7 +624,7 @@ public sealed class ReviewOrchestrator(
 
         if (content.ShouldPublishToTfs.HasValue || !string.IsNullOrWhiteSpace(content.PublishToTfsReason))
         {
-            builder.AppendLine("### Публикация в TFS");
+            builder.AppendLine("### Публикация в pull request");
             if (content.ShouldPublishToTfs.HasValue)
             {
                 builder.AppendLine(content.ShouldPublishToTfs.Value ? "Да" : "Нет");
@@ -772,6 +772,7 @@ public sealed class ReviewOrchestrator(
             {
                 PullRequestPlatformKind.AzureDevOps => Environment.GetEnvironmentVariable("AZURE_DEVOPS_TOKEN"),
                 PullRequestPlatformKind.GitHub => Environment.GetEnvironmentVariable("GITHUB_TOKEN"),
+                PullRequestPlatformKind.GitLab => Environment.GetEnvironmentVariable("GITLAB_TOKEN"),
                 _ => null
             };
     }
@@ -781,6 +782,7 @@ public sealed class ReviewOrchestrator(
         return PullRequestPlatformDetector.Detect(pullRequestUrl) switch
         {
             PullRequestPlatformKind.GitHub => "GITHUB_TOKEN требуется для публикации замечаний или итогового отчёта в GitHub.",
+            PullRequestPlatformKind.GitLab => "GITLAB_TOKEN требуется для публикации замечаний или итогового отчёта в GitLab.",
             PullRequestPlatformKind.AzureDevOps => "AZURE_DEVOPS_TOKEN требуется для публикации замечаний или итогового отчёта в Azure DevOps/TFS.",
             _ => "Требуется токен доступа для публикации замечаний или итогового отчёта обратно в pull request."
         };
@@ -798,6 +800,7 @@ public sealed class ReviewOrchestrator(
         return PullRequestPlatformDetector.Detect(pullRequestUrl) switch
         {
             PullRequestPlatformKind.GitHub => $"Не удалось опубликовать {subject} в GitHub.",
+            PullRequestPlatformKind.GitLab => $"Не удалось опубликовать {subject} в GitLab.",
             PullRequestPlatformKind.AzureDevOps => $"Не удалось опубликовать {subject} в Azure DevOps/TFS.",
             _ => $"Не удалось опубликовать {subject} в pull request платформу."
         };

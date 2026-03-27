@@ -4,6 +4,7 @@ using TfsReviewPlatform.Application.Abstractions;
 using TfsReviewPlatform.Integrations.AzureDevOps;
 using TfsReviewPlatform.Integrations.Git;
 using TfsReviewPlatform.Integrations.GitHub;
+using TfsReviewPlatform.Integrations.GitLab;
 using TfsReviewPlatform.Integrations.Llm;
 using TfsReviewPlatform.Integrations.Publishing;
 using TfsReviewPlatform.Integrations.PullRequests;
@@ -20,6 +21,11 @@ public static class IntegrationServiceCollectionExtensions
         {
             client.DefaultRequestHeaders.UserAgent.ParseAdd("tfs-review-platform");
             client.DefaultRequestHeaders.Accept.ParseAdd("application/vnd.github+json");
+        });
+        services.AddHttpClient(HttpClientNames.GitLab, client =>
+        {
+            client.DefaultRequestHeaders.UserAgent.ParseAdd("tfs-review-platform");
+            client.DefaultRequestHeaders.Accept.ParseAdd("application/json");
         });
         services
             .AddHttpClient(HttpClientNames.OpenAiCompatibleLlm, client =>
@@ -50,11 +56,13 @@ public static class IntegrationServiceCollectionExtensions
         services.AddSingleton<IBranchComparisonDiffService, BranchComparisonDiffService>();
         services.AddSingleton<IPullRequestDiffProvider, AzureDevOpsPullRequestDiffProvider>();
         services.AddSingleton<IPullRequestDiffProvider, GitHubPullRequestDiffProvider>();
+        services.AddSingleton<IPullRequestDiffProvider, GitLabPullRequestDiffProvider>();
         services.AddSingleton<IPullRequestDiffService, PullRequestDiffService>();
         services.AddSingleton<ILlmCompletionService, LlmCompletionService>();
         services.AddSingleton<IReviewPromptFactory, ReviewPromptFactory>();
         services.AddSingleton<IPullRequestReviewPublisherProvider, AzureDevOpsReviewPublisherProvider>();
         services.AddSingleton<IPullRequestReviewPublisherProvider, GitHubReviewPublisherProvider>();
+        services.AddSingleton<IPullRequestReviewPublisherProvider, GitLabReviewPublisherProvider>();
         services.AddSingleton<IReviewPublisher, ReviewPublisher>();
 
         return services;

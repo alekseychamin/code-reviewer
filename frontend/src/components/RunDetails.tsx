@@ -200,7 +200,11 @@ function getPublishTargetLabel(pullRequestUrl?: string): string {
     return 'pull request';
   }
 
-  return /github/i.test(pullRequestUrl) ? 'GitHub' : 'TFS';
+  if (/\/merge_requests\//i.test(pullRequestUrl)) {
+    return 'GitLab';
+  }
+
+  return /\/pull\//i.test(pullRequestUrl) ? 'GitHub' : 'TFS';
 }
 
 function ChangeDescriptionBlock({

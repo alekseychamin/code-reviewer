@@ -16,7 +16,7 @@ internal sealed class PullRequestDiffService(IEnumerable<IPullRequestDiffProvide
         if (provider is null)
         {
             throw new InvalidOperationException(
-                $"Pull request URL '{pullRequestUrl}' is not supported yet. Supported platforms: Azure DevOps/TFS, GitHub.");
+                $"Pull request URL '{pullRequestUrl}' is not supported yet. Supported platforms: Azure DevOps/TFS, GitHub, GitLab.");
         }
 
         return provider.GetDiffAsync(pullRequestUrl, accessToken, cancellationToken);

@@ -502,7 +502,7 @@ function StructuredInlineDiscussion({ content }: { content: InlineDiscussionStru
 
       {hasPublishDecision ? (
         <section className="structured-discussion-section">
-          <h4>Публикация в TFS</h4>
+          <h4>Публикация</h4>
           {typeof content.shouldPublishToTfs === 'boolean' ? (
             <p>{content.shouldPublishToTfs ? 'Да' : 'Нет'}</p>
           ) : null}

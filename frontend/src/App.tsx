@@ -563,7 +563,7 @@ export default function App() {
         </div>
         <p className="hero-copy">
           Запускайте ревью по ссылке на pull request или по сравнению веток, отслеживайте прогресс по SSE и
-          публикуйте итоговый комментарий и inline-замечания обратно в GitHub или Azure DevOps/TFS.
+          публикуйте итоговый комментарий и inline-замечания обратно в GitHub, GitLab или Azure DevOps/TFS.
         </p>
       </section>
 

@@ -17,26 +17,33 @@ public sealed class ReviewRequestValidator : IReviewRequestValidator
         {
             errors["pullRequestUrl"] =
             [
-                "Поддерживаются только pull request URL из Azure DevOps/TFS и GitHub."
+                "Поддерживаются только pull request URL из Azure DevOps/TFS, GitHub и GitLab."
             ];
         }
 
-        if (platform == PullRequestPlatformKind.AzureDevOps && string.IsNullOrWhiteSpace(resolvedToken))
+        if ((platform == PullRequestPlatformKind.AzureDevOps || platform == PullRequestPlatformKind.GitLab) &&
+            string.IsNullOrWhiteSpace(resolvedToken))
         {
             errors["accessToken"] =
             [
-                "Для pull request из Azure DevOps/TFS требуется токен в запросе или переменная окружения AZURE_DEVOPS_TOKEN."
+                platform == PullRequestPlatformKind.GitLab
+                    ? "Для merge request из GitLab требуется токен в запросе или переменная окружения GITLAB_TOKEN."
+                    : "Для pull request из Azure DevOps/TFS требуется токен в запросе или переменная окружения AZURE_DEVOPS_TOKEN."
             ];
         }
 
         if (request.PublishMode != PublishMode.None &&
-            (platform == PullRequestPlatformKind.AzureDevOps || platform == PullRequestPlatformKind.GitHub) &&
+            (platform == PullRequestPlatformKind.AzureDevOps ||
+             platform == PullRequestPlatformKind.GitHub ||
+             platform == PullRequestPlatformKind.GitLab) &&
             string.IsNullOrWhiteSpace(resolvedToken))
         {
             errors["accessToken"] =
             [
                 platform == PullRequestPlatformKind.GitHub
                     ? "Публикация в GitHub требует токен в запросе или переменную окружения GITHUB_TOKEN."
+                    : platform == PullRequestPlatformKind.GitLab
+                        ? "Публикация в GitLab требует токен в запросе или переменную окружения GITLAB_TOKEN."
                     : "Публикация в Azure DevOps/TFS требует токен в запросе или переменную окружения AZURE_DEVOPS_TOKEN."
             ];
         }
@@ -74,6 +81,7 @@ public sealed class ReviewRequestValidator : IReviewRequestValidator
             {
                 PullRequestPlatformKind.AzureDevOps => Environment.GetEnvironmentVariable("AZURE_DEVOPS_TOKEN"),
                 PullRequestPlatformKind.GitHub => Environment.GetEnvironmentVariable("GITHUB_TOKEN"),
+                PullRequestPlatformKind.GitLab => Environment.GetEnvironmentVariable("GITLAB_TOKEN"),
                 _ => null
             };
     }

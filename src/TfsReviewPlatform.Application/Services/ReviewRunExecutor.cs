@@ -161,7 +161,6 @@ public sealed class ReviewRunExecutor(
             var publishSucceeded = false;
             if (request.PublishMode != PublishMode.None &&
                 request.TargetKind == ReviewTargetKind.PullRequest &&
-                PullRequestPlatformDetector.Detect(request.Target.PullRequestUrl) == PullRequestPlatformKind.AzureDevOps &&
                 !string.IsNullOrWhiteSpace(request.PullRequestAccessToken) &&
                 !string.IsNullOrWhiteSpace(request.Target.PullRequestUrl))
             {
