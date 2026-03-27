@@ -694,26 +694,96 @@ public sealed class ReviewRunExecutor(
         string fullContent,
         string diffPatch)
     {
+        var normalizedThread = NormalizeThreadLocation(thread, fullContent);
         var context = ContextExtractor.Build(
-            thread.LineNumber,
-            thread.StartLine,
-            thread.EndLine,
+            normalizedThread.LineNumber,
+            normalizedThread.StartLine,
+            normalizedThread.EndLine,
             fullContent,
             diffPatch,
-            thread.ExistingCode);
+            normalizedThread.ExistingCode);
         var relevantDiffHunk = ContextExtractor.BuildRelevantDiffHunk(
-            thread.LineNumber,
+            normalizedThread.LineNumber,
             diffPatch,
-            thread.ExistingCode,
+            normalizedThread.ExistingCode,
             context.StartLine,
             context.EndLine);
-        return thread with
+        return normalizedThread with
         {
             ContextBlock = context.Block,
             ContextStartLine = context.StartLine,
             ContextEndLine = context.EndLine,
             RelevantDiffHunk = relevantDiffHunk
         };
+    }
+
+    private static InlineCommentDraft NormalizeThreadLocation(InlineCommentDraft thread, string fullContent)
+    {
+        if (thread.LineNumber <= 0)
+        {
+            return thread;
+        }
+
+        if (thread.StartLine <= 0 || thread.EndLine < thread.StartLine)
+        {
+            return thread with
+            {
+                StartLine = thread.LineNumber,
+                EndLine = thread.LineNumber
+            };
+        }
+
+        var normalizedEndLine = thread.EndLine >= thread.StartLine ? thread.EndLine : thread.StartLine;
+        var providedSpan = normalizedEndLine - thread.StartLine;
+        var snippetRange = ContextExtractor.TryLocateSnippetRangeInFile(
+            fullContent,
+            thread.ExistingCode,
+            thread.LineNumber);
+
+        if (snippetRange is not null)
+        {
+            var snippetSpan = snippetRange.Value.EndLine - snippetRange.Value.StartLine;
+            var shouldPreferSnippetRange =
+                providedSpan > 24 ||
+                thread.LineNumber < thread.StartLine ||
+                thread.LineNumber > normalizedEndLine ||
+                (thread.LineNumber >= snippetRange.Value.StartLine &&
+                 thread.LineNumber <= snippetRange.Value.EndLine &&
+                 snippetSpan <= providedSpan);
+
+            if (shouldPreferSnippetRange)
+            {
+                return thread with
+                {
+                    StartLine = snippetRange.Value.StartLine,
+                    EndLine = snippetRange.Value.EndLine
+                };
+            }
+        }
+
+        if (thread.LineNumber >= thread.StartLine &&
+            thread.LineNumber <= normalizedEndLine &&
+            providedSpan <= 24)
+        {
+            return thread;
+        }
+
+        return thread with
+        {
+            StartLine = thread.LineNumber,
+            EndLine = thread.LineNumber
+        };
+    }
+
+    private static IReadOnlyList<InlineCommentDraft> FlattenInlineThreads(
+        IReadOnlyList<ReviewedFileArtifact> reviewedFiles)
+    {
+        return reviewedFiles
+            .SelectMany(file => file.InlineThreads)
+            .OrderBy(comment => NormalizePath(comment.FilePath), StringComparer.OrdinalIgnoreCase)
+            .ThenBy(comment => comment.LineNumber)
+            .ThenBy(comment => comment.Title, StringComparer.OrdinalIgnoreCase)
+            .ToArray();
     }
 
     private static IReadOnlyList<DiffFileSection> ParseDiffSections(string diffText)
@@ -871,11 +941,22 @@ public sealed class ReviewRunExecutor(
             }
 
             var lines = fullContent.Replace("\r\n", "\n", StringComparison.Ordinal).Split('\n');
-            var snippetRange = TryLocateSnippetRangeInFile(lines, snippet);
+            var snippetRange = TryLocateSnippetRangeInFile(
+                lines,
+                snippet,
+                lineNumber > 0 ? lineNumber : startLine);
             var anchorStartLine = startLine > 0 ? Math.Min(startLine, lines.Length) : 0;
             var anchorEndLine = endLine > 0 ? Math.Min(endLine, lines.Length) : 0;
 
-            if (anchorStartLine == 0 && snippetRange is not null)
+            if (snippetRange is not null &&
+                lineNumber > 0 &&
+                lineNumber >= snippetRange.Value.StartLine &&
+                lineNumber <= snippetRange.Value.EndLine)
+            {
+                anchorStartLine = snippetRange.Value.StartLine;
+                anchorEndLine = snippetRange.Value.EndLine;
+            }
+            else if (anchorStartLine == 0 && snippetRange is not null)
             {
                 anchorStartLine = snippetRange.Value.StartLine;
                 anchorEndLine = snippetRange.Value.EndLine;
@@ -1026,7 +1107,24 @@ public sealed class ReviewRunExecutor(
                 .ToLowerInvariant();
         }
 
-        private static (int StartLine, int EndLine)? TryLocateSnippetRangeInFile(IReadOnlyList<string> lines, string snippet)
+        public static (int StartLine, int EndLine)? TryLocateSnippetRangeInFile(
+            string fullContent,
+            string snippet,
+            int preferredLine = 0)
+        {
+            if (string.IsNullOrWhiteSpace(fullContent))
+            {
+                return null;
+            }
+
+            var lines = fullContent.Replace("\r\n", "\n", StringComparison.Ordinal).Split('\n');
+            return TryLocateSnippetRangeInFile(lines, snippet, preferredLine);
+        }
+
+        private static (int StartLine, int EndLine)? TryLocateSnippetRangeInFile(
+            IReadOnlyList<string> lines,
+            string snippet,
+            int preferredLine = 0)
         {
             if (string.IsNullOrWhiteSpace(snippet) || lines.Count == 0)
             {
@@ -1048,9 +1146,10 @@ public sealed class ReviewRunExecutor(
                 return null;
             }
 
-            var matchedLines = new List<int>(snippetCandidates.Length);
+            var candidateMatches = new List<int[]>(snippetCandidates.Length);
             foreach (var candidate in snippetCandidates)
             {
+                var matches = new List<int>();
                 for (var index = 0; index < lines.Count; index++)
                 {
                     var normalizedLine = NormalizeForMatch(lines[index]);
@@ -1065,17 +1164,56 @@ public sealed class ReviewRunExecutor(
                         continue;
                     }
 
-                    matchedLines.Add(index + 1);
-                    break;
+                    matches.Add(index + 1);
+                }
+
+                if (matches.Count > 0)
+                {
+                    candidateMatches.Add(matches.ToArray());
                 }
             }
 
-            if (matchedLines.Count == 0)
+            if (candidateMatches.Count == 0)
             {
                 return null;
             }
 
-            return (matchedLines.Min(), matchedLines.Max());
+            if (preferredLine > 0)
+            {
+                var nearestMatches = candidateMatches
+                    .Select(matches => matches
+                        .OrderBy(line => Math.Abs(line - preferredLine))
+                        .First())
+                    .Distinct()
+                    .OrderBy(line => line)
+                    .ToArray();
+
+                var localCluster = nearestMatches
+                    .Where(line => Math.Abs(line - preferredLine) <= 12)
+                    .ToArray();
+
+                if (localCluster.Length == 0)
+                {
+                    var seed = nearestMatches
+                        .OrderBy(line => Math.Abs(line - preferredLine))
+                        .First();
+                    localCluster = nearestMatches
+                        .Where(line => Math.Abs(line - seed) <= 12)
+                        .ToArray();
+                }
+
+                if (localCluster.Length > 0)
+                {
+                    return (localCluster.Min(), localCluster.Max());
+                }
+            }
+
+            var fallbackMatches = candidateMatches
+                .Select(matches => matches[0])
+                .OrderBy(line => line)
+                .ToArray();
+
+            return (fallbackMatches.Min(), fallbackMatches.Max());
         }
 
         public static string BuildRelevantDiffHunk(
