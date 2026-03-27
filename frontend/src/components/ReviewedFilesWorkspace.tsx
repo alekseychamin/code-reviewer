@@ -189,10 +189,11 @@ export function ReviewedFilesWorkspace({
           const isOpen = expandedFilePath === file.filePath;
           const previewRemark = getPreviewRemark(file);
           const sortedThreads = sortThreads(file.inlineThreads);
+          const hasRelevantThreads = sortedThreads.some((thread) => thread.isRelevant);
 
           return (
             <article
-              className={`file-accordion-card${isOpen ? ' open' : ''}`}
+              className={`file-accordion-card${isOpen ? ' open' : ''}${hasRelevantThreads ? '' : ' inactive'}`}
               key={file.filePath}
               ref={(element) => {
                 fileCardRefs.current[file.filePath] = element;
@@ -528,7 +529,8 @@ function getHighestSeverity(file: ReviewedFile): string | undefined {
 }
 
 function getPreviewRemark(file: ReviewedFile): InlineComment | undefined {
-  return sortThreads(file.inlineThreads)[0];
+  const sortedThreads = sortThreads(file.inlineThreads);
+  return sortedThreads.find((thread) => thread.isRelevant) ?? sortedThreads[0];
 }
 
 function expandFirstRemark(

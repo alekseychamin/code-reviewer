@@ -768,6 +768,28 @@ button.primary {
   border-color: rgba(15, 123, 108, 0.3);
 }
 
+.file-accordion-card.inactive {
+  border-color: rgba(29, 36, 51, 0.1);
+  background: rgba(29, 36, 51, 0.05);
+  box-shadow: none;
+}
+
+.file-accordion-card.inactive.open {
+  border-color: rgba(29, 36, 51, 0.14);
+}
+
+.file-accordion-card.inactive .file-accordion-path,
+.file-accordion-card.inactive .file-accordion-preview,
+.file-accordion-card.inactive .file-list-meta,
+.file-accordion-card.inactive .file-review-header p {
+  color: rgba(89, 101, 126, 0.9);
+}
+
+.file-accordion-card.inactive .file-accordion-toggle,
+.file-accordion-card.inactive .file-accordion-body {
+  background: rgba(29, 36, 51, 0.02);
+}
+
 .file-accordion-toggle {
   width: 100%;
   display: flex;
