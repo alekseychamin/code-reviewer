@@ -4,6 +4,8 @@ public sealed class ReviewArtifacts
 {
     public string DiffText { get; init; } = string.Empty;
 
+    public IReadOnlyList<string> PreparedChunks { get; init; } = [];
+
     public IReadOnlyList<string> ChangedFiles { get; init; } = [];
 
     public string ChangeDescription { get; init; } = string.Empty;

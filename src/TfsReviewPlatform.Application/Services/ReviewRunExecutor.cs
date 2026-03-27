@@ -48,6 +48,7 @@ public sealed class ReviewRunExecutor(
             run.UpdateArtifacts(new ReviewArtifacts
             {
                 DiffText = preprocessed.FilteredDiffText,
+                PreparedChunks = preprocessed.Chunks,
                 ChangedFiles = preprocessed.ChangedFiles
             });
             await reviewRunRepository.UpdateAsync(run, cancellationToken);
@@ -67,6 +68,7 @@ public sealed class ReviewRunExecutor(
                 var reusedArtifacts = new ReviewArtifacts
                 {
                     DiffText = previousRun.Artifacts.DiffText,
+                    PreparedChunks = previousRun.Artifacts.PreparedChunks,
                     ChangedFiles = previousRun.Artifacts.ChangedFiles,
                     ChangeDescription = previousRun.Artifacts.ChangeDescription,
                     ChangeDescriptionStructured = previousRun.Artifacts.ChangeDescriptionStructured,
@@ -103,6 +105,7 @@ public sealed class ReviewRunExecutor(
             run.UpdateArtifacts(new ReviewArtifacts
             {
                 DiffText = preprocessed.FilteredDiffText,
+                PreparedChunks = preprocessed.Chunks,
                 ChangedFiles = preprocessed.ChangedFiles,
                 ChangeDescription = changeSummary.Description,
                 ChangeDescriptionStructured = changeSummary.StructuredContent,
@@ -131,6 +134,7 @@ public sealed class ReviewRunExecutor(
             run.UpdateArtifacts(new ReviewArtifacts
             {
                 DiffText = preprocessed.FilteredDiffText,
+                PreparedChunks = preprocessed.Chunks,
                 ChangedFiles = preprocessed.ChangedFiles,
                 ChangeDescription = changeSummary.Description,
                 ChangeDescriptionStructured = changeSummary.StructuredContent,
@@ -147,6 +151,7 @@ public sealed class ReviewRunExecutor(
             run.UpdateArtifacts(new ReviewArtifacts
             {
                 DiffText = preprocessed.FilteredDiffText,
+                PreparedChunks = preprocessed.Chunks,
                 ChangedFiles = preprocessed.ChangedFiles,
                 ChangeDescription = changeSummary.Description,
                 ChangeDescriptionStructured = changeSummary.StructuredContent,
@@ -179,6 +184,7 @@ public sealed class ReviewRunExecutor(
             var artifacts = new ReviewArtifacts
             {
                 DiffText = preprocessed.FilteredDiffText,
+                PreparedChunks = preprocessed.Chunks,
                 ChangedFiles = preprocessed.ChangedFiles,
                 ChangeDescription = description,
                 ChangeDescriptionStructured = changeSummary.StructuredContent,
