@@ -122,6 +122,55 @@ export async function deletePullRequestReviewHistory(pullRequestUrl: string): Pr
   });
 }
 
+export async function getBranchReviewHistory(
+  repositoryName: string,
+  sourceBranch: string,
+  targetBranch: string
+): Promise<ReviewHistory> {
+  const query = new URLSearchParams({
+    repositoryName,
+    sourceBranch,
+    targetBranch
+  });
+
+  return request<ReviewHistory>(`/api/reviews/history/branch-comparisons?${query.toString()}`);
+}
+
+export async function deleteBranchReviewHistory(
+  repositoryName: string,
+  sourceBranch: string,
+  targetBranch: string
+): Promise<void> {
+  const query = new URLSearchParams({
+    repositoryName,
+    sourceBranch,
+    targetBranch
+  });
+
+  await request<void>(`/api/reviews/history/branch-comparisons?${query.toString()}`, {
+    method: 'DELETE'
+  });
+}
+
+export async function getBranchRepositorySuggestions(query: string): Promise<string[]> {
+  const search = new URLSearchParams();
+  if (query.trim()) {
+    search.set('query', query.trim());
+  }
+
+  const suffix = search.size > 0 ? `?${search.toString()}` : '';
+  return request<string[]>(`/api/reviews/branch-comparisons/repositories${suffix}`);
+}
+
+export async function getBranchSourceSuggestions(repositoryName: string, query: string): Promise<string[]> {
+  const search = new URLSearchParams({ repositoryName: repositoryName.trim() });
+  if (query.trim()) {
+    search.set('query', query.trim());
+  }
+
+  return request<string[]>(`/api/reviews/branch-comparisons/branches?${search.toString()}`);
+}
+
 export function buildEventsUrl(runId: string): string {
   return buildUrl(`/api/reviews/${runId}/events`);
 }

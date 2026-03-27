@@ -84,6 +84,9 @@ export interface ReviewRun {
   targetKind: ReviewTargetKind;
   title: string;
   pullRequestUrl?: string;
+  repositoryName?: string;
+  sourceBranch?: string;
+  targetBranch?: string;
   providerProfileId?: string;
   serviceName: string;
   authorName?: string;
@@ -154,10 +157,9 @@ export interface PullRequestReviewPayload {
 }
 
 export interface BranchReviewPayload {
-  repositoryPath: string;
+  repositoryName: string;
   targetBranch: string;
   sourceBranch: string;
-  repositoryName?: string;
   providerProfileId?: string;
   publishMode: PublishMode;
   stageOverrides: Array<{ stage: string; profileId: string; model?: string; temperature?: number }>;

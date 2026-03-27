@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { ProgressStream } from './components/ProgressStream';
 import { ReviewForm } from './components/ReviewForm';
 import { RunDetails } from './components/RunDetails';
@@ -7,8 +7,10 @@ import {
   buildEventsUrl,
   buildReportDownloadUrl,
   continueInlineDiscussion,
+  deleteBranchReviewHistory,
   deletePullRequestReviewHistory,
   fetchProviderProfiles,
+  getBranchReviewHistory,
   getPullRequestReviewHistory,
   getReviewRun,
   publishInlineComment,
@@ -26,9 +28,56 @@ import type {
   ReviewRun
 } from './lib/types';
 
-function shouldHidePullRequestRun(run: ReviewRun | null, activePullRequestUrl: string): boolean {
-  if (!run || run.targetKind !== 'PullRequest' || run.status === 'Running') {
+type ReviewMode = 'pullRequest' | 'branches';
+
+interface BranchHistorySelection {
+  repositoryName: string;
+  sourceBranch: string;
+  targetBranch: string;
+}
+
+function matchesRunSelection(
+  run: ReviewRun | null,
+  mode: ReviewMode,
+  activePullRequestUrl: string,
+  activeBranchSelection: BranchHistorySelection
+): boolean {
+  if (!run) {
     return false;
+  }
+
+  return !shouldHideRun(run, mode, activePullRequestUrl, activeBranchSelection);
+}
+
+function shouldHideRun(
+  run: ReviewRun | null,
+  mode: ReviewMode,
+  activePullRequestUrl: string,
+  activeBranchSelection: BranchHistorySelection
+): boolean {
+  if (!run || run.status === 'Running') {
+    return false;
+  }
+
+  if (mode === 'branches') {
+    if (run.targetKind !== 'BranchComparison') {
+      return true;
+    }
+
+    const normalizedRepositoryName = activeBranchSelection.repositoryName.trim();
+    const normalizedSourceBranch = activeBranchSelection.sourceBranch.trim();
+    const normalizedTargetBranch = activeBranchSelection.targetBranch.trim();
+    if (!normalizedRepositoryName || !normalizedSourceBranch || !normalizedTargetBranch) {
+      return false;
+    }
+
+    return run.repositoryName?.trim() !== normalizedRepositoryName ||
+      run.sourceBranch?.trim() !== normalizedSourceBranch ||
+      run.targetBranch?.trim() !== normalizedTargetBranch;
+  }
+
+  if (run.targetKind !== 'PullRequest') {
+    return true;
   }
 
   const normalizedActiveUrl = activePullRequestUrl.trim();
@@ -49,14 +98,68 @@ export default function App() {
   const [pullRequestHistoryLoading, setPullRequestHistoryLoading] = useState(false);
   const [pullRequestHistoryError, setPullRequestHistoryError] = useState<string | null>(null);
   const [pullRequestHistoryDeleting, setPullRequestHistoryDeleting] = useState(false);
+  const [branchHistory, setBranchHistory] = useState<ReviewHistory | null>(null);
+  const [branchHistoryLoading, setBranchHistoryLoading] = useState(false);
+  const [branchHistoryError, setBranchHistoryError] = useState<string | null>(null);
+  const [branchHistoryDeleting, setBranchHistoryDeleting] = useState(false);
+  const [branchSelection, setBranchSelection] = useState<BranchHistorySelection>({
+    repositoryName: '',
+    sourceBranch: '',
+    targetBranch: 'master'
+  });
+  const [reviewMode, setReviewMode] = useState<ReviewMode>('pullRequest');
   const historyRequestIdRef = useRef(0);
-  const displayedRun = shouldHidePullRequestRun(currentRun, pullRequestUrl) ? null : currentRun;
+  const branchHistoryRequestIdRef = useRef(0);
+  const displayedRun = shouldHideRun(currentRun, reviewMode, pullRequestUrl, branchSelection) ? null : currentRun;
 
-  async function refreshRun(runId: string): Promise<void> {
+  const handleBranchContextChange = useCallback(
+    (repositoryName: string, sourceBranch: string, targetBranch: string) => {
+      setBranchSelection((current) => {
+        if (
+          current.repositoryName === repositoryName &&
+          current.sourceBranch === sourceBranch &&
+          current.targetBranch === targetBranch
+        ) {
+          return current;
+        }
+
+        return { repositoryName, sourceBranch, targetBranch };
+      });
+    },
+    []
+  );
+
+  async function refreshRun(runId: string): Promise<ReviewRun | null> {
     try {
       const run = await getReviewRun(runId);
       setCurrentRun(run);
+      return run;
     } catch {
+      return null;
+    }
+  }
+
+  async function refreshHistoryForRun(run: ReviewRun): Promise<void> {
+    if (run.targetKind === 'PullRequest' && run.pullRequestUrl) {
+      try {
+        const history = await getPullRequestReviewHistory(run.pullRequestUrl);
+        setPullRequestHistory(history);
+        setPullRequestHistoryError(null);
+      } catch (reason) {
+        setPullRequestHistoryError(reason instanceof Error ? reason.message : String(reason));
+      }
+
+      return;
+    }
+
+    if (run.targetKind === 'BranchComparison' && run.repositoryName && run.sourceBranch && run.targetBranch) {
+      try {
+        const history = await getBranchReviewHistory(run.repositoryName, run.sourceBranch, run.targetBranch);
+        setBranchHistory(history);
+        setBranchHistoryError(null);
+      } catch (reason) {
+        setBranchHistoryError(reason instanceof Error ? reason.message : String(reason));
+      }
     }
   }
 
@@ -71,6 +174,10 @@ export default function App() {
   }, []);
 
   useEffect(() => {
+    if (reviewMode !== 'pullRequest') {
+      return;
+    }
+
     const normalizedUrl = pullRequestUrl.trim();
     if (!normalizedUrl) {
       historyRequestIdRef.current += 1;
@@ -78,7 +185,7 @@ export default function App() {
       setPullRequestHistoryError(null);
       setPullRequestHistoryLoading(false);
       setCurrentRun((existing) => {
-        if (!shouldHidePullRequestRun(existing, normalizedUrl)) {
+        if (!shouldHideRun(existing, 'pullRequest', normalizedUrl, branchSelection)) {
           return existing;
         }
 
@@ -94,7 +201,7 @@ export default function App() {
     setPullRequestHistoryError(null);
     setPullRequestHistoryLoading(false);
     setCurrentRun((existing) => {
-      if (!shouldHidePullRequestRun(existing, normalizedUrl)) {
+      if (!shouldHideRun(existing, 'pullRequest', normalizedUrl, branchSelection)) {
         return existing;
       }
 
@@ -117,23 +224,21 @@ export default function App() {
 
           setPullRequestHistory(history);
           if (!history.baselineRunId) {
-            setCurrentRun((existing) => (shouldHidePullRequestRun(existing, normalizedUrl) ? null : existing));
+            setCurrentRun((existing) => (shouldHideRun(existing, 'pullRequest', normalizedUrl, branchSelection) ? null : existing));
           }
 
-          if (history.baselineRunId && currentRun?.id !== history.baselineRunId) {
+          if (history.baselineRunId && !matchesRunSelection(currentRun, 'pullRequest', normalizedUrl, branchSelection)) {
             try {
               const baselineRun = await getReviewRun(history.baselineRunId);
               if (historyRequestIdRef.current !== requestId) {
                 return;
               }
 
-              setCurrentRun((existing) => {
-                if (existing?.status === 'Running') {
-                  return existing;
-                }
-
-                return baselineRun;
-              });
+              setCurrentRun((existing) =>
+                matchesRunSelection(existing, 'pullRequest', normalizedUrl, branchSelection)
+                  ? existing
+                  : baselineRun
+              );
             } catch {
             }
           }
@@ -156,7 +261,120 @@ export default function App() {
     return () => {
       window.clearTimeout(timeoutId);
     };
-  }, [pullRequestUrl, currentRun?.id, currentRun?.status]);
+  }, [reviewMode, pullRequestUrl, branchSelection]);
+
+  useEffect(() => {
+    if (reviewMode !== 'branches') {
+      return;
+    }
+
+    const normalizedRepositoryName = branchSelection.repositoryName.trim();
+    const normalizedSourceBranch = branchSelection.sourceBranch.trim();
+    const normalizedTargetBranch = branchSelection.targetBranch.trim();
+    if (!normalizedRepositoryName || !normalizedSourceBranch || !normalizedTargetBranch) {
+      branchHistoryRequestIdRef.current += 1;
+      setBranchHistory(null);
+      setBranchHistoryError(null);
+      setBranchHistoryLoading(false);
+      setCurrentRun((existing) => {
+        if (!shouldHideRun(existing, 'branches', pullRequestUrl, branchSelection)) {
+          return existing;
+        }
+
+        return null;
+      });
+      return;
+    }
+
+    branchHistoryRequestIdRef.current += 1;
+    const requestId = branchHistoryRequestIdRef.current;
+
+    setBranchHistory(null);
+    setBranchHistoryError(null);
+    setBranchHistoryLoading(false);
+    setCurrentRun((existing) => {
+      if (!shouldHideRun(existing, 'branches', pullRequestUrl, branchSelection)) {
+        return existing;
+      }
+
+      return null;
+    });
+
+    const timeoutId = window.setTimeout(() => {
+      if (branchHistoryRequestIdRef.current !== requestId) {
+        return;
+      }
+
+      setBranchHistoryLoading(true);
+      setBranchHistoryError(null);
+
+      void getBranchReviewHistory(normalizedRepositoryName, normalizedSourceBranch, normalizedTargetBranch)
+        .then(async (history) => {
+          if (branchHistoryRequestIdRef.current !== requestId) {
+            return;
+          }
+
+          setBranchHistory(history);
+          if (!history.baselineRunId) {
+            setCurrentRun((existing) =>
+              shouldHideRun(existing, 'branches', pullRequestUrl, branchSelection) ? null : existing
+            );
+          }
+
+          if (history.baselineRunId &&
+            !matchesRunSelection(
+              currentRun,
+              'branches',
+              pullRequestUrl,
+              {
+                repositoryName: normalizedRepositoryName,
+                sourceBranch: normalizedSourceBranch,
+                targetBranch: normalizedTargetBranch
+              })) {
+            try {
+              const baselineRun = await getReviewRun(history.baselineRunId);
+              if (branchHistoryRequestIdRef.current !== requestId) {
+                return;
+              }
+
+              setCurrentRun((existing) => {
+                if (matchesRunSelection(
+                  existing,
+                  'branches',
+                  pullRequestUrl,
+                  {
+                    repositoryName: normalizedRepositoryName,
+                    sourceBranch: normalizedSourceBranch,
+                    targetBranch: normalizedTargetBranch
+                  })) {
+                  return existing;
+                }
+
+                return baselineRun;
+              });
+            } catch {
+            }
+          }
+        })
+        .catch((reason) => {
+          if (branchHistoryRequestIdRef.current !== requestId) {
+            return;
+          }
+
+          setBranchHistory(null);
+          setBranchHistoryError(reason instanceof Error ? reason.message : String(reason));
+        })
+        .finally(() => {
+          if (branchHistoryRequestIdRef.current === requestId) {
+            setBranchHistoryLoading(false);
+          }
+        });
+    }, 350);
+
+    return () => {
+      window.clearTimeout(timeoutId);
+    };
+  }, [reviewMode, branchSelection, pullRequestUrl]);
 
   useEffect(() => {
     if (!currentRun) {
@@ -192,7 +410,10 @@ export default function App() {
     const onCompleted = async (event: MessageEvent<string>) => {
       const progressEvent = JSON.parse(event.data) as ReviewProgressEvent;
       setEvents((existing) => [...existing, progressEvent]);
-      await refreshRun(progressEvent.runId);
+      const run = await refreshRun(progressEvent.runId);
+      if (run) {
+        await refreshHistoryForRun(run);
+      }
       eventSource.close();
     };
 
@@ -296,6 +517,43 @@ export default function App() {
     }
   }
 
+  async function handleDeleteBranchHistory(
+    repositoryName: string,
+    sourceBranch: string,
+    targetBranch: string
+  ): Promise<void> {
+    const normalizedRepositoryName = repositoryName.trim();
+    const normalizedSourceBranch = sourceBranch.trim();
+    const normalizedTargetBranch = targetBranch.trim();
+    if (!normalizedRepositoryName || !normalizedSourceBranch || !normalizedTargetBranch) {
+      return;
+    }
+
+    setBranchHistoryDeleting(true);
+    setError(null);
+    try {
+      await deleteBranchReviewHistory(normalizedRepositoryName, normalizedSourceBranch, normalizedTargetBranch);
+      setBranchHistory({ baselineRunId: undefined, items: [] });
+      setBranchHistoryError(null);
+      setCurrentRun((existing) => {
+        if (!existing) {
+          return existing;
+        }
+
+        return existing.targetKind === 'BranchComparison' &&
+          existing.repositoryName?.trim() === normalizedRepositoryName &&
+          existing.sourceBranch?.trim() === normalizedSourceBranch &&
+          existing.targetBranch?.trim() === normalizedTargetBranch
+          ? null
+          : existing;
+      });
+    } catch (reason) {
+      setBranchHistoryError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setBranchHistoryDeleting(false);
+    }
+  }
+
   return (
     <main className="app-shell">
       <section className="hero">
@@ -313,12 +571,19 @@ export default function App() {
 
       <div className="layout-grid">
         <ReviewForm
+          branchHistory={branchHistory}
+          branchHistoryDeleting={branchHistoryDeleting}
+          branchHistoryError={branchHistoryError}
+          branchHistoryLoading={branchHistoryLoading}
+          onBranchContextChange={handleBranchContextChange}
+          onDeleteBranchHistory={handleDeleteBranchHistory}
           pullRequestHistoryDeleting={pullRequestHistoryDeleting}
           pullRequestHistory={pullRequestHistory}
           pullRequestHistoryError={pullRequestHistoryError}
           pullRequestHistoryLoading={pullRequestHistoryLoading}
           profiles={profiles}
           onDeletePullRequestHistory={handleDeletePullRequestHistory}
+          onModeChange={setReviewMode}
           onPullRequestUrlChange={setPullRequestUrl}
           onStartPullRequestReview={handleStartPullRequestReview}
           onStartBranchReview={handleStartBranchReview}

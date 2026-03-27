@@ -181,6 +181,53 @@ label,
   align-self: start;
 }
 
+.form-field-with-hint {
+  display: grid;
+  gap: 6px;
+}
+
+.form-hint {
+  color: var(--muted);
+  font-size: 0.85rem;
+  line-height: 1.4;
+}
+
+.suggestions-panel {
+  display: grid;
+  gap: 4px;
+  padding: 8px;
+  border: 1px solid rgba(29, 36, 51, 0.1);
+  border-radius: 16px;
+  background: rgba(255, 252, 247, 0.98);
+  box-shadow: 0 18px 40px rgba(31, 37, 46, 0.14);
+  max-height: 220px;
+  overflow-y: auto;
+}
+
+.suggestion-item,
+.suggestions-empty {
+  width: 100%;
+  border-radius: 12px;
+  padding: 10px 12px;
+  text-align: left;
+}
+
+.suggestion-item {
+  border: 0;
+  background: transparent;
+  color: var(--ink);
+  cursor: pointer;
+}
+
+.suggestion-item:hover {
+  background: rgba(15, 123, 108, 0.08);
+}
+
+.suggestions-empty {
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
 input,
 select {
   width: 100%;
