@@ -136,6 +136,8 @@ export interface ChangeDescriptionStructuredContent {
   summary: string;
   impactedModules: string[];
   risks: string[];
+  estimatedReviewEffort?: number;
+  qualityScore?: number;
 }
 
 export interface ReviewProgressEvent {

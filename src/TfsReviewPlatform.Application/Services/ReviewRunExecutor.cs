@@ -362,6 +362,8 @@ public sealed class ReviewRunExecutor(
         var category = node.TryGetProperty("category", out var categoryNode)
             ? categoryNode.GetString()?.Trim() ?? string.Empty
             : string.Empty;
+        var estimatedReviewEffort = TryParseBoundedInt(node, "estimated_review_effort", 1, 5);
+        var qualityScore = TryParseBoundedInt(node, "quality_score", 0, 100);
         var summary = node.TryGetProperty("summary", out var summaryNode)
             ? summaryNode.GetString()?.Trim() ?? string.Empty
             : string.Empty;
@@ -372,7 +374,13 @@ public sealed class ReviewRunExecutor(
             ? ParseStringArray(risksNode)
             : [];
 
-        var description = RenderChangeDescriptionMarkdown(category, summary, impactedModules, risks);
+        var description = RenderChangeDescriptionMarkdown(
+            category,
+            estimatedReviewEffort,
+            qualityScore,
+            summary,
+            impactedModules,
+            risks);
         if (string.IsNullOrWhiteSpace(description))
         {
             return null;
@@ -383,10 +391,36 @@ public sealed class ReviewRunExecutor(
             new ChangeDescriptionStructuredContent
             {
                 Category = category,
+                EstimatedReviewEffort = estimatedReviewEffort,
+                QualityScore = qualityScore,
                 Summary = summary,
                 ImpactedModules = impactedModules,
                 Risks = risks
             });
+    }
+
+    private static int? TryParseBoundedInt(JsonElement node, string propertyName, int min, int max)
+    {
+        if (!node.TryGetProperty(propertyName, out var propertyNode))
+        {
+            return null;
+        }
+
+        int? parsed = propertyNode.ValueKind switch
+        {
+            JsonValueKind.Number when propertyNode.TryGetInt32(out var numericValue) => numericValue,
+            JsonValueKind.String when int.TryParse(propertyNode.GetString(), out var stringValue) => stringValue,
+            _ => null
+        };
+
+        if (parsed is null)
+        {
+            return null;
+        }
+
+        return parsed.Value >= min && parsed.Value <= max
+            ? parsed.Value
+            : null;
     }
 
     private static IReadOnlyList<string> ParseStringArray(JsonElement node)
@@ -407,11 +441,25 @@ public sealed class ReviewRunExecutor(
 
     private static string RenderChangeDescriptionMarkdown(
         string category,
+        int? estimatedReviewEffort,
+        int? qualityScore,
         string summary,
         IReadOnlyList<string> impactedModules,
         IReadOnlyList<string> risks)
     {
         var builder = new StringBuilder();
+
+        if (estimatedReviewEffort is not null)
+        {
+            builder.AppendLine($"**Сложность ревью:** {estimatedReviewEffort}/5");
+            builder.AppendLine();
+        }
+
+        if (qualityScore is not null)
+        {
+            builder.AppendLine($"**Оценка качества PR:** {qualityScore}/100");
+            builder.AppendLine();
+        }
 
         if (!string.IsNullOrWhiteSpace(category))
         {

@@ -191,7 +191,9 @@ public static class ReviewRunMappingExtensions
             Category = content.Category,
             Summary = content.Summary,
             ImpactedModules = content.ImpactedModules,
-            Risks = content.Risks
+            Risks = content.Risks,
+            EstimatedReviewEffort = content.EstimatedReviewEffort,
+            QualityScore = content.QualityScore
         };
     }
 

@@ -19,11 +19,15 @@ public sealed class ReviewPromptFactory : IReviewPromptFactory
                 - Schema:
                   {
                     "category": "Feature | Bugfix | Refactoring | Hotfix | Config update",
+                    "estimated_review_effort": 1,
+                    "quality_score": 82,
                     "summary": "2-3 sentence summary of business or technical value",
                     "impacted_modules": ["3-5 key impacted modules or layers"],
                     "risks": ["optional risk or follow-up point", "optional second point"]
                   }
                 - Do not use markdown markers such as **, __, bullets, or fenced code in any field
+                - estimated_review_effort is required and must be an integer from 1 to 5, where 1 means short/easy review and 5 means long/hard review
+                - quality_score is optional but preferred; use an integer from 0 to 100, where 100 means PR code of very high quality and ready to merge after review of findings
                 - impacted_modules should contain short readable module or layer descriptions
                 - risks may be an empty array
 

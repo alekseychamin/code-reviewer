@@ -9,4 +9,8 @@ public sealed class ChangeDescriptionStructuredContent
     public IReadOnlyList<string> ImpactedModules { get; init; } = [];
 
     public IReadOnlyList<string> Risks { get; init; } = [];
+
+    public int? EstimatedReviewEffort { get; init; }
+
+    public int? QualityScore { get; init; }
 }

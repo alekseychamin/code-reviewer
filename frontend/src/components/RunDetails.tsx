@@ -224,6 +224,20 @@ function ChangeDescriptionBlock({
           </section>
         ) : null}
 
+        {typeof content.estimatedReviewEffort === 'number' ? (
+          <section className="structured-change-section">
+            <h4>Сложность ревью</h4>
+            <p>{renderReviewEffort(content.estimatedReviewEffort)}</p>
+          </section>
+        ) : null}
+
+        {typeof content.qualityScore === 'number' ? (
+          <section className="structured-change-section">
+            <h4>Оценка качества PR</h4>
+            <p>{content.qualityScore}/100</p>
+          </section>
+        ) : null}
+
         {content.summary ? (
           <section className="structured-change-section">
             <h4>Краткое описание</h4>
@@ -262,4 +276,9 @@ function ChangeDescriptionBlock({
       emptyText="Описание появится здесь после завершения первого этапа."
     />
   );
+}
+
+function renderReviewEffort(value: number): string {
+  const normalized = Math.max(1, Math.min(5, value));
+  return `${normalized}/5 ${'●'.repeat(normalized)}${'○'.repeat(5 - normalized)}`;
 }
