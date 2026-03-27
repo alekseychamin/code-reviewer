@@ -6,7 +6,7 @@ Production-oriented AI code review platform built around:
 - React + TypeScript frontend
 - layered backend architecture: `Api`, `Application`, `Domain`, `Infrastructure`, `Integrations`
 - multi-provider LLM routing for OpenAI-compatible endpoints and local Ollama
-- Azure DevOps / TFS and GitHub pull request integration
+- Azure DevOps / TFS, GitHub, and GitLab pull request / merge request integration
 - review targets by PR URL and by local branch comparison
 - staged review pipeline with SSE progress streaming
 - markdown report generation plus manual report/inline comment publishing back to the PR platform
@@ -18,7 +18,7 @@ Production-oriented AI code review platform built around:
 - `src/TfsReviewPlatform.Application`: orchestration, DTOs, contracts, validation, report building
 - `src/TfsReviewPlatform.Domain`: core entities and enums
 - `src/TfsReviewPlatform.Infrastructure`: in-memory repositories and background scheduling
-- `src/TfsReviewPlatform.Integrations`: LLM, Git, Azure DevOps/TFS and GitHub adapters, prompt factory
+- `src/TfsReviewPlatform.Integrations`: LLM, Git, Azure DevOps/TFS, GitHub, and GitLab adapters, prompt factory
 - `frontend`: React + TypeScript operator console
 - `tests/TfsReviewPlatform.Tests`: unit tests for preprocessing, normalization, and markdown publishing helpers
 
@@ -30,7 +30,7 @@ Production-oriented AI code review platform built around:
 4. Chunk review
 5. Findings normalization
 6. Final synthesis into markdown and publish drafts
-7. Optional manual publish to Azure DevOps/TFS or GitHub
+7. Optional manual publish to Azure DevOps/TFS, GitHub, or GitLab
 
 ## API surface
 
@@ -48,6 +48,7 @@ Production-oriented AI code review platform built around:
    - `OPENAI_API_KEY`
    - `AZURE_DEVOPS_TOKEN` for Azure DevOps / TFS PR review and publish
    - `GITHUB_TOKEN` for GitHub PR review and publish
+   - `GITLAB_TOKEN` for GitLab merge request review and publish
    - `POSTGRES_CONNECTION_STRING` for durable history
 3. Start the full local stack:
    `docker compose --profile history-db up -d --build`
@@ -74,6 +75,7 @@ With the default `.env.example` values, the API will then store full review hist
 
 - Azure DevOps / TFS PR URLs are supported for diff acquisition, inline publish, and report publish.
 - GitHub PR URLs are supported for diff acquisition, inline publish, and report publish.
+- GitLab merge request URLs are supported for diff acquisition, inline publish, and report publish.
 - Review history is keyed by normalized PR URL, so the latest completed review can be reused as baseline for `Delta Since Previous Review`.
 - If the diff has not changed since the previous completed review, the backend can reuse the saved run instead of executing the full LLM pipeline again.
 
@@ -81,6 +83,13 @@ Required backend tokens:
 
 - `AZURE_DEVOPS_TOKEN` for Azure DevOps / TFS PR access and publishing
 - `GITHUB_TOKEN` for GitHub PR access and publishing
+- `GITLAB_TOKEN` for GitLab merge request access and publishing
+
+Supported URL examples:
+
+- Azure DevOps / TFS: `https://tfs.example.local/tfs/Main/Project/_git/Repo/pullrequest/42`
+- GitHub: `https://github.com/org/repo/pull/42`
+- GitLab: `https://gitlab.example.com/group/subgroup/repo/-/merge_requests/42`
 
 ## Notes
 
