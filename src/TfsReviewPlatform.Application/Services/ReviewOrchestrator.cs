@@ -1089,7 +1089,7 @@ public sealed class ReviewOrchestrator(
         IMarkdownReportBuilder markdownReportBuilder)
     {
         var artifacts = run.Artifacts;
-        var inlineComments = artifacts.InlineComments
+        var inlineComments = GetMaterializedInlineComments(artifacts)
             .Select(comment => comment.Id == updatedThread.Id ? updatedThread : comment)
             .ToArray();
 
@@ -1152,7 +1152,7 @@ public sealed class ReviewOrchestrator(
 
     private static IReadOnlyList<ReviewFinding> BuildRelevantFindings(ReviewArtifacts artifacts)
     {
-        return artifacts.InlineComments
+        return GetMaterializedInlineComments(artifacts)
             .Where(comment => comment.IsRelevant)
             .Select(MapFindingFromInlineComment)
             .OrderBy(finding => finding.Severity)
@@ -1226,19 +1226,34 @@ public sealed class ReviewOrchestrator(
     {
         if (newFindings.Count == 0)
         {
-            return artifacts.InlineComments;
+            return GetMaterializedInlineComments(artifacts);
         }
 
         var newComments = markdownReportBuilder.BuildInlineComments(newFindings, artifacts.DiffText)
             .Select(comment => EnrichInlineComment(comment, artifacts.ReviewedFiles))
             .ToArray();
 
-        return artifacts.InlineComments
+        return GetMaterializedInlineComments(artifacts)
             .Concat(newComments)
             .OrderBy(comment => NormalizePath(comment.FilePath), StringComparer.OrdinalIgnoreCase)
             .ThenBy(comment => comment.LineNumber)
             .ThenBy(comment => comment.Title, StringComparer.OrdinalIgnoreCase)
             .ToArray();
+    }
+
+    private static IReadOnlyList<InlineCommentDraft> GetMaterializedInlineComments(ReviewArtifacts artifacts)
+    {
+        if (artifacts.ReviewedFiles.Count > 0)
+        {
+            return artifacts.ReviewedFiles
+                .SelectMany(file => file.InlineThreads)
+                .OrderBy(comment => NormalizePath(comment.FilePath), StringComparer.OrdinalIgnoreCase)
+                .ThenBy(comment => comment.LineNumber)
+                .ThenBy(comment => comment.Title, StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+        }
+
+        return artifacts.InlineComments;
     }
 
     private static IReadOnlyList<ReviewedFileArtifact> MergeReviewedFiles(

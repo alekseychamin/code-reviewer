@@ -127,6 +127,7 @@ public sealed class ReviewRunExecutor(
 
             var inlineComments = markdownReportBuilder.BuildInlineComments(findings, preprocessed.FilteredDiffText);
             var reviewedFiles = await BuildReviewedFilesAsync(diffResult, inlineComments, cancellationToken);
+            var enrichedInlineComments = FlattenInlineThreads(reviewedFiles);
             run.UpdateArtifacts(new ReviewArtifacts
             {
                 DiffText = preprocessed.FilteredDiffText,
@@ -134,7 +135,7 @@ public sealed class ReviewRunExecutor(
                 ChangeDescription = changeSummary.Description,
                 ChangeDescriptionStructured = changeSummary.StructuredContent,
                 ChangeDiagramMermaid = changeSummary.DiagramMermaid,
-                InlineComments = inlineComments,
+                InlineComments = enrichedInlineComments,
                 ReviewedFiles = reviewedFiles,
                 FindingsComparison = findingsComparison
             });
@@ -152,7 +153,7 @@ public sealed class ReviewRunExecutor(
                 ChangeDiagramMermaid = changeSummary.DiagramMermaid,
                 MarkdownReport = fullReport,
                 SummaryComment = summaryComment,
-                InlineComments = inlineComments,
+                InlineComments = enrichedInlineComments,
                 ReviewedFiles = reviewedFiles,
                 FindingsComparison = findingsComparison
             });
@@ -171,7 +172,7 @@ public sealed class ReviewRunExecutor(
                     request.PullRequestAccessToken,
                     request.PublishMode,
                     summaryComment,
-                    inlineComments,
+                    enrichedInlineComments,
                     cancellationToken);
             }
 
@@ -184,7 +185,7 @@ public sealed class ReviewRunExecutor(
                 ChangeDiagramMermaid = changeSummary.DiagramMermaid,
                 MarkdownReport = fullReport,
                 SummaryComment = summaryComment,
-                InlineComments = inlineComments,
+                InlineComments = enrichedInlineComments,
                 ReviewedFiles = reviewedFiles,
                 FindingsComparison = findingsComparison
             };
