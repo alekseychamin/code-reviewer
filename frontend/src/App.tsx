@@ -503,12 +503,16 @@ export default function App() {
       await deletePullRequestReviewHistory(normalizedUrl);
       setPullRequestHistory({ baselineRunId: undefined, items: [] });
       setPullRequestHistoryError(null);
+      setEvents([]);
       setCurrentRun((existing) => {
         if (!existing) {
           return existing;
         }
 
-        return existing.targetKind === 'PullRequest' && existing.title === normalizedUrl ? null : existing;
+        return existing.targetKind === 'PullRequest' &&
+          existing.pullRequestUrl?.trim() === normalizedUrl
+          ? null
+          : existing;
       });
     } catch (reason) {
       setPullRequestHistoryError(reason instanceof Error ? reason.message : String(reason));
@@ -535,6 +539,7 @@ export default function App() {
       await deleteBranchReviewHistory(normalizedRepositoryName, normalizedSourceBranch, normalizedTargetBranch);
       setBranchHistory({ baselineRunId: undefined, items: [] });
       setBranchHistoryError(null);
+      setEvents([]);
       setCurrentRun((existing) => {
         if (!existing) {
           return existing;
