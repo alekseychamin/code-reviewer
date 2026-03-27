@@ -48,14 +48,14 @@ pre {
 .app-shell {
   max-width: 1440px;
   margin: 0 auto;
-  padding: 24px 18px 32px;
+  padding: 18px 16px 24px;
 }
 
 .hero {
   display: grid;
-  gap: 12px;
-  margin-bottom: 18px;
-  padding: 22px;
+  gap: 8px;
+  margin-bottom: 14px;
+  padding: 16px 18px;
   border-radius: 32px;
   background: linear-gradient(135deg, rgba(255, 249, 240, 0.92), rgba(246, 236, 225, 0.96));
   box-shadow: var(--shadow);
@@ -65,39 +65,39 @@ pre {
 .hero h1 {
   max-width: 980px;
   margin: 0;
-  font-size: clamp(1.6rem, 3.4vw, 3rem);
-  line-height: 1.05;
+  font-size: clamp(1.3rem, 2.8vw, 2.35rem);
+  line-height: 1.02;
   letter-spacing: -0.05em;
 }
 
 .hero-copy {
-  max-width: 800px;
+  max-width: 900px;
   margin: 0;
   color: var(--muted);
-  font-size: 1.05rem;
-  line-height: 1.6;
+  font-size: 0.94rem;
+  line-height: 1.45;
 }
 
 .eyebrow {
-  margin: 0 0 10px;
+  margin: 0 0 4px;
   text-transform: uppercase;
   letter-spacing: 0.24em;
-  font-size: 0.75rem;
+  font-size: 0.7rem;
   color: var(--accent);
 }
 
 .layout-grid {
   display: grid;
-  gap: 14px;
+  gap: 12px;
   grid-template-columns: 1.25fr 0.95fr;
-  margin-bottom: 14px;
+  margin-bottom: 12px;
 }
 
 .panel {
   background: var(--panel);
   border: 1px solid rgba(255, 255, 255, 0.8);
   border-radius: var(--radius);
-  padding: 16px;
+  padding: 14px;
   box-shadow: var(--shadow);
   backdrop-filter: blur(12px);
 }
@@ -106,8 +106,8 @@ pre {
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
-  gap: 12px;
-  margin-bottom: 12px;
+  gap: 10px;
+  margin-bottom: 10px;
 }
 
 .panel-header h2,
@@ -130,7 +130,7 @@ pre {
 .result-toolbar {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 8px;
   flex-wrap: wrap;
 }
 
@@ -146,7 +146,7 @@ pre {
   border: 0;
   background: transparent;
   color: var(--muted);
-  padding: 10px 14px;
+  padding: 8px 12px;
   border-radius: 999px;
   cursor: pointer;
 }
@@ -158,13 +158,13 @@ pre {
 
 .form-grid {
   display: grid;
-  gap: 12px;
+  gap: 10px;
   grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
 .form-stack {
   display: grid;
-  gap: 12px;
+  gap: 10px;
 }
 
 .form-stack-full,
@@ -175,8 +175,8 @@ pre {
 label,
 .form-field {
   display: grid;
-  gap: 6px;
-  font-size: 0.95rem;
+  gap: 5px;
+  font-size: 0.92rem;
   color: var(--muted);
   align-self: start;
 }
@@ -188,14 +188,14 @@ label,
 
 .form-hint {
   color: var(--muted);
-  font-size: 0.85rem;
-  line-height: 1.4;
+  font-size: 0.82rem;
+  line-height: 1.35;
 }
 
 .suggestions-panel {
   display: grid;
   gap: 4px;
-  padding: 8px;
+  padding: 6px;
   border: 1px solid rgba(29, 36, 51, 0.1);
   border-radius: 16px;
   background: rgba(255, 252, 247, 0.98);
@@ -208,7 +208,7 @@ label,
 .suggestions-empty {
   width: 100%;
   border-radius: 12px;
-  padding: 10px 12px;
+  padding: 8px 10px;
   text-align: left;
 }
 
@@ -234,7 +234,7 @@ select {
   border: 1px solid var(--line);
   background: var(--panel-strong);
   border-radius: 16px;
-  padding: 10px 12px;
+  padding: 9px 12px;
   color: var(--ink);
 }
 
@@ -255,8 +255,8 @@ select {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 14px;
-  margin-top: 16px;
+  gap: 12px;
+  margin-top: 12px;
 }
 
 .panel-footer p {
@@ -267,8 +267,8 @@ select {
 
 .history-panel {
   display: grid;
-  gap: 10px;
-  padding: 12px;
+  gap: 8px;
+  padding: 10px;
   border-radius: 18px;
   background: rgba(255, 255, 255, 0.62);
   border: 1px solid rgba(29, 36, 51, 0.08);
@@ -307,13 +307,13 @@ select {
 
 .history-list {
   display: grid;
-  gap: 8px;
+  gap: 6px;
 }
 
 .history-item {
   display: grid;
-  gap: 6px;
-  padding: 10px 12px;
+  gap: 4px;
+  padding: 8px 10px;
   border-radius: 16px;
   background: rgba(255, 252, 247, 0.88);
   border: 1px solid rgba(29, 36, 51, 0.08);
@@ -338,15 +338,15 @@ select {
 
 .history-meta {
   color: var(--muted);
-  font-size: 0.9rem;
-  line-height: 1.45;
+  font-size: 0.86rem;
+  line-height: 1.35;
   overflow-wrap: anywhere;
 }
 
 button.primary {
   border: 0;
   border-radius: 999px;
-  padding: 12px 16px;
+  padding: 10px 14px;
   background: linear-gradient(135deg, var(--brand), var(--brand-strong));
   color: white;
   cursor: pointer;
@@ -359,7 +359,7 @@ button.primary {
   gap: 8px;
   border: 1px solid rgba(29, 36, 51, 0.1);
   border-radius: 999px;
-  padding: 10px 14px;
+  padding: 8px 12px;
   background: rgba(255, 255, 255, 0.82);
   color: var(--ink);
   cursor: pointer;
@@ -372,7 +372,7 @@ button.primary {
 }
 
 .progress-shell {
-  padding: 14px;
+  padding: 12px;
   border-radius: 22px;
   background: linear-gradient(160deg, rgba(15, 123, 108, 0.09), rgba(197, 98, 50, 0.06));
   border: 1px solid rgba(15, 123, 108, 0.12);
@@ -395,20 +395,20 @@ button.primary {
   display: flex;
   justify-content: space-between;
   gap: 12px;
-  margin-top: 10px;
+  margin-top: 8px;
   color: var(--muted);
 }
 
 .timeline {
   display: grid;
-  gap: 8px;
-  margin-top: 14px;
+  gap: 6px;
+  margin-top: 10px;
 }
 
 .timeline-item {
   display: grid;
   gap: 4px;
-  padding: 10px 12px;
+  padding: 8px 10px;
   border-radius: 18px;
   background: rgba(255, 255, 255, 0.72);
   border: 1px solid rgba(29, 36, 51, 0.06);
@@ -431,8 +431,8 @@ button.primary {
   align-items: center;
   justify-content: center;
   border-radius: 999px;
-  padding: 7px 12px;
-  font-size: 0.84rem;
+  padding: 6px 10px;
+  font-size: 0.8rem;
 }
 
 .status-running,
@@ -453,14 +453,14 @@ button.primary {
 
 .results-grid {
   display: grid;
-  gap: 12px;
+  gap: 10px;
   grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
 .result-card {
   display: grid;
-  gap: 8px;
-  padding: 14px;
+  gap: 6px;
+  padding: 12px;
   border-radius: 20px;
   background: rgba(255, 255, 255, 0.78);
   border: 1px solid rgba(29, 36, 51, 0.06);
@@ -471,7 +471,7 @@ button.primary {
 }
 
 .subsection {
-  margin-top: 14px;
+  margin-top: 10px;
 }
 
 .chip-list,
@@ -759,7 +759,7 @@ button.primary {
   border-radius: 24px;
   border: 1px solid rgba(29, 36, 51, 0.08);
   background: rgba(255, 255, 255, 0.82);
-  box-shadow: 0 10px 28px rgba(29, 36, 51, 0.06);
+  box-shadow: 0 8px 22px rgba(29, 36, 51, 0.05);
   overflow: hidden;
   scroll-margin-top: 16px;
 }
@@ -795,8 +795,8 @@ button.primary {
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
-  gap: 14px;
-  padding: 14px 16px;
+  gap: 12px;
+  padding: 12px 14px;
   border: 0;
   background: transparent;
   text-align: left;
@@ -805,7 +805,7 @@ button.primary {
 
 .file-accordion-main {
   display: grid;
-  gap: 6px;
+  gap: 4px;
   min-width: 0;
 }
 
@@ -819,11 +819,11 @@ button.primary {
 .entity-number {
   display: inline-flex;
   align-items: center;
-  padding: 4px 10px;
+  padding: 3px 9px;
   border-radius: 999px;
   background: rgba(29, 36, 51, 0.06);
   color: var(--muted);
-  font-size: 0.8rem;
+  font-size: 0.76rem;
   font-weight: 700;
   letter-spacing: 0.02em;
 }
@@ -921,7 +921,7 @@ button.primary {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 12px;
+  gap: 10px;
 }
 
 .subsection-header h4,
@@ -936,13 +936,13 @@ button.primary {
 
 .file-sidebar-list {
   display: grid;
-  gap: 8px;
+  gap: 6px;
 }
 
 .file-nav-item {
   display: grid;
   gap: 4px;
-  padding: 12px;
+  padding: 10px;
   border-radius: 18px;
   border: 1px solid rgba(29, 36, 51, 0.08);
   background: rgba(255, 255, 255, 0.74);
@@ -1002,8 +1002,8 @@ button.primary {
 
 .code-viewer-toolbar {
   display: grid;
-  gap: 10px;
-  padding: 14px;
+  gap: 8px;
+  padding: 12px;
   border-radius: 22px;
   background: rgba(255, 255, 255, 0.74);
   border: 1px solid rgba(29, 36, 51, 0.06);
@@ -1016,7 +1016,7 @@ button.primary {
 
 .thread-jump-strip {
   display: grid;
-  gap: 8px;
+  gap: 6px;
 }
 
 .thread-jump-summary {
@@ -1036,7 +1036,7 @@ button.primary {
   align-items: center;
   gap: 8px;
   max-width: 100%;
-  padding: 8px 12px;
+  padding: 7px 10px;
   border-radius: 14px;
   border: 1px solid rgba(29, 36, 51, 0.08);
   background: rgba(255, 255, 255, 0.92);
@@ -1061,8 +1061,8 @@ button.primary {
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
-  gap: 12px;
-  padding: 14px;
+  gap: 10px;
+  padding: 12px;
   border-radius: 20px;
   background: rgba(255, 255, 255, 0.7);
   border: 1px solid rgba(29, 36, 51, 0.06);
@@ -1082,14 +1082,14 @@ button.primary {
 }
 
 .file-review-header p {
-  margin-top: 4px;
+  margin-top: 2px;
   color: var(--muted);
 }
 
 .file-stats {
   display: flex;
   flex-wrap: wrap;
-  gap: 8px;
+  gap: 6px;
   justify-content: flex-end;
   flex-shrink: 0;
 }
@@ -1306,6 +1306,16 @@ button.primary {
   justify-content: flex-end;
 }
 
+.secondary-chip.source-initial {
+  background: rgba(29, 36, 51, 0.08);
+  color: #4b5a70;
+}
+
+.secondary-chip.source-followup {
+  background: rgba(20, 115, 230, 0.12);
+  color: #1d5bd1;
+}
+
 .thread-snippet {
   margin-top: 8px;
 }
@@ -1445,6 +1455,10 @@ button.primary {
   resize: vertical;
 }
 
+.review-chat-box {
+  margin-top: 14px;
+}
+
 .diff-snippet-block {
   padding: 14px;
   border-radius: 22px;
@@ -1472,18 +1486,18 @@ button.primary {
 
 .thread-list {
   display: grid;
-  gap: 10px;
+  gap: 8px;
 }
 
 .thread-context-actions {
-  margin-top: 10px;
+  margin-top: 8px;
 }
 
 .thread-context-block {
   display: grid;
-  gap: 8px;
-  margin-top: 10px;
-  padding: 10px 12px;
+  gap: 6px;
+  margin-top: 8px;
+  padding: 8px 10px;
   border-radius: 16px;
   background: rgba(29, 36, 51, 0.035);
   border: 1px solid rgba(29, 36, 51, 0.06);
@@ -1540,7 +1554,7 @@ button.primary {
 
 .empty-state,
 .error-banner {
-  padding: 16px;
+  padding: 12px;
   border-radius: 18px;
   background: rgba(255, 255, 255, 0.8);
   color: var(--muted);
@@ -1557,8 +1571,8 @@ button.primary {
 }
 
 .inline-error {
-  margin-top: 16px;
-  padding: 14px 16px;
+  margin-top: 12px;
+  padding: 12px 14px;
   border-radius: 16px;
   color: var(--critical);
   background: rgba(180, 35, 24, 0.08);
