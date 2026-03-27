@@ -84,7 +84,8 @@ public sealed class FindingsNormalizer : IFindingsNormalizer
             ReadString(element, "existing_code") ?? ReadString(element, "bad_code") ?? string.Empty,
             ReadString(element, "suggestion") ?? ReadString(element, "fix") ?? string.Empty,
             ReadInt(element, "start_line"),
-            ReadInt(element, "end_line"));
+            ReadInt(element, "end_line"),
+            Guid.NewGuid());
 
         return ShouldKeepFinding(finding, kind) ? finding : null;
     }

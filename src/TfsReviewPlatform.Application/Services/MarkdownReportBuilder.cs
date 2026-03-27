@@ -155,7 +155,12 @@ public sealed class MarkdownReportBuilder : IMarkdownReportBuilder
                             $"**{finding.Severity}: {finding.Title}**\n\n{finding.Description}",
                             DateTimeOffset.UtcNow,
                             BuildInitialStructuredContent(finding))
-                    ]);
+                    ],
+                    finding.Id == Guid.Empty ? Guid.NewGuid() : finding.Id,
+                    finding.Category.ToString(),
+                    finding.StartLine,
+                    finding.EndLine,
+                    true);
             })
             .ToArray();
     }

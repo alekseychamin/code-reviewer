@@ -142,6 +142,24 @@ public sealed class ReviewsController(
         }
     }
 
+    [HttpPost("{runId:guid}/inline-comments/{commentId:guid}/relevance")]
+    [ProducesResponseType<ReviewRunDto>(StatusCodes.Status200OK)]
+    public async Task<ActionResult<ReviewRunDto>> SetInlineCommentRelevance(
+        Guid runId,
+        Guid commentId,
+        [FromBody] SetInlineCommentRelevanceRequest request,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            return Ok(await reviewOrchestrator.SetInlineCommentRelevanceAsync(runId, commentId, request.IsRelevant, cancellationToken));
+        }
+        catch (InvalidOperationException exception)
+        {
+            return ValidationProblem(detail: exception.Message);
+        }
+    }
+
     [HttpGet("{runId:guid}/artifacts/diff")]
     public async Task<IActionResult> DownloadDiff(Guid runId, CancellationToken cancellationToken)
     {

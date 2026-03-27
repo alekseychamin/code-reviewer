@@ -15,4 +15,9 @@ public sealed record InlineCommentDraft(
     string RelevantDiffHunk,
     bool PublishedToTfs,
     DateTimeOffset? PublishedAt,
-    IReadOnlyList<ReviewCommentMessage> Messages);
+    IReadOnlyList<ReviewCommentMessage> Messages,
+    Guid FindingId = default,
+    string Category = "",
+    int StartLine = 0,
+    int EndLine = 0,
+    bool IsRelevant = true);

@@ -20,6 +20,7 @@ public sealed class ReviewOrchestrator(
     ILlmStageRouter llmStageRouter,
     ILlmCompletionService llmCompletionService,
     IReviewPublisher reviewPublisher,
+    IMarkdownReportBuilder markdownReportBuilder,
     ILogger<ReviewOrchestrator> logger)
     : IReviewOrchestrator
 {
@@ -159,6 +160,11 @@ public sealed class ReviewOrchestrator(
         var thread = run.Artifacts.InlineComments.FirstOrDefault(item => item.Id == commentId)
                      ?? throw new InvalidOperationException($"Inline comment '{commentId}' was not found.");
 
+        if (!thread.IsRelevant)
+        {
+            throw new InvalidOperationException("Нельзя публиковать замечание, помеченное как неактуальное.");
+        }
+
         if (thread.PublishedToTfs)
         {
             return run.ToDto();
@@ -176,12 +182,13 @@ public sealed class ReviewOrchestrator(
         }
 
         var updatedArtifacts = ReplaceInlineComment(
-            run.Artifacts,
+            run,
             thread with
             {
                 PublishedToTfs = true,
                 PublishedAt = DateTimeOffset.UtcNow
-            });
+            },
+            markdownReportBuilder);
 
         run.UpdateArtifacts(updatedArtifacts);
         await reviewRunRepository.UpdateAsync(run, cancellationToken);
@@ -226,6 +233,37 @@ public sealed class ReviewOrchestrator(
         }
 
         run.MarkPublishSucceeded();
+        await reviewRunRepository.UpdateAsync(run, cancellationToken);
+        return run.ToDto();
+    }
+
+    public async Task<ReviewRunDto> SetInlineCommentRelevanceAsync(
+        Guid runId,
+        Guid commentId,
+        bool isRelevant,
+        CancellationToken cancellationToken)
+    {
+        var run = await reviewRunRepository.GetAsync(runId, cancellationToken)
+                  ?? throw new InvalidOperationException($"Review run '{runId}' was not found.");
+
+        var thread = run.Artifacts.InlineComments.FirstOrDefault(item => item.Id == commentId)
+                     ?? throw new InvalidOperationException($"Inline comment '{commentId}' was not found.");
+
+        if (thread.IsRelevant == isRelevant)
+        {
+            return run.ToDto();
+        }
+
+        var updatedArtifacts = ReplaceInlineComment(
+            run,
+            thread with
+            {
+                IsRelevant = isRelevant
+            },
+            markdownReportBuilder);
+
+        run.UpdateArtifacts(updatedArtifacts);
+        run.UpdateFindings(BuildRelevantFindings(updatedArtifacts));
         await reviewRunRepository.UpdateAsync(run, cancellationToken);
         return run.ToDto();
     }
@@ -345,7 +383,7 @@ public sealed class ReviewOrchestrator(
             Messages = updatedMessages
         };
 
-        run.UpdateArtifacts(ReplaceInlineComment(run.Artifacts, updatedThread));
+        run.UpdateArtifacts(ReplaceInlineComment(run, updatedThread, markdownReportBuilder));
         await reviewRunRepository.UpdateAsync(run, cancellationToken);
         return run.ToDto();
     }
@@ -623,8 +661,12 @@ public sealed class ReviewOrchestrator(
         };
     }
 
-    private static ReviewArtifacts ReplaceInlineComment(ReviewArtifacts artifacts, InlineCommentDraft updatedThread)
+    private static ReviewArtifacts ReplaceInlineComment(
+        ReviewRun run,
+        InlineCommentDraft updatedThread,
+        IMarkdownReportBuilder markdownReportBuilder)
     {
+        var artifacts = run.Artifacts;
         var inlineComments = artifacts.InlineComments
             .Select(comment => comment.Id == updatedThread.Id ? updatedThread : comment)
             .ToArray();
@@ -644,17 +686,139 @@ public sealed class ReviewOrchestrator(
             })
             .ToArray();
 
+        var provisionalArtifacts = new ReviewArtifacts
+        {
+            DiffText = artifacts.DiffText,
+            ChangedFiles = artifacts.ChangedFiles,
+            ChangeDescription = artifacts.ChangeDescription,
+            ChangeDescriptionStructured = artifacts.ChangeDescriptionStructured,
+            ChangeDiagramMermaid = artifacts.ChangeDiagramMermaid,
+            MarkdownReport = artifacts.MarkdownReport,
+            SummaryComment = artifacts.SummaryComment,
+            InlineComments = inlineComments,
+            ReviewedFiles = reviewedFiles,
+            FindingsComparison = artifacts.FindingsComparison
+        };
+
+        var relevantFindings = BuildRelevantFindings(provisionalArtifacts);
+        var relevantComparison = FilterComparison(artifacts.FindingsComparison, relevantFindings);
+
         return new ReviewArtifacts
         {
             DiffText = artifacts.DiffText,
             ChangedFiles = artifacts.ChangedFiles,
             ChangeDescription = artifacts.ChangeDescription,
+            ChangeDescriptionStructured = artifacts.ChangeDescriptionStructured,
             ChangeDiagramMermaid = artifacts.ChangeDiagramMermaid,
-            MarkdownReport = artifacts.MarkdownReport,
-            SummaryComment = artifacts.SummaryComment,
+            MarkdownReport = markdownReportBuilder.BuildFullReport(
+                run.DisplayTitle,
+                artifacts.ChangeDescription,
+                relevantFindings,
+                relevantComparison),
+            SummaryComment = markdownReportBuilder.BuildSummaryComment(
+                run.DisplayTitle,
+                artifacts.ChangeDescription,
+                relevantFindings,
+                relevantComparison),
             InlineComments = inlineComments,
-            ReviewedFiles = reviewedFiles
+            ReviewedFiles = reviewedFiles,
+            FindingsComparison = relevantComparison
         };
+    }
+
+    private static IReadOnlyList<ReviewFinding> BuildRelevantFindings(ReviewArtifacts artifacts)
+    {
+        return artifacts.InlineComments
+            .Where(comment => comment.IsRelevant)
+            .Select(MapFindingFromInlineComment)
+            .OrderBy(finding => finding.Severity)
+            .ToArray();
+    }
+
+    private static ReviewFinding MapFindingFromInlineComment(InlineCommentDraft comment)
+    {
+        var file = comment.FilePath.TrimStart('/');
+        var lineHint = comment.StartLine > 0
+            ? $"Line {comment.StartLine}"
+            : comment.LineNumber > 0
+                ? $"Line {comment.LineNumber}"
+                : "Unknown";
+        var description = ExtractFindingDescription(comment);
+
+        return new ReviewFinding(
+            file,
+            lineHint,
+            Enum.TryParse<FindingCategory>(comment.Category, true, out var category) ? category : FindingCategory.Bug,
+            Enum.TryParse<FindingSeverity>(comment.Severity, true, out var severity) ? severity : FindingSeverity.Medium,
+            comment.Title,
+            description,
+            comment.ExistingCode,
+            comment.Suggestion,
+            comment.StartLine > 0 ? comment.StartLine : comment.LineNumber,
+            comment.EndLine > 0 ? comment.EndLine : (comment.StartLine > 0 ? comment.StartLine : comment.LineNumber),
+            comment.FindingId);
+    }
+
+    private static string ExtractFindingDescription(InlineCommentDraft comment)
+    {
+        var initialAssistantMessage = comment.Messages.FirstOrDefault(message => message.Role == "assistant");
+        if (!string.IsNullOrWhiteSpace(initialAssistantMessage?.StructuredContent?.Summary))
+        {
+            return initialAssistantMessage.StructuredContent.Summary.Trim();
+        }
+
+        if (!string.IsNullOrWhiteSpace(comment.Content))
+        {
+            var parts = comment.Content.Split("\n\n", 2, StringSplitOptions.TrimEntries);
+            return parts.Length == 2 ? parts[1].Trim() : comment.Content.Trim();
+        }
+
+        return string.Empty;
+    }
+
+    private static FindingsComparisonSnapshot? FilterComparison(
+        FindingsComparisonSnapshot? comparison,
+        IReadOnlyList<ReviewFinding> relevantFindings)
+    {
+        if (comparison is null)
+        {
+            return null;
+        }
+
+        var relevantKeys = relevantFindings
+            .Select(BuildFindingKey)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+        var newFindings = comparison.NewFindings
+            .Where(finding => relevantKeys.Contains(BuildFindingKey(finding)))
+            .ToArray();
+
+        var stillRelevantFindings = comparison.StillRelevantFindings
+            .Where(finding => relevantKeys.Contains(BuildFindingKey(finding)))
+            .ToArray();
+
+        return new FindingsComparisonSnapshot
+        {
+            PreviousRunId = comparison.PreviousRunId,
+            PreviousFindingsCount = comparison.PreviousFindingsCount,
+            CurrentFindingsCount = relevantFindings.Count,
+            NewFindingsCount = newFindings.Length,
+            StillRelevantFindingsCount = stillRelevantFindings.Length,
+            ResolvedFindingsCount = comparison.ResolvedFindingsCount,
+            NewFindings = newFindings,
+            StillRelevantFindings = stillRelevantFindings,
+            ResolvedFindings = comparison.ResolvedFindings
+        };
+    }
+
+    private static string BuildFindingKey(ReviewFinding finding)
+    {
+        if (finding.Id != Guid.Empty)
+        {
+            return finding.Id.ToString("N");
+        }
+
+        return $"{NormalizePath(finding.File)}|{finding.Title.Trim()}|{finding.StartLine}|{finding.EndLine}";
     }
 
     private static bool PathsMatch(string left, string right)

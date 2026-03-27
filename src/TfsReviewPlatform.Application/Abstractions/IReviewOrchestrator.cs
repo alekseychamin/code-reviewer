@@ -23,6 +23,12 @@ public interface IReviewOrchestrator
 
     Task<ReviewRunDto> PublishReportAsync(Guid runId, CancellationToken cancellationToken);
 
+    Task<ReviewRunDto> SetInlineCommentRelevanceAsync(
+        Guid runId,
+        Guid commentId,
+        bool isRelevant,
+        CancellationToken cancellationToken);
+
     Task<ReviewRunDto> ContinueInlineDiscussionAsync(
         Guid runId,
         Guid commentId,

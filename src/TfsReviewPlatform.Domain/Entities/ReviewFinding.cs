@@ -12,4 +12,5 @@ public sealed record ReviewFinding(
     string ExistingCode,
     string Suggestion,
     int StartLine = 0,
-    int EndLine = 0);
+    int EndLine = 0,
+    Guid Id = default);
