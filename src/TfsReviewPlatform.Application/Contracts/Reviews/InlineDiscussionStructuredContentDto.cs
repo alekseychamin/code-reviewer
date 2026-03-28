@@ -21,4 +21,10 @@ public sealed class InlineDiscussionStructuredContentDto
     public int AddedFindingsCount { get; init; }
 
     public IReadOnlyList<string> AddedFindings { get; init; } = [];
+
+    public int AddedOpportunitiesCount { get; init; }
+
+    public IReadOnlyList<string> AddedOpportunities { get; init; } = [];
+
+    public IReadOnlyList<InlineDiscussionOpportunityItemDto> AddedOpportunityItems { get; init; } = [];
 }

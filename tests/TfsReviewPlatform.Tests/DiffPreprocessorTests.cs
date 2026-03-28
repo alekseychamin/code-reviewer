@@ -163,4 +163,37 @@ public sealed class DiffPreprocessorTests
         Assert.Contains("-old line 1", chunk);
     }
 
+    [Fact]
+    public void Process_KeepsLargeFileChunksLocalToNearbyHunks()
+    {
+        var sut = new DiffPreprocessor(Microsoft.Extensions.Options.Options.Create(new ReviewPipelineOptions
+        {
+            MaxChunkCharacters = 220
+        }));
+
+        var diff = """
+            diff --git a/src/App/HugeFile.cs b/src/App/HugeFile.cs
+            --- a/src/App/HugeFile.cs
+            +++ b/src/App/HugeFile.cs
+            @@ -10,1 +10,4 @@
+            +alpha 01 1234567890
+            +alpha 02 1234567890
+            +alpha 03 1234567890
+            @@ -200,1 +203,4 @@
+            +beta 01 1234567890
+            +beta 02 1234567890
+            +beta 03 1234567890
+            """;
+
+        var result = sut.Process(diff);
+
+        Assert.True(result.Chunks.Count >= 2);
+        Assert.Contains(result.Chunks, chunk => chunk.Contains("alpha 01 1234567890", StringComparison.Ordinal));
+        Assert.Contains(result.Chunks, chunk => chunk.Contains("beta 01 1234567890", StringComparison.Ordinal));
+        Assert.DoesNotContain(
+            result.Chunks,
+            chunk => chunk.Contains("alpha 01 1234567890", StringComparison.Ordinal) &&
+                     chunk.Contains("beta 01 1234567890", StringComparison.Ordinal));
+    }
+
 }

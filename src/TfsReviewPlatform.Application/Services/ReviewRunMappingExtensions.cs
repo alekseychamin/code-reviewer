@@ -186,7 +186,19 @@ public static class ReviewRunMappingExtensions
             ExampleCodeLanguage = content.ExampleCodeLanguage,
             ExampleCode = content.ExampleCode,
             AddedFindingsCount = content.AddedFindingsCount,
-            AddedFindings = content.AddedFindings
+            AddedFindings = content.AddedFindings,
+            AddedOpportunitiesCount = content.AddedOpportunitiesCount,
+            AddedOpportunities = content.AddedOpportunities,
+            AddedOpportunityItems = content.AddedOpportunityItems
+                .Select(item => new InlineDiscussionOpportunityItemDto
+                {
+                    File = item.File,
+                    LineHint = item.LineHint,
+                    StartLine = item.StartLine,
+                    Title = item.Title,
+                    Description = item.Description
+                })
+                .ToArray()
         };
     }
 

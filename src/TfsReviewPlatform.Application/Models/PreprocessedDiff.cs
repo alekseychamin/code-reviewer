@@ -8,5 +8,7 @@ public sealed class PreprocessedDiff
 
     public IReadOnlyList<string> ChangedFiles { get; init; } = [];
 
+    public IReadOnlyList<string> ReviewChunks { get; init; } = [];
+
     public IReadOnlyList<string> Chunks { get; init; } = [];
 }

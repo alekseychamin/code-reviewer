@@ -42,22 +42,34 @@ public sealed class DiffPreprocessor(IOptions<ReviewPipelineOptions> options) : 
         var reviewContextDiff = reviewContextFiles.Length > 0
             ? string.Concat(reviewContextFiles)
             : filteredDiff;
-        var chunks = BuildChunks(reviewContextFiles.Length > 0 ? reviewContextFiles : files.Select(file => file.Content));
+        var chunkSource = reviewContextFiles.Length > 0 ? reviewContextFiles : files.Select(file => file.Content);
+        var reviewChunks = BuildChunks(
+            chunkSource,
+            Math.Max(4000, options.Value.MaxPrimaryReviewChunkCharacters),
+            mergeFormattedChunks: true);
+        var preparedChunks = BuildChunks(
+            chunkSource,
+            Math.Max(2000, options.Value.MaxChunkCharacters),
+            mergeFormattedChunks: false);
 
         return new PreprocessedDiff
         {
             FilteredDiffText = filteredDiff,
             ReviewContextDiffText = reviewContextDiff,
             ChangedFiles = files.Select(file => file.FilePath).Distinct(StringComparer.OrdinalIgnoreCase).ToArray(),
-            Chunks = chunks
+            ReviewChunks = reviewChunks,
+            Chunks = preparedChunks
         };
     }
 
-    private IReadOnlyList<string> BuildChunks(IEnumerable<string> fileDiffs)
+    private IReadOnlyList<string> BuildChunks(
+        IEnumerable<string> fileDiffs,
+        int maxCharacters,
+        bool mergeFormattedChunks)
     {
-        var maxCharacters = Math.Max(2000, options.Value.MaxChunkCharacters);
+        maxCharacters = Math.Max(2000, maxCharacters);
         var chunks = new List<string>();
-        var current = new StringBuilder();
+        var current = mergeFormattedChunks ? new StringBuilder() : null;
 
         foreach (var fileDiff in fileDiffs)
         {
@@ -65,9 +77,15 @@ public sealed class DiffPreprocessor(IOptions<ReviewPipelineOptions> options) : 
             {
                 var formattedChunks = FormatForChunkReview(fileDiffChunk, maxCharacters);
 
+                if (!mergeFormattedChunks)
+                {
+                    chunks.AddRange(formattedChunks);
+                    continue;
+                }
+
                 foreach (var formattedChunk in formattedChunks)
                 {
-                    if (current.Length > 0 && current.Length + formattedChunk.Length > maxCharacters)
+                    if (current!.Length > 0 && current.Length + formattedChunk.Length > maxCharacters)
                     {
                         chunks.Add(current.ToString());
                         current.Clear();
@@ -78,7 +96,7 @@ public sealed class DiffPreprocessor(IOptions<ReviewPipelineOptions> options) : 
             }
         }
 
-        if (current.Length > 0)
+        if (mergeFormattedChunks && current is not null && current.Length > 0)
         {
             chunks.Add(current.ToString());
         }
@@ -161,37 +179,84 @@ public sealed class DiffPreprocessor(IOptions<ReviewPipelineOptions> options) : 
         var header = lines[..firstHunkIndex];
         var hunks = ExtractHunks(lines[firstHunkIndex..]);
         var filePath = ExtractChunkFilePath(header);
-        var builder = new StringBuilder();
-        builder.Append("## File: '")
-            .Append(filePath)
-            .AppendLine("'");
+        var chunks = new List<string>();
+        var current = new StringBuilder();
+        AppendChunkHeader(current, filePath);
 
         foreach (var hunk in hunks)
         {
-            builder.AppendLine();
-            builder.AppendLine(hunk[0]);
+            var structuredHunk = BuildStructuredHunkText(hunk);
+            if (current.Length > 0 &&
+                current.Length > GetChunkHeaderLength(filePath) &&
+                current.Length + structuredHunk.Length > maxCharacters)
+            {
+                chunks.Add(current.ToString());
+                current.Clear();
+                AppendChunkHeader(current, filePath);
+            }
 
-            var (newHunk, oldHunk) = BuildStructuredHunk(hunk);
-            builder.AppendLine("__new hunk__");
-            foreach (var line in newHunk)
+            if (structuredHunk.Length + GetChunkHeaderLength(filePath) > maxCharacters)
+            {
+                var oversizedHunkChunks = SplitByCharacterBudget(structuredHunk, Math.Max(1000, maxCharacters - GetChunkHeaderLength(filePath)))
+                    .Select(part =>
+                    {
+                        var builder = new StringBuilder();
+                        AppendChunkHeader(builder, filePath);
+                        builder.Append(part);
+                        return builder.ToString();
+                    });
+                chunks.AddRange(oversizedHunkChunks);
+                current.Clear();
+                AppendChunkHeader(current, filePath);
+                continue;
+            }
+
+            current.Append(structuredHunk);
+        }
+
+        if (current.Length > GetChunkHeaderLength(filePath))
+        {
+            chunks.Add(current.ToString());
+        }
+
+        return chunks.Count == 0 ? [current.ToString()] : chunks;
+    }
+
+    private static int GetChunkHeaderLength(string filePath)
+    {
+        return $"## File: '{filePath}'\n".Length;
+    }
+
+    private static void AppendChunkHeader(StringBuilder builder, string filePath)
+    {
+        builder.Append("## File: '")
+            .Append(filePath)
+            .AppendLine("'");
+    }
+
+    private static string BuildStructuredHunkText(IReadOnlyList<string> hunk)
+    {
+        var builder = new StringBuilder();
+        builder.AppendLine();
+        builder.AppendLine(hunk[0]);
+
+        var (newHunk, oldHunk) = BuildStructuredHunk(hunk);
+        builder.AppendLine("__new hunk__");
+        foreach (var line in newHunk)
+        {
+            builder.AppendLine(line);
+        }
+
+        if (oldHunk.Count > 0)
+        {
+            builder.AppendLine("__old hunk__");
+            foreach (var line in oldHunk)
             {
                 builder.AppendLine(line);
             }
-
-            if (oldHunk.Count > 0)
-            {
-                builder.AppendLine("__old hunk__");
-                foreach (var line in oldHunk)
-                {
-                    builder.AppendLine(line);
-                }
-            }
         }
 
-        var formatted = builder.ToString();
-        return formatted.Length <= maxCharacters
-            ? [formatted]
-            : SplitByCharacterBudget(formatted, maxCharacters);
+        return builder.ToString();
     }
 
     private static string ExtractChunkFilePath(IReadOnlyList<string> headerLines)

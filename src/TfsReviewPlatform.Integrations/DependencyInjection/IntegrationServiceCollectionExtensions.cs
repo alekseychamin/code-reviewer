@@ -1,4 +1,5 @@
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Configuration;
 using System.Net;
 using TfsReviewPlatform.Application.Abstractions;
 using TfsReviewPlatform.Integrations.AzureDevOps;
@@ -9,13 +10,16 @@ using TfsReviewPlatform.Integrations.Llm;
 using TfsReviewPlatform.Integrations.Publishing;
 using TfsReviewPlatform.Integrations.PullRequests;
 using TfsReviewPlatform.Integrations.Prompts;
+using TfsReviewPlatform.Integrations.Qdrant;
 
 namespace TfsReviewPlatform.Integrations.DependencyInjection;
 
 public static class IntegrationServiceCollectionExtensions
 {
-    public static IServiceCollection AddIntegrations(this IServiceCollection services)
+    public static IServiceCollection AddIntegrations(this IServiceCollection services, IConfiguration configuration)
     {
+        services.Configure<QdrantOptions>(configuration.GetSection("Qdrant"));
+
         services.AddHttpClient(HttpClientNames.AzureDevOps);
         services.AddHttpClient(HttpClientNames.GitHub, client =>
         {
@@ -24,6 +28,12 @@ public static class IntegrationServiceCollectionExtensions
         });
         services.AddHttpClient(HttpClientNames.GitLab, client =>
         {
+            client.DefaultRequestHeaders.UserAgent.ParseAdd("tfs-review-platform");
+            client.DefaultRequestHeaders.Accept.ParseAdd("application/json");
+        });
+        services.AddHttpClient(HttpClientNames.Qdrant, client =>
+        {
+            client.Timeout = TimeSpan.FromSeconds(30);
             client.DefaultRequestHeaders.UserAgent.ParseAdd("tfs-review-platform");
             client.DefaultRequestHeaders.Accept.ParseAdd("application/json");
         });
@@ -60,6 +70,7 @@ public static class IntegrationServiceCollectionExtensions
         services.AddSingleton<IPullRequestDiffService, PullRequestDiffService>();
         services.AddSingleton<ILlmCompletionService, LlmCompletionService>();
         services.AddSingleton<IReviewPromptFactory, ReviewPromptFactory>();
+        services.AddSingleton<IReviewSemanticIndex, QdrantReviewSemanticIndex>();
         services.AddSingleton<IPullRequestReviewPublisherProvider, AzureDevOpsReviewPublisherProvider>();
         services.AddSingleton<IPullRequestReviewPublisherProvider, GitHubReviewPublisherProvider>();
         services.AddSingleton<IPullRequestReviewPublisherProvider, GitLabReviewPublisherProvider>();

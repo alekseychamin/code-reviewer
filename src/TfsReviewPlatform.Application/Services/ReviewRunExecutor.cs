@@ -12,6 +12,7 @@ namespace TfsReviewPlatform.Application.Services;
 public sealed class ReviewRunExecutor(
     IReviewRunRepository reviewRunRepository,
     IReviewProgressStore reviewProgressStore,
+    IReviewSemanticIndex reviewSemanticIndex,
     IPullRequestDiffService pullRequestDiffService,
     IBranchComparisonDiffService branchComparisonDiffService,
     IDiffPreprocessor diffPreprocessor,
@@ -54,7 +55,7 @@ public sealed class ReviewRunExecutor(
             await reviewRunRepository.UpdateAsync(run, cancellationToken);
             await PersistAndPublishAsync(
                 run,
-                $"Prepared {preprocessed.ChangedFiles.Count} changed files across {preprocessed.Chunks.Count} chunks",
+                $"Подготовлено {preprocessed.ChangedFiles.Count} изменённых файлов в {preprocessed.ReviewChunks.Count} чанках ревью",
                 ReviewPipelineStage.ChangeDescription,
                 30,
                 cancellationToken);
@@ -93,6 +94,7 @@ public sealed class ReviewRunExecutor(
 
                 run.Complete(reusedArtifacts, previousRun.Findings, false);
                 await reviewRunRepository.UpdateAsync(run, cancellationToken);
+                await TryIndexSemanticArtifactsAsync(run, cancellationToken);
                 await reviewProgressStore.PublishAsync(
                     new ReviewProgressUpdate(run.Id, run.Status, run.CurrentStage, run.ProgressPercent, run.CurrentMessage, DateTimeOffset.UtcNow, true),
                     cancellationToken);
@@ -114,7 +116,7 @@ public sealed class ReviewRunExecutor(
             await reviewRunRepository.UpdateAsync(run, cancellationToken);
             await PersistAndPublishAsync(run, "Change description generated", ReviewPipelineStage.ChunkReview, 45, cancellationToken);
 
-            var rawFindings = await ReviewChunksAsync(description, preprocessed.Chunks, request, run, cancellationToken);
+            var rawFindings = await ReviewChunksAsync(description, preprocessed.ReviewChunks, request, run, cancellationToken);
             await PersistAndPublishAsync(run, "Raw findings collected", ReviewPipelineStage.FindingsNormalization, 75, cancellationToken);
 
             var findings = findingsNormalizer.Normalize(rawFindings);
@@ -198,6 +200,7 @@ public sealed class ReviewRunExecutor(
 
             run.Complete(artifacts, findings, publishSucceeded);
             await reviewRunRepository.UpdateAsync(run, cancellationToken);
+            await TryIndexSemanticArtifactsAsync(run, cancellationToken);
             await reviewProgressStore.PublishAsync(
                 new ReviewProgressUpdate(run.Id, run.Status, run.CurrentStage, run.ProgressPercent, run.CurrentMessage, DateTimeOffset.UtcNow, true),
                 cancellationToken);
@@ -227,6 +230,19 @@ public sealed class ReviewRunExecutor(
                     logger.LogWarning(cleanupException, "Could not delete temporary review workspace {Directory}", diffResult.CleanupDirectory);
                 }
             }
+        }
+    }
+
+    private async Task TryIndexSemanticArtifactsAsync(ReviewRun run, CancellationToken cancellationToken)
+    {
+        try
+        {
+            await reviewSemanticIndex.IndexPreparedChunksAsync(run, cancellationToken);
+            await reviewSemanticIndex.IndexFindingsAsync(run, cancellationToken);
+        }
+        catch (Exception exception)
+        {
+            logger.LogWarning(exception, "Failed to index semantic review artifacts for run {RunId}", run.Id);
         }
     }
 

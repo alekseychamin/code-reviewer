@@ -10,9 +10,19 @@ services:
       - OPENAI_API_KEY=${OPENAI_API_KEY:-}
       - AZURE_DEVOPS_TOKEN=${AZURE_DEVOPS_TOKEN:-}
       - GITHUB_TOKEN=${GITHUB_TOKEN:-}
+      - GITLAB_TOKEN=${GITLAB_TOKEN:-}
       - ConnectionStrings__ReviewHistory=${POSTGRES_CONNECTION_STRING:-}
       - ProviderCatalog__Profiles__1__BaseUrl=${LOCAL_OLLAMA_BASE_URL:-http://host.docker.internal:11434}
       - REPOSITORIES_ROOT=${CONTAINER_REPOSITORIES_ROOT:-/workspace/repos}
+      - Qdrant__Enabled=${QDRANT_ENABLED:-false}
+      - Qdrant__Url=${QDRANT_URL:-http://qdrant:6333}
+      - Qdrant__ApiKey=${QDRANT_API_KEY:-}
+      - Qdrant__CollectionName=${QDRANT_COLLECTION_NAME:-review_semantic_index}
+      - Qdrant__VectorSize=${QDRANT_VECTOR_SIZE:-1024}
+      - Qdrant__TargetedTopK=${QDRANT_TARGETED_TOP_K:-4}
+      - Qdrant__GeneralTopK=${QDRANT_GENERAL_TOP_K:-8}
+      - Qdrant__EmbeddingBaseUrl=${QDRANT_EMBEDDING_BASE_URL:-http://host.docker.internal:11434}
+      - Qdrant__EmbeddingModel=${QDRANT_EMBEDDING_MODEL:-bge-m3:latest}
     extra_hosts:
       - "host.docker.internal:host-gateway"
     ports:
@@ -56,5 +66,15 @@ services:
     profiles:
       - history-db
 
+  qdrant:
+    image: qdrant/qdrant:latest
+    ports:
+      - "6333:6333"
+    volumes:
+      - qdrant-data:/qdrant/storage
+    profiles:
+      - semantic-index
+
 volumes:
   postgres-data:
+  qdrant-data:
