@@ -1397,6 +1397,64 @@ button.primary {
   line-height: 1.45;
 }
 
+.opportunity-groups {
+  display: grid;
+  gap: 14px;
+}
+
+.opportunity-file-card {
+  border: 1px solid rgba(15, 123, 108, 0.18);
+  border-left: 4px solid rgba(15, 123, 108, 0.55);
+  border-radius: 22px;
+  background: linear-gradient(180deg, rgba(15, 123, 108, 0.05), rgba(255, 255, 255, 0.98));
+  padding: 16px 18px;
+  display: grid;
+  gap: 12px;
+}
+
+.opportunity-file-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 12px;
+}
+
+.opportunity-file-header h4,
+.opportunity-file-header p {
+  margin: 0;
+}
+
+.opportunity-file-header p:last-child {
+  margin-top: 6px;
+  color: var(--muted);
+}
+
+.opportunity-list {
+  display: grid;
+  gap: 10px;
+}
+
+.opportunity-card {
+  border: 1px solid rgba(15, 123, 108, 0.14);
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.88);
+  padding: 12px 14px;
+  display: grid;
+  gap: 8px;
+}
+
+.opportunity-card-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.opportunity-description {
+  margin: 0;
+  color: #4b5a70;
+}
+
 .structured-change-description {
   display: grid;
   gap: 12px;

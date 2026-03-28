@@ -542,6 +542,20 @@ export function StructuredInlineDiscussion({ content }: { content: InlineDiscuss
           ) : null}
         </section>
       ) : null}
+
+      {content.addedOpportunitiesCount > 0 ? (
+        <section className="structured-discussion-section">
+          <h4>Новые возможности для улучшения</h4>
+          <p>LLM предложил улучшений: {content.addedOpportunitiesCount}</p>
+          {content.addedOpportunities?.length ? (
+            <ul>
+              {content.addedOpportunities.map((item, index) => (
+                <li key={`added-opportunity-${index}`}>{item}</li>
+              ))}
+            </ul>
+          ) : null}
+        </section>
+      ) : null}
     </div>
   );
 }

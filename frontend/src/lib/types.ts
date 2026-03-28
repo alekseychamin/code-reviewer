@@ -68,6 +68,17 @@ export interface InlineDiscussionStructuredContent {
   exampleCode: string;
   addedFindingsCount: number;
   addedFindings: string[];
+  addedOpportunitiesCount: number;
+  addedOpportunities: string[];
+  addedOpportunityItems: InlineDiscussionOpportunityItem[];
+}
+
+export interface InlineDiscussionOpportunityItem {
+  file: string;
+  lineHint: string;
+  startLine: number;
+  title: string;
+  description: string;
 }
 
 export interface ReviewedFile {

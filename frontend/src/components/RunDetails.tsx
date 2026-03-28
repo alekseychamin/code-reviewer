@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { MarkdownBlock } from './MarkdownBlock';
 import { MermaidDiagram } from './MermaidDiagram';
 import { ReviewedFilesWorkspace, ThreadMessageBody } from './ReviewedFilesWorkspace';
-import type { ChangeDescriptionStructuredContent, ReviewRun } from '../lib/types';
+import type { ChangeDescriptionStructuredContent, InlineDiscussionOpportunityItem, ReviewRun } from '../lib/types';
 
 interface RunDetailsProps {
   run: ReviewRun | null;
@@ -28,16 +28,19 @@ export function RunDetails({
   const [isDiagramCollapsed, setIsDiagramCollapsed] = useState(true);
   const [isDescriptionCollapsed, setIsDescriptionCollapsed] = useState(true);
   const [isDiscussionCollapsed, setIsDiscussionCollapsed] = useState(true);
+  const [isOpportunitiesCollapsed, setIsOpportunitiesCollapsed] = useState(true);
   const [isReportCollapsed, setIsReportCollapsed] = useState(true);
   const [discussionDraft, setDiscussionDraft] = useState('');
   const [discussionBusy, setDiscussionBusy] = useState(false);
   const [discussionError, setDiscussionError] = useState('');
   const publishTargetLabel = getPublishTargetLabel(run?.pullRequestUrl);
+  const followUpOpportunities = run ? collectFollowUpOpportunities(run) : [];
 
   useEffect(() => {
     setIsDiagramCollapsed(true);
     setIsDescriptionCollapsed(true);
     setIsDiscussionCollapsed(true);
+    setIsOpportunitiesCollapsed(true);
     setIsReportCollapsed(true);
     setDiscussionDraft('');
     setDiscussionBusy(false);
@@ -182,6 +185,28 @@ export function RunDetails({
         />
       </div>
 
+      {followUpOpportunities.length ? (
+        <div className="subsection">
+          <div className="subsection-header">
+            <div>
+              <h3>Возможности для улучшения</h3>
+              <p>Полезные улучшения из блока «Спросить LLM по ревью», не добавленные в дефекты.</p>
+            </div>
+            <div className="result-toolbar">
+              <button
+                aria-expanded={!isOpportunitiesCollapsed}
+                className="secondary-button"
+                onClick={() => setIsOpportunitiesCollapsed((value) => !value)}
+                type="button"
+              >
+                {isOpportunitiesCollapsed ? 'Развернуть улучшения' : 'Свернуть улучшения'}
+              </button>
+            </div>
+          </div>
+          {!isOpportunitiesCollapsed ? <OpportunitiesOverview items={followUpOpportunities} run={run} /> : null}
+        </div>
+      ) : null}
+
       <div className="subsection">
         <div className="subsection-header">
           <div>
@@ -212,7 +237,7 @@ export function RunDetails({
               </div>
             ) : (
               <div className="empty-state compact">
-                Здесь можно задать уточняющий вопрос по ревью. Если LLM найдёт новые дефекты или риски, они будут добавлены в список замечаний.
+                Здесь можно задать уточняющий вопрос по ревью. Если LLM найдёт новые дефекты или риски, они будут добавлены в список замечаний. Полезные улучшения без явного дефекта будут показаны отдельно.
               </div>
             )}
 
@@ -281,6 +306,287 @@ export function RunDetails({
       </div>
     </section>
   );
+}
+
+function OpportunitiesOverview({ items, run }: { items: CollectedOpportunity[]; run: ReviewRun }) {
+  const groups = buildOpportunityGroups(items, run);
+
+  return (
+    <div className="opportunity-groups">
+      {groups.map((group, index) => (
+        <article className="opportunity-file-card" key={`${group.file}-${index}`}>
+          <div className="opportunity-file-header">
+            <div>
+              <p className="entity-number">Файл №{index + 1}</p>
+              <h4>{group.displayName}</h4>
+              <p>{group.file}</p>
+            </div>
+            <span className="secondary-chip muted">{group.items.length} улучшений</span>
+          </div>
+          <div className="opportunity-list">
+            {group.items.map((item, itemIndex) => (
+              <article className="opportunity-card" key={`${group.file}-${item.title}-${itemIndex}`}>
+                <div className="opportunity-card-header">
+                  <div className="thread-accordion-title">
+                    <span className="entity-number">Улучшение №{index + 1}.{itemIndex + 1}</span>
+                    <strong>{item.title || item.description}</strong>
+                  </div>
+                  <div className="thread-meta">
+                    {item.startLine > 0 ? (
+                      <span className="secondary-chip muted">Строка {item.startLine}</span>
+                    ) : item.lineHint ? (
+                      <span className="secondary-chip muted">{item.lineHint}</span>
+                    ) : null}
+                  </div>
+                </div>
+                {item.description ? <p className="opportunity-description">{item.description}</p> : null}
+                {item.contextSnippet ? (
+                  <div className="thread-snippet opportunity-snippet">
+                    <p>Контекст кода ({item.contextStartLine}-{item.contextEndLine})</p>
+                    <pre>
+                      <code>{item.contextSnippet}</code>
+                    </pre>
+                  </div>
+                ) : null}
+                {item.exampleCode ? (
+                  <div className="thread-snippet opportunity-snippet">
+                    <p>Вариант оптимизации</p>
+                    <pre>
+                      <code>{item.exampleCode}</code>
+                    </pre>
+                  </div>
+                ) : null}
+              </article>
+            ))}
+          </div>
+        </article>
+      ))}
+    </div>
+  );
+}
+
+type CollectedOpportunity = InlineDiscussionOpportunityItem & {
+  exampleCode: string;
+  exampleCodeLanguage: string;
+};
+
+function collectFollowUpOpportunities(run: ReviewRun): CollectedOpportunity[] {
+  const items = run.reviewDiscussionMessages.flatMap((message) => {
+    const structured = message.structuredContent;
+    if (!structured) {
+      return [];
+    }
+
+    if (structured.addedOpportunityItems?.length) {
+      return structured.addedOpportunityItems.map((item) => ({
+        ...item,
+        exampleCode: structured.exampleCode ?? '',
+        exampleCodeLanguage: structured.exampleCodeLanguage ?? ''
+      }));
+    }
+
+    return (structured.addedOpportunities ?? []).map((summary) =>
+      parseOpportunitySummary(summary, structured.exampleCode ?? '', structured.exampleCodeLanguage ?? '')
+    );
+  });
+
+  return dedupeOpportunities(items);
+}
+
+function parseOpportunitySummary(
+  summary: string,
+  exampleCode = '',
+  exampleCodeLanguage = ''
+): CollectedOpportunity {
+  const trimmed = summary.trim();
+  const fileMatch = trimmed.match(/^(.*?)(?:\s+\((строка\s+\d+|Line\s+\d+|[^)]+)\))?:\s+(.*)$/i);
+  if (!fileMatch) {
+    return {
+      file: '',
+      lineHint: '',
+      startLine: 0,
+      title: trimmed,
+      description: '',
+      exampleCode,
+      exampleCodeLanguage
+    };
+  }
+
+  const [, rawFile = '', rawLineHint = '', rawTitle = ''] = fileMatch;
+  const lineNumberMatch = rawLineHint.match(/(\d+)/);
+
+  return {
+    file: rawFile.trim(),
+    lineHint: rawLineHint.trim(),
+    startLine: lineNumberMatch ? Number(lineNumberMatch[1]) : 0,
+    title: rawTitle.trim(),
+    description: '',
+    exampleCode,
+    exampleCodeLanguage
+  };
+}
+
+function dedupeOpportunities(items: CollectedOpportunity[]): CollectedOpportunity[] {
+  const result: CollectedOpportunity[] = [];
+
+  for (const item of items) {
+    const duplicateIndex = result.findIndex((existing) => areLikelyDuplicateOpportunities(existing, item));
+    if (duplicateIndex < 0) {
+      result.push(item);
+      continue;
+    }
+
+    result[duplicateIndex] = mergeOpportunities(result[duplicateIndex], item);
+  }
+
+  return result;
+}
+
+type OpportunityPresentationItem = CollectedOpportunity & {
+  contextSnippet: string;
+  contextStartLine: number;
+  contextEndLine: number;
+};
+
+function buildOpportunityGroups(items: CollectedOpportunity[], run: ReviewRun) {
+  const grouped = new Map<string, CollectedOpportunity[]>();
+
+  for (const item of items) {
+    const file = item.file || 'Без привязки к файлу';
+    const bucket = grouped.get(file) ?? [];
+    bucket.push(item);
+    grouped.set(file, bucket);
+  }
+
+  return [...grouped.entries()]
+    .map(([file, groupItems]) => ({
+      file,
+      displayName: file.split('/').at(-1) ?? file,
+      items: [...groupItems]
+        .map((item) => enrichOpportunity(item, run))
+        .sort((left, right) => {
+        if (left.startLine !== right.startLine) {
+          return left.startLine - right.startLine;
+        }
+
+        return (left.title || left.description).localeCompare(right.title || right.description);
+      })
+    }))
+    .sort((left, right) => left.file.localeCompare(right.file));
+}
+
+function enrichOpportunity(item: CollectedOpportunity, run: ReviewRun): OpportunityPresentationItem {
+  const file = run.reviewedFiles.find((reviewedFile) => reviewedFile.filePath === item.file);
+  if (!file?.fullContent || item.startLine <= 0) {
+    return {
+      ...item,
+      contextSnippet: '',
+      contextStartLine: 0,
+      contextEndLine: 0
+    };
+  }
+
+  const lines = file.fullContent.replace(/\r\n/g, '\n').split('\n');
+  const startLine = Math.max(1, item.startLine - 4);
+  const endLine = Math.min(lines.length, item.startLine + 4);
+  const snippet = lines
+    .slice(startLine - 1, endLine)
+    .map((line, index) => `${String(startLine + index).padStart(4, ' ')}: ${line}`)
+    .join('\n');
+
+  return {
+    ...item,
+    contextSnippet: snippet,
+    contextStartLine: startLine,
+    contextEndLine: endLine
+  };
+}
+
+function areLikelyDuplicateOpportunities(left: CollectedOpportunity, right: CollectedOpportunity): boolean {
+  if (left.file.trim().toLowerCase() !== right.file.trim().toLowerCase()) {
+    return false;
+  }
+
+  const normalizedLeftCode = normalizeOpportunityPhrase(left.exampleCode);
+  const normalizedRightCode = normalizeOpportunityPhrase(right.exampleCode);
+  if (
+    left.startLine > 0 &&
+    right.startLine > 0 &&
+    Math.abs(left.startLine - right.startLine) <= 2 &&
+    normalizedLeftCode.length > 0 &&
+    normalizedLeftCode === normalizedRightCode
+  ) {
+    return true;
+  }
+
+  if (left.startLine > 0 && right.startLine > 0 && Math.abs(left.startLine - right.startLine) > 2) {
+    return false;
+  }
+
+  const leftTokens = buildOpportunityTokens(left.title || left.description);
+  const rightTokens = buildOpportunityTokens(right.title || right.description);
+  if (!leftTokens.length || !rightTokens.length) {
+    return normalizeOpportunityPhrase(left.title || left.description) === normalizeOpportunityPhrase(right.title || right.description);
+  }
+
+  const overlap = leftTokens.filter((token) => rightTokens.includes(token)).length;
+  const minSize = Math.min(leftTokens.length, rightTokens.length);
+
+  return overlap >= Math.max(2, Math.ceil(minSize * 0.6));
+}
+
+function mergeOpportunities(left: CollectedOpportunity, right: CollectedOpportunity): CollectedOpportunity {
+  return {
+    ...left,
+    lineHint: left.lineHint || right.lineHint,
+    startLine: left.startLine || right.startLine,
+    title: preferMoreSpecificTitle(left.title, right.title),
+    description: preferLonger(left.description, right.description),
+    exampleCode: preferLonger(left.exampleCode, right.exampleCode),
+    exampleCodeLanguage: left.exampleCodeLanguage || right.exampleCodeLanguage
+  };
+}
+
+function preferMoreSpecificTitle(left: string, right: string): string {
+  const leftNormalized = normalizeOpportunityPhrase(left);
+  const rightNormalized = normalizeOpportunityPhrase(right);
+  const leftScore =
+    buildOpportunityTokens(left).length +
+    (leftNormalized.includes('parsepersonaldataasync') ? 3 : 0) +
+    (leftNormalized.includes('task whenall') ? 2 : 0);
+  const rightScore =
+    buildOpportunityTokens(right).length +
+    (rightNormalized.includes('parsepersonaldataasync') ? 3 : 0) +
+    (rightNormalized.includes('task whenall') ? 2 : 0);
+
+  if (rightScore !== leftScore) {
+    return rightScore > leftScore ? right : left;
+  }
+
+  return preferLonger(left, right);
+}
+
+function preferLonger(left: string, right: string): string {
+  return left.trim().length >= right.trim().length ? left : right;
+}
+
+function buildOpportunityTokens(value: string): string[] {
+  return normalizeOpportunityPhrase(value)
+    .split(' ')
+    .map((token) => token.trim())
+    .map((token) => token.replace(/(ого|ему|ому|ыми|ими|ый|ий|ой|ая|яя|ое|ее|ые|ие|ого|ему|ам|ям|ах|ях|ов|ев|ей|а|я|ы|и|о|е|у|ю)$/u, ''))
+    .filter((token) =>
+      token.length > 2 &&
+      !['для', 'в', 'на', 'по', 'при', 'and', 'the', 'или', 'еще', 'ещё', 'метод', 'оптимизац', 'параллельн'].includes(token)
+    );
+}
+
+function normalizeOpportunityPhrase(value: string): string {
+  return value
+    .toLowerCase()
+    .replace(/[^a-zа-я0-9]+/gi, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
 }
 
 function getPublishTargetLabel(pullRequestUrl?: string): string {
