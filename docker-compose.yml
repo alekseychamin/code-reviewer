@@ -7,10 +7,6 @@ services:
       - .env
     environment:
       - ASPNETCORE_URLS=http://+:8080
-      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
-      - AZURE_DEVOPS_TOKEN=${AZURE_DEVOPS_TOKEN:-}
-      - GITHUB_TOKEN=${GITHUB_TOKEN:-}
-      - GITLAB_TOKEN=${GITLAB_TOKEN:-}
       - ConnectionStrings__ReviewHistory=${POSTGRES_CONNECTION_STRING:-}
       - ProviderCatalog__Profiles__1__BaseUrl=${LOCAL_OLLAMA_BASE_URL:-http://host.docker.internal:11434}
       - REPOSITORIES_ROOT=${CONTAINER_REPOSITORIES_ROOT:-/workspace/repos}
@@ -36,9 +32,6 @@ services:
       dockerfile: frontend/Dockerfile
     env_file:
       - .env
-    environment:
-      - VITE_API_BASE_URL=${VITE_API_BASE_URL-}
-      - VITE_DEV_PROXY_TARGET=${VITE_DEV_PROXY_TARGET:-http://api:8080}
     ports:
       - "5173:5173"
     depends_on:
