@@ -10,3 +10,4 @@ frontend/.vite/
 reports/
 *.DotSettings.user
 .codex
+._*
