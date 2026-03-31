@@ -3,6 +3,7 @@ services:
     build:
       context: .
       dockerfile: src/TfsReviewPlatform.Api/Dockerfile
+    restart: unless-stopped
     env_file:
       - .env
     environment:
@@ -30,6 +31,7 @@ services:
     build:
       context: .
       dockerfile: frontend/Dockerfile
+    restart: unless-stopped
     env_file:
       - .env
     ports:
@@ -39,6 +41,7 @@ services:
 
   ollama:
     image: ollama/ollama:latest
+    restart: unless-stopped
     env_file:
       - .env
     ports:
@@ -48,6 +51,7 @@ services:
 
   postgres:
     image: postgres:16-alpine
+    restart: unless-stopped
     environment:
       - POSTGRES_DB=${POSTGRES_DB:-tfs_review}
       - POSTGRES_USER=${POSTGRES_USER:-tfs_review}
@@ -61,6 +65,7 @@ services:
 
   qdrant:
     image: qdrant/qdrant:latest
+    restart: unless-stopped
     ports:
       - "6333:6333"
     volumes:
