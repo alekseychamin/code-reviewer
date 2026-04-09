@@ -58,6 +58,8 @@ public sealed class ReviewRunDto
 
     public IReadOnlyList<ReviewFindingDto> Findings { get; init; } = [];
 
+    public IReadOnlyList<ReviewOpportunityItemDto> PrimaryOpportunities { get; init; } = [];
+
     public FindingsComparisonDto? FindingsComparison { get; init; }
 
     public IReadOnlyList<ReviewCommentMessageDto> ReviewDiscussionMessages { get; init; } = [];

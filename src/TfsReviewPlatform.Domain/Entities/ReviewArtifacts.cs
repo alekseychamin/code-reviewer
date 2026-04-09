@@ -24,5 +24,7 @@ public sealed class ReviewArtifacts
 
     public IReadOnlyList<ReviewedFileArtifact> ReviewedFiles { get; init; } = [];
 
+    public IReadOnlyList<ReviewOpportunityItem> PrimaryOpportunities { get; init; } = [];
+
     public FindingsComparisonSnapshot? FindingsComparison { get; init; }
 }

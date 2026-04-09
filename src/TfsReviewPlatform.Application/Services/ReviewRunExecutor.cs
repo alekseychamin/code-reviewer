@@ -4,6 +4,7 @@ using System.Text.Json;
 using System.Text;
 using TfsReviewPlatform.Application.Abstractions;
 using TfsReviewPlatform.Application.Models;
+using TfsReviewPlatform.Application.Prompts;
 using TfsReviewPlatform.Domain.Entities;
 using TfsReviewPlatform.Domain.Enums;
 
@@ -21,6 +22,7 @@ public sealed class ReviewRunExecutor(
     ILlmCompletionService llmCompletionService,
     IReviewPromptFactory reviewPromptFactory,
     IFindingsNormalizer findingsNormalizer,
+    IReviewWorkspaceToolExecutor reviewWorkspaceToolExecutor,
     IFindingsComparisonService findingsComparisonService,
     IMarkdownReportBuilder markdownReportBuilder,
     IReviewPublisher reviewPublisher,
@@ -79,6 +81,7 @@ public sealed class ReviewRunExecutor(
                     ReviewDiscussionMessages = previousRun.Artifacts.ReviewDiscussionMessages,
                     InlineComments = previousRun.Artifacts.InlineComments,
                     ReviewedFiles = previousRun.Artifacts.ReviewedFiles,
+                    PrimaryOpportunities = previousRun.Artifacts.PrimaryOpportunities,
                     FindingsComparison = reusedComparison
                 };
 
@@ -116,10 +119,12 @@ public sealed class ReviewRunExecutor(
             await reviewRunRepository.UpdateAsync(run, cancellationToken);
             await PersistAndPublishAsync(run, "Change description generated", ReviewPipelineStage.ChunkReview, 45, cancellationToken);
 
-            var rawFindings = await ReviewChunksAsync(description, preprocessed.ReviewChunks, request, run, cancellationToken);
+            var rawFindings = await ReviewChunksAsync(description, preprocessed.ReviewChunks, diffResult, request, run, cancellationToken);
             await PersistAndPublishAsync(run, "Raw findings collected", ReviewPipelineStage.FindingsNormalization, 75, cancellationToken);
 
-            var findings = findingsNormalizer.Normalize(rawFindings);
+            var normalizedReview = findingsNormalizer.NormalizeChunkReview(rawFindings);
+            var findings = normalizedReview.Findings;
+            var primaryOpportunities = normalizedReview.Opportunities;
             var findingsComparison = previousRun is null
                 ? null
                 : findingsComparisonService.Compare(
@@ -143,6 +148,7 @@ public sealed class ReviewRunExecutor(
                 ChangeDiagramMermaid = changeSummary.DiagramMermaid,
                 InlineComments = enrichedInlineComments,
                 ReviewedFiles = reviewedFiles,
+                PrimaryOpportunities = primaryOpportunities,
                 FindingsComparison = findingsComparison
             });
             await reviewRunRepository.UpdateAsync(run, cancellationToken);
@@ -162,6 +168,7 @@ public sealed class ReviewRunExecutor(
                 SummaryComment = summaryComment,
                 InlineComments = enrichedInlineComments,
                 ReviewedFiles = reviewedFiles,
+                PrimaryOpportunities = primaryOpportunities,
                 FindingsComparison = findingsComparison
             });
             await reviewRunRepository.UpdateAsync(run, cancellationToken);
@@ -195,6 +202,7 @@ public sealed class ReviewRunExecutor(
                 SummaryComment = summaryComment,
                 InlineComments = enrichedInlineComments,
                 ReviewedFiles = reviewedFiles,
+                PrimaryOpportunities = primaryOpportunities,
                 FindingsComparison = findingsComparison
             };
 
@@ -595,6 +603,7 @@ public sealed class ReviewRunExecutor(
     private async Task<IReadOnlyList<string>> ReviewChunksAsync(
         string description,
         IReadOnlyList<string> chunks,
+        DiffAcquisitionResult diffResult,
         ReviewExecutionRequest request,
         ReviewRun run,
         CancellationToken cancellationToken)
@@ -605,13 +614,15 @@ public sealed class ReviewRunExecutor(
             request.StageOverrides,
             cancellationToken);
 
-        var responses = new List<string>();
+        var responses = new List<string>(chunks.Count);
+        var totalIterations = Math.Max(1, chunks.Count);
+
         for (var index = 0; index < chunks.Count; index++)
         {
-            var progress = 45 + (int)Math.Round(((index + 1d) / Math.Max(1, chunks.Count)) * 25d);
+            var progress = 45 + (int)Math.Round(((index + 1) / (double)totalIterations) * 25d);
             await PersistAndPublishAsync(
                 run,
-                $"Reviewing chunk {index + 1} of {chunks.Count}",
+                $"Ревью чанка {index + 1} из {chunks.Count}",
                 ReviewPipelineStage.ChunkReview,
                 progress,
                 cancellationToken);
@@ -623,15 +634,345 @@ public sealed class ReviewRunExecutor(
                     Model = selection.Model,
                     Temperature = selection.Temperature,
                     ExpectJson = true,
-                    SystemPrompt = reviewPromptFactory.BuildSystemPrompt(ReviewPipelineStage.ChunkReview, description),
-                    UserPrompt = reviewPromptFactory.BuildUserPrompt(ReviewPipelineStage.ChunkReview, chunks[index])
+                    SystemPrompt = reviewPromptFactory.BuildChunkReviewSystemPrompt(
+                        description,
+                        ReviewPromptSpecialRules.PrimaryReviewToolRequestRules),
+                    UserPrompt = reviewPromptFactory.BuildUserPrompt(
+                        ReviewPipelineStage.ChunkReview,
+                        BuildInitialChunkReviewPayload(chunks[index]))
                 },
                 cancellationToken);
 
-            responses.Add(response);
+            var finalResponse = await MaybeCompleteChunkReviewWithAdditionalContextAsync(
+                response,
+                description,
+                chunks[index],
+                diffResult,
+                selection,
+                run,
+                index,
+                cancellationToken);
+
+            responses.Add(finalResponse);
         }
 
         return responses;
+    }
+
+    private async Task<string> MaybeCompleteChunkReviewWithAdditionalContextAsync(
+        string initialResponse,
+        string reviewDescription,
+        string chunk,
+        DiffAcquisitionResult diffResult,
+        StageRouteSelection selection,
+        ReviewRun run,
+        int chunkIndex,
+        CancellationToken cancellationToken)
+    {
+        var envelope = ParseChunkReviewAgentEnvelope(initialResponse);
+        LogPrimaryToolRequestDecision(run, chunkIndex, chunk, envelope);
+        if (!envelope.NeedMoreContext || envelope.ToolRequests.Count == 0)
+        {
+            return initialResponse;
+        }
+
+        var toolResponses = await reviewWorkspaceToolExecutor.ExecuteAsync(
+            diffResult,
+            ExtractChunkFilePath(chunk),
+            envelope.ToolRequests,
+            cancellationToken);
+        LogPrimaryToolResponses(run, chunkIndex, toolResponses);
+
+        if (toolResponses.Count == 0)
+        {
+            logger.LogInformation(
+                "Primary tool loop could not fulfill requests for run {RunId}, chunk {ChunkIndex}",
+                run.Id,
+                chunkIndex + 1);
+            return initialResponse;
+        }
+
+        var finalPayload = BuildChunkReviewPayload(chunk, toolResponses);
+        logger.LogInformation(
+            "Primary tool loop triggering final pass for run {RunId}, chunk {ChunkIndex} with {ToolResponseCount} tool results",
+            run.Id,
+            chunkIndex + 1,
+            toolResponses.Count);
+        return await llmCompletionService.CompleteAsync(
+            selection.Profile,
+            new LlmChatRequest
+            {
+                Model = selection.Model,
+                Temperature = selection.Temperature,
+                ExpectJson = true,
+                SystemPrompt = reviewPromptFactory.BuildChunkReviewSystemPrompt(
+                    reviewDescription,
+                    ReviewPromptSpecialRules.PrimaryReviewFinalizationRules),
+                UserPrompt = reviewPromptFactory.BuildUserPrompt(ReviewPipelineStage.ChunkReview, finalPayload)
+            },
+            cancellationToken);
+    }
+
+    private static ChunkReviewAgentEnvelope ParseChunkReviewAgentEnvelope(string raw)
+    {
+        var normalized = NormalizeJsonPayload(raw);
+        if (string.IsNullOrWhiteSpace(normalized))
+        {
+            return new ChunkReviewAgentEnvelope([], [], false, []);
+        }
+
+        try
+        {
+            using var document = JsonDocument.Parse(normalized);
+            if (document.RootElement.ValueKind != JsonValueKind.Object)
+            {
+                return new ChunkReviewAgentEnvelope([], [], false, []);
+            }
+
+            var root = document.RootElement;
+            var needMoreContext = root.TryGetProperty("need_more_context", out var needMoreContextNode) &&
+                                  needMoreContextNode.ValueKind == JsonValueKind.True;
+
+            var requests = root.TryGetProperty("tool_requests", out var requestsNode) &&
+                           requestsNode.ValueKind == JsonValueKind.Array
+                ? requestsNode.EnumerateArray()
+                    .Select(MapToolRequest)
+                    .Where(item => item is not null)
+                    .Cast<ReviewWorkspaceToolRequest>()
+                    .ToArray()
+                : [];
+
+            return new ChunkReviewAgentEnvelope([], [], needMoreContext, requests);
+        }
+        catch (JsonException)
+        {
+            return new ChunkReviewAgentEnvelope([], [], false, []);
+        }
+    }
+
+    private static ReviewWorkspaceToolRequest? MapToolRequest(JsonElement element)
+    {
+        if (element.ValueKind != JsonValueKind.Object)
+        {
+            return null;
+        }
+
+        var toolName = ReadString(element, "tool_name");
+        var reason = ReadString(element, "reason") ?? string.Empty;
+        var query = ReadString(element, "query") ?? string.Empty;
+        var filePath = ReadString(element, "file_path");
+        var pathScope = ReadString(element, "path_scope") ?? string.Empty;
+        var startLine = ReadInt(element, "start_line");
+        var maxLines = ReadInt(element, "max_lines");
+
+        if (string.IsNullOrWhiteSpace(toolName))
+        {
+            return null;
+        }
+
+        return new ReviewWorkspaceToolRequest(
+            toolName.Trim(),
+            reason.Trim(),
+            query.Trim(),
+            (filePath ?? string.Empty).Trim(),
+            pathScope.Trim(),
+            startLine > 0 ? startLine : 1,
+            maxLines > 0 ? maxLines : 120);
+    }
+
+    private static string BuildChunkReviewPayload(
+        string chunk,
+        IReadOnlyList<ReviewWorkspaceToolResponse> toolResponses)
+    {
+        if (toolResponses.Count == 0)
+        {
+            return chunk;
+        }
+
+        var builder = new StringBuilder();
+        builder.AppendLine(chunk.Trim());
+        builder.AppendLine();
+        builder.AppendLine("Supplemental tool results:");
+
+        foreach (var response in toolResponses)
+        {
+            builder.AppendLine($"Tool: {response.ToolName}");
+            builder.AppendLine($"Source: {response.Source}");
+            if (!string.IsNullOrWhiteSpace(response.FilePath))
+            {
+                builder.AppendLine($"File: {response.FilePath}");
+            }
+            if (response.StartLine > 0)
+            {
+                builder.AppendLine($"Lines: {response.StartLine}-{response.EndLine}");
+            }
+            builder.AppendLine("Content:");
+            builder.AppendLine(TrimForPrompt(response.Content, 12000));
+            builder.AppendLine();
+        }
+
+        return builder.ToString().TrimEnd();
+    }
+
+    private static string BuildInitialChunkReviewPayload(string chunk)
+    {
+        var filePath = ExtractChunkFilePath(chunk);
+        if (string.IsNullOrWhiteSpace(filePath) || filePath == "(unknown file)")
+        {
+            return chunk;
+        }
+
+        return $"Current file: {filePath}\n\n{chunk}";
+    }
+
+    private void LogPrimaryToolRequestDecision(
+        ReviewRun run,
+        int chunkIndex,
+        string chunk,
+        ChunkReviewAgentEnvelope envelope)
+    {
+        logger.LogInformation(
+            "Primary chunk tool decision for run {RunId}, chunk {ChunkIndex}: NeedMoreContext={NeedMoreContext}, ToolRequestsCount={ToolRequestsCount}, ChunkFile={ChunkFile}",
+            run.Id,
+            chunkIndex + 1,
+            envelope.NeedMoreContext,
+            envelope.ToolRequests.Count,
+            ExtractChunkFilePath(chunk));
+
+        for (var index = 0; index < envelope.ToolRequests.Count; index++)
+        {
+            var request = envelope.ToolRequests[index];
+            logger.LogInformation(
+                "Primary chunk tool request {RequestIndex} for run {RunId}, chunk {ChunkIndex}: Tool={ToolName}, Query={Query}, FilePath={FilePath}, PathScope={PathScope}, StartLine={StartLine}, MaxLines={MaxLines}, Reason={Reason}",
+                index + 1,
+                run.Id,
+                chunkIndex + 1,
+                request.ToolName,
+                string.IsNullOrWhiteSpace(request.Query) ? "<none>" : TrimForPrompt(request.Query, 160),
+                string.IsNullOrWhiteSpace(request.FilePath) ? "<none>" : request.FilePath,
+                string.IsNullOrWhiteSpace(request.PathScope) ? "<none>" : request.PathScope,
+                request.StartLine,
+                request.MaxLines,
+                string.IsNullOrWhiteSpace(request.Reason) ? "<none>" : TrimForPrompt(request.Reason, 220));
+        }
+    }
+
+    private void LogPrimaryToolResponses(
+        ReviewRun run,
+        int chunkIndex,
+        IReadOnlyList<ReviewWorkspaceToolResponse> toolResponses)
+    {
+        logger.LogInformation(
+            "Primary chunk tool responses for run {RunId}, chunk {ChunkIndex}: ToolResponsesCount={ToolResponsesCount}",
+            run.Id,
+            chunkIndex + 1,
+            toolResponses.Count);
+
+        for (var index = 0; index < toolResponses.Count; index++)
+        {
+            var response = toolResponses[index];
+            logger.LogInformation(
+                "Primary chunk tool response {ResponseIndex} for run {RunId}, chunk {ChunkIndex}: Tool={ToolName}, FilePath={FilePath}, Source={Source}, Lines={StartLine}-{EndLine}, Preview={Preview}",
+                index + 1,
+                run.Id,
+                chunkIndex + 1,
+                response.ToolName,
+                response.FilePath,
+                response.Source,
+                response.StartLine,
+                response.EndLine,
+                BuildPreview(response.Content));
+        }
+    }
+
+    private static string NormalizeJsonPayload(string raw)
+    {
+        var payload = raw?.Trim() ?? string.Empty;
+        if (!payload.StartsWith("```", StringComparison.Ordinal))
+        {
+            return payload;
+        }
+
+        return payload.Replace("```json", string.Empty, StringComparison.OrdinalIgnoreCase)
+            .Replace("```", string.Empty, StringComparison.OrdinalIgnoreCase)
+            .Trim();
+    }
+
+    private static string? ReadString(JsonElement element, string propertyName)
+    {
+        return element.TryGetProperty(propertyName, out var property) && property.ValueKind == JsonValueKind.String
+            ? property.GetString()
+            : null;
+    }
+
+    private static int ReadInt(JsonElement element, string propertyName)
+    {
+        if (!element.TryGetProperty(propertyName, out var property))
+        {
+            return 0;
+        }
+
+        return property.ValueKind switch
+        {
+            JsonValueKind.Number when property.TryGetInt32(out var number) => number,
+            JsonValueKind.String when int.TryParse(property.GetString(), out var parsed) => parsed,
+            _ => 0
+        };
+    }
+
+    private static string TrimForPrompt(string text, int maxLength)
+    {
+        if (string.IsNullOrWhiteSpace(text) || text.Length <= maxLength)
+        {
+            return text;
+        }
+
+        return text[..maxLength];
+    }
+
+    private static string ExtractChunkFilePath(string chunk)
+    {
+        if (string.IsNullOrWhiteSpace(chunk))
+        {
+            return "(unknown file)";
+        }
+
+        var lines = chunk.Replace("\r\n", "\n", StringComparison.Ordinal).Split('\n');
+        foreach (var line in lines)
+        {
+            if (line.StartsWith("## File: '", StringComparison.Ordinal))
+            {
+                return line["## File: '".Length..].TrimEnd('\'', ' ');
+            }
+
+            if (line.StartsWith("File: ", StringComparison.OrdinalIgnoreCase))
+            {
+                return line["File: ".Length..].Trim();
+            }
+
+            if (line.StartsWith("+++ b/", StringComparison.Ordinal))
+            {
+                return line["+++ b/".Length..].Trim();
+            }
+        }
+
+        return "(unknown file)";
+    }
+
+    private static string BuildPreview(string text)
+    {
+        if (string.IsNullOrWhiteSpace(text))
+        {
+            return "<empty>";
+        }
+
+        var preview = string.Join(
+            " / ",
+            text.Replace("\r\n", "\n", StringComparison.Ordinal)
+                .Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                .Take(3));
+
+        return TrimForPrompt(preview, 220);
     }
 
     private async Task PersistAndPublishAsync(

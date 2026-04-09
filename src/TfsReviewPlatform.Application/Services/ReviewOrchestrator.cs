@@ -6,6 +6,7 @@ using System.Text.RegularExpressions;
 using TfsReviewPlatform.Application.Abstractions;
 using TfsReviewPlatform.Application.Contracts.Reviews;
 using TfsReviewPlatform.Application.Models;
+using TfsReviewPlatform.Application.Prompts;
 using TfsReviewPlatform.Domain.Entities;
 using TfsReviewPlatform.Domain.Enums;
 using TfsReviewPlatform.Domain.ValueObjects;
@@ -555,23 +556,41 @@ public sealed class ReviewOrchestrator(
             cancellationToken);
 
         await reviewSemanticIndex.IndexPreparedChunksAsync(run, cancellationToken);
-        await reviewSemanticIndex.IndexFindingsAsync(run, cancellationToken);
-        var followUpSelection = await SelectFollowUpChunksAsync(request.Message, run, cancellationToken);
-        var supplementalContexts = await ResolveSupplementalFollowUpContextsAsync(
-            request.Message,
-            run,
-            followUpSelection,
-            cancellationToken);
-        var historicalFindings = await reviewSemanticIndex.SearchHistoricalFindingsAsync(
-            run,
-            request.Message,
-            followUpSelection.Mode == FollowUpChunkSelectionMode.AllChunks ? 6 : 4,
-            cancellationToken);
+        var followUpSelection = await SelectFollowUpChunksAsync(request.Message, run, selection, cancellationToken);
         LogFollowUpChunkSelection(run, request.Message, followUpSelection);
-        LogSupplementalFollowUpContexts(run, request.Message, supplementalContexts);
-        LogHistoricalFindingMatches(run, request.Message, historicalFindings);
-        var historicalFindingsPrompt = BuildHistoricalFindingsPrompt(historicalFindings);
-        var supplementalContextPrompt = BuildSupplementalContextPrompt(supplementalContexts);
+        if (followUpSelection.Chunks.Count == 0)
+        {
+            var missingChunkReply = BuildMissingSemanticChunkReply();
+            var missingChunkMarkdown = RenderInlineDiscussionMarkdown(missingChunkReply);
+            var missingChunkMessages = run.Artifacts.ReviewDiscussionMessages
+                .Concat(
+                    [
+                        new ReviewCommentMessage("user", request.Message.Trim(), DateTimeOffset.UtcNow),
+                        new ReviewCommentMessage("assistant", missingChunkMarkdown, DateTimeOffset.UtcNow, missingChunkReply)
+                    ])
+                .ToArray();
+
+            run.UpdateArtifacts(new ReviewArtifacts
+            {
+                DiffText = run.Artifacts.DiffText,
+                PreparedChunks = run.Artifacts.PreparedChunks,
+                ChangedFiles = run.Artifacts.ChangedFiles,
+                ChangeDescription = run.Artifacts.ChangeDescription,
+                ChangeDescriptionStructured = run.Artifacts.ChangeDescriptionStructured,
+                ChangeDiagramMermaid = run.Artifacts.ChangeDiagramMermaid,
+                MarkdownReport = run.Artifacts.MarkdownReport,
+                SummaryComment = run.Artifacts.SummaryComment,
+                ReviewDiscussionMessages = missingChunkMessages,
+                InlineComments = run.Artifacts.InlineComments,
+                ReviewedFiles = run.Artifacts.ReviewedFiles,
+                PrimaryOpportunities = run.Artifacts.PrimaryOpportunities,
+                FindingsComparison = run.Artifacts.FindingsComparison
+            });
+
+            await reviewRunRepository.UpdateAsync(run, cancellationToken);
+            return run.ToDto();
+        }
+
         var chunkReplies = new List<ParsedReviewDiscussionResult>(followUpSelection.Chunks.Count);
         var rawChunkReplies = new List<string>(followUpSelection.Chunks.Count);
         for (var index = 0; index < followUpSelection.Chunks.Count; index++)
@@ -590,13 +609,7 @@ public sealed class ReviewOrchestrator(
                         Similar findings from previous reviews and supplemental file context are only supplemental context. Trust them only if they are clearly consistent with the current chunk and current file code.
                         Give concrete, implementation-level advice.
                         Focus only on what can be justified from this chunk and supplemental file context.
-                        If the user explicitly asks to search for additional defects, you may return new_findings, but only for concrete review-worthy issues visible in this chunk.
-                        If you find useful non-blocking improvements that are worth surfacing but are not defects or risks, return them in new_opportunities instead of new_findings.
-                        Do not return style-only, cleanup-only, comment-only, or speculative findings.
-                        If there are no new review-worthy issues in this chunk, return an empty new_findings array.
-                        If there are no noteworthy non-defect improvements in this chunk, return an empty new_opportunities array.
-                        If the diff chunk is not enough but supplemental file context contains the target code, use the supplemental file context to answer.
-                        If neither the diff chunk nor supplemental file context is enough to answer reliably, say exactly what is missing.
+                        """ + ReviewPromptGuardrails.FactualReviewGuardrails + "\n\n" + ReviewPromptSpecialRules.FollowUpReviewSpecialRules + "\n" + """
                         Return JSON only.
                         Do not return markdown.
                         All string values must be plain text without markdown emphasis markers such as **, __, or backticks.
@@ -621,6 +634,7 @@ public sealed class ReviewOrchestrator(
                               "severity": "Critical or High or Medium or Low",
                               "title": "short issue title",
                               "description": "why this is a problem",
+                              "evidence": "specific code fact or construct that proves the finding",
                               "existing_code": "problematic changed code only",
                               "suggestion": "minimal concrete fix"
                             }
@@ -636,17 +650,12 @@ public sealed class ReviewOrchestrator(
                           ]
                         }
                         Keep arrays short.
+                        If you cannot provide concrete evidence from the shown code, do not emit a new finding.
                         If there is no code example, return an empty string in exampleCode and exampleCodeLanguage.
                         """,
                     UserPrompt = $"""
                         Prepared review diff chunk {index + 1} of {followUpSelection.Chunks.Count}:
                         {followUpSelection.Chunks[index]}
-
-                        Similar findings from previous reviews for the same target:
-                        {historicalFindingsPrompt}
-
-                        Supplemental current file context:
-                        {supplementalContextPrompt}
 
                         User question:
                         {request.Message}
@@ -715,6 +724,7 @@ public sealed class ReviewOrchestrator(
             ReviewDiscussionMessages = updatedMessages,
             InlineComments = mergedInlineComments,
             ReviewedFiles = mergedReviewedFiles,
+            PrimaryOpportunities = run.Artifacts.PrimaryOpportunities,
             FindingsComparison = findingsComparison
         });
 
@@ -842,6 +852,25 @@ public sealed class ReviewOrchestrator(
         }
 
         return builder.ToString().Trim();
+    }
+
+    private static InlineDiscussionStructuredContent BuildMissingSemanticChunkReply()
+    {
+        return new InlineDiscussionStructuredContent
+        {
+            Summary = "Не удалось подобрать релевантные diff chunks по тексту запроса через семантический поиск.",
+            Problems =
+            [
+                "Qdrant не вернул ни одного prepared chunk для текущего follow-up вопроса."
+            ],
+            Risk = "Если отвечать без найденных чанков, ответ будет опираться на догадки, а не на конкретный код из ревью.",
+            Recommendations =
+            [
+                "Уточните запрос именем файла, сигнатурой метода или коротким фрагментом кода и повторите вопрос."
+            ],
+            ShouldPublishToTfs = false,
+            PublishToTfsReason = "Без релевантного diff chunk такой ответ не стоит публиковать в pull request."
+        };
     }
 
     private static string ExtractJsonObject(string rawResponse)
@@ -1300,6 +1329,7 @@ public sealed class ReviewOrchestrator(
             ReviewDiscussionMessages = artifacts.ReviewDiscussionMessages,
             InlineComments = inlineComments,
             ReviewedFiles = reviewedFiles,
+            PrimaryOpportunities = artifacts.PrimaryOpportunities,
             FindingsComparison = artifacts.FindingsComparison
         };
 
@@ -1327,6 +1357,7 @@ public sealed class ReviewOrchestrator(
             ReviewDiscussionMessages = artifacts.ReviewDiscussionMessages,
             InlineComments = inlineComments,
             ReviewedFiles = reviewedFiles,
+            PrimaryOpportunities = artifacts.PrimaryOpportunities,
             FindingsComparison = relevantComparison
         };
     }
@@ -1410,46 +1441,169 @@ public sealed class ReviewOrchestrator(
     private async Task<FollowUpChunkSelection> SelectFollowUpChunksAsync(
         string question,
         ReviewRun run,
+        StageRouteSelection llmSelection,
         CancellationToken cancellationToken)
     {
-        var chunks = run.Artifacts.PreparedChunks;
-        if (chunks.Count == 0)
+        if (run.Artifacts.PreparedChunks.Count == 0)
         {
-            var fallback = TrimForPrompt(run.Artifacts.DiffText, 22000);
-            return string.IsNullOrWhiteSpace(fallback)
-                ? new FollowUpChunkSelection(FollowUpChunkSelectionMode.RelevantFallback, [])
-                : new FollowUpChunkSelection(FollowUpChunkSelectionMode.RelevantFallback, [fallback]);
+            return new FollowUpChunkSelection(FollowUpChunkSelectionMode.SemanticFallback, []);
         }
 
-        if (IsGeneralFollowUpQuestion(question))
-        {
-            return new FollowUpChunkSelection(FollowUpChunkSelectionMode.AllChunks, chunks);
-        }
-
-        var anchors = ExtractQuestionAnchors(question);
-        var forcedSnippetChunks = SelectSnippetFirstChunks(chunks, anchors, 2);
-        logger.LogInformation(
-            "Review follow-up forced snippet chunk candidates: {ForcedSnippetChunkCount}. QuestionPreview={QuestionPreview}",
-            forcedSnippetChunks.Count,
-            TrimForPrompt(question, 240));
         var semanticChunks = await reviewSemanticIndex.SearchPreparedChunksAsync(run, question, 8, cancellationToken);
-        if (semanticChunks.Count > 0)
+        if (semanticChunks.Count == 0)
         {
-            var rerankedSemanticChunks = RerankSemanticChunks(
-                semanticChunks,
-                chunks,
-                question,
-                anchors,
-                forcedSnippetChunks,
-                4);
-            return new FollowUpChunkSelection(FollowUpChunkSelectionMode.Semantic, rerankedSemanticChunks);
+            return new FollowUpChunkSelection(FollowUpChunkSelectionMode.SemanticFallback, []);
         }
 
-        var fallbackChunks = SelectRelevantChunks(chunks, question, 4);
-        var prioritizedFallbackChunks = PrependForcedChunks(forcedSnippetChunks, fallbackChunks, 4);
+        if (semanticChunks.Count <= 2)
+        {
+            return new FollowUpChunkSelection(
+                FollowUpChunkSelectionMode.SemanticFallback,
+                semanticChunks,
+                "LLM selector skipped because semantic retrieval returned only a small candidate set.");
+        }
+
+        var selectorDecision = await SelectChunksWithLlmAsync(question, semanticChunks, llmSelection, cancellationToken);
+        if (selectorDecision.SelectedChunkIndexes.Count > 0)
+        {
+            var selectedChunks = selectorDecision.SelectedChunkIndexes
+                .Where(index => index >= 1 && index <= semanticChunks.Count)
+                .Distinct()
+                .Select(index => semanticChunks[index - 1])
+                .ToArray();
+
+            if (selectedChunks.Length > 0)
+            {
+                return new FollowUpChunkSelection(
+                    FollowUpChunkSelectionMode.SemanticLlm,
+                    selectedChunks,
+                    selectorDecision.Reason);
+            }
+        }
+
         return new FollowUpChunkSelection(
-            FollowUpChunkSelectionMode.RelevantFallback,
-            prioritizedFallbackChunks);
+            FollowUpChunkSelectionMode.SemanticFallback,
+            semanticChunks.Take(4).ToArray(),
+            selectorDecision.Reason);
+    }
+
+    private async Task<FollowUpChunkSelectorDecision> SelectChunksWithLlmAsync(
+        string question,
+        IReadOnlyList<string> semanticChunks,
+        StageRouteSelection llmSelection,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            var assistantReply = await llmCompletionService.CompleteAsync(
+                llmSelection.Profile,
+                new LlmChatRequest
+                {
+                    Model = llmSelection.Model,
+                    Temperature = 0,
+                    ExpectJson = true,
+                    SystemPrompt = """
+                        You are selecting the minimal set of prepared review diff chunks needed to answer a follow-up review question.
+                        Answer in Russian.
+                        Use only the provided question and candidate chunk previews.
+                        Prefer the chunks that directly match the file, class, interface, method, or code fragment explicitly mentioned by the user.
+                        If the user asks to review entity A together with entity B, include both if both are present in the candidates.
+                        Avoid selecting loosely related neighboring files unless they are clearly necessary.
+                        Return JSON only.
+                        Use this exact schema:
+                        {
+                          "selected_chunk_indexes": [1, 2],
+                          "reason": "brief reason why these chunks are enough"
+                        }
+                        Rules:
+                        - indexes are 1-based
+                        - select between 1 and 4 chunks
+                        - if one chunk is clearly the target, prefer only it
+                        - if the answer truly needs multiple chunks, include only the minimal set
+                        """,
+                    UserPrompt = $"""
+                        Follow-up question:
+                        {question}
+
+                        Candidate prepared diff chunks:
+                        {BuildChunkSelectorCandidates(semanticChunks)}
+                        """
+                },
+                cancellationToken);
+
+            return ParseFollowUpChunkSelectorDecision(assistantReply);
+        }
+        catch (Exception exception)
+        {
+            logger.LogWarning(exception, "LLM chunk selector failed for follow-up question");
+            return new FollowUpChunkSelectorDecision([], string.Empty);
+        }
+    }
+
+    private static string BuildChunkSelectorCandidates(IReadOnlyList<string> semanticChunks)
+    {
+        var builder = new StringBuilder();
+        for (var index = 0; index < semanticChunks.Count; index++)
+        {
+            builder.Append(index + 1)
+                .Append(". File: ")
+                .AppendLine(ExtractChunkFilePath(semanticChunks[index]));
+            builder.Append("Preview: ")
+                .AppendLine(BuildChunkSelectionPreview(semanticChunks[index]));
+            builder.AppendLine();
+        }
+
+        return builder.ToString().TrimEnd();
+    }
+
+    private static string BuildChunkSelectionPreview(string chunk)
+    {
+        var normalized = chunk.Replace("\r\n", "\n", StringComparison.Ordinal);
+        var lines = normalized
+            .Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Where(line => !line.StartsWith("## File:", StringComparison.Ordinal) &&
+                           !line.StartsWith("__new hunk__", StringComparison.Ordinal) &&
+                           !line.StartsWith("__old hunk__", StringComparison.Ordinal))
+            .Take(10)
+            .ToArray();
+
+        return TrimForPrompt(string.Join(" / ", lines), 700);
+    }
+
+    private static FollowUpChunkSelectorDecision ParseFollowUpChunkSelectorDecision(string rawResponse)
+    {
+        if (string.IsNullOrWhiteSpace(rawResponse))
+        {
+            return new FollowUpChunkSelectorDecision([], string.Empty);
+        }
+
+        try
+        {
+            var json = ExtractJsonObject(rawResponse);
+            using var document = JsonDocument.Parse(json);
+            var root = document.RootElement;
+            var selectedIndexes = root.TryGetProperty("selected_chunk_indexes", out var indexesNode) &&
+                                  indexesNode.ValueKind == JsonValueKind.Array
+                ? indexesNode.EnumerateArray()
+                    .Where(item => item.ValueKind == JsonValueKind.Number && item.TryGetInt32(out _))
+                    .Select(item => item.GetInt32())
+                    .Where(index => index > 0)
+                    .Distinct()
+                    .Take(4)
+                    .ToArray()
+                : [];
+
+            var reason = root.TryGetProperty("reason", out var reasonNode) &&
+                         reasonNode.ValueKind == JsonValueKind.String
+                ? reasonNode.GetString()?.Trim() ?? string.Empty
+                : string.Empty;
+
+            return new FollowUpChunkSelectorDecision(selectedIndexes, reason);
+        }
+        catch (JsonException)
+        {
+            return new FollowUpChunkSelectorDecision([], string.Empty);
+        }
     }
 
     private void LogFollowUpChunkSelection(
@@ -1482,63 +1636,16 @@ public sealed class ReviewOrchestrator(
             .ToArray();
 
         logger.LogInformation(
-            "Review follow-up selected {ChunkCount} diff chunks for run {RunId}. SelectionMode={SelectionMode}. QuestionPreview={QuestionPreview}. Chunks={Chunks}",
+            "Review follow-up selected {ChunkCount} diff chunks for run {RunId}. SelectionMode={SelectionMode}. QuestionPreview={QuestionPreview}. SelectorReason={SelectorReason}. Chunks={Chunks}",
             selection.Chunks.Count,
             run.Id,
             ToLogValue(selection.Mode),
             TrimForPrompt(question, 240),
+            string.IsNullOrWhiteSpace(selection.Reason) ? "<none>" : TrimForPrompt(selection.Reason, 240),
             string.Join(
                 " | ",
                 selectedChunkMetadata.Select(item =>
                     $"#{(item.ChunkIndex >= 0 ? item.ChunkIndex.ToString(CultureInfo.InvariantCulture) : "?")} {item.FilePath} :: {item.Preview}")));
-    }
-
-    private void LogHistoricalFindingMatches(
-        ReviewRun run,
-        string question,
-        IReadOnlyList<SemanticFindingMatch> findings)
-    {
-        if (findings.Count == 0)
-        {
-            logger.LogInformation(
-                "Review follow-up found no historical semantic matches for run {RunId}. QuestionPreview={QuestionPreview}",
-                run.Id,
-                TrimForPrompt(question, 240));
-            return;
-        }
-
-        logger.LogInformation(
-            "Review follow-up found {FindingCount} historical semantic matches for run {RunId}. Matches={Matches}",
-            findings.Count,
-            run.Id,
-            string.Join(
-                " | ",
-                findings.Select(item =>
-                    $"{item.File}:{(item.StartLine > 0 ? item.StartLine.ToString(CultureInfo.InvariantCulture) : "?")} :: {TrimForPrompt(item.Title, 140)}")));
-    }
-
-    private void LogSupplementalFollowUpContexts(
-        ReviewRun run,
-        string question,
-        IReadOnlyList<SupplementalFollowUpContext> contexts)
-    {
-        if (contexts.Count == 0)
-        {
-            logger.LogInformation(
-                "Review follow-up found no supplemental file context for run {RunId}. QuestionPreview={QuestionPreview}",
-                run.Id,
-                TrimForPrompt(question, 240));
-            return;
-        }
-
-        logger.LogInformation(
-            "Review follow-up selected {ContextCount} supplemental file contexts for run {RunId}. Contexts={Contexts}",
-            contexts.Count,
-            run.Id,
-            string.Join(
-                " | ",
-                contexts.Select(context =>
-                    $"{context.FilePath}:{context.StartLine}-{context.EndLine} ({context.Source}) :: {TrimForPrompt(context.Preview, 180)}")));
     }
 
     private static int FindPreparedChunkIndex(IReadOnlyList<string> preparedChunks, string selectedChunk)
@@ -1581,735 +1688,6 @@ public sealed class ReviewOrchestrator(
 
         var preview = string.Join(" / ", lines);
         return TrimForPrompt(preview, 220);
-    }
-
-    private static string BuildHistoricalFindingsPrompt(IReadOnlyList<SemanticFindingMatch> findings)
-    {
-        if (findings.Count == 0)
-        {
-            return "Нет релевантных похожих замечаний из прошлых ревью.";
-        }
-
-        var builder = new StringBuilder();
-        foreach (var finding in findings.Take(5))
-        {
-            var lineText = finding.StartLine > 0 ? $" (строка {finding.StartLine})" : string.Empty;
-            builder.Append("- ")
-                .Append(finding.File)
-                .Append(lineText)
-                .Append(": ")
-                .Append(finding.Title);
-
-            if (!string.IsNullOrWhiteSpace(finding.Description))
-            {
-                builder.Append(" — ").Append(TrimForPrompt(finding.Description, 220));
-            }
-
-            builder.AppendLine();
-        }
-
-        return builder.ToString().Trim();
-    }
-
-    private static string BuildSupplementalContextPrompt(IReadOnlyList<SupplementalFollowUpContext> contexts)
-    {
-        if (contexts.Count == 0)
-        {
-            return "Нет дополнительного локального контекста файла.";
-        }
-
-        var builder = new StringBuilder();
-        foreach (var context in contexts)
-        {
-            builder.AppendLine($"## File: '{context.FilePath}' ({context.Source})");
-            builder.AppendLine($"## Lines: {context.StartLine}-{context.EndLine}");
-            builder.AppendLine(context.Content.TrimEnd());
-            builder.AppendLine();
-        }
-
-        return builder.ToString().Trim();
-    }
-
-    private static IReadOnlyList<string> SelectRelevantChunks(
-        IReadOnlyList<string> chunks,
-        string question,
-        int maxChunks)
-    {
-        if (chunks.Count == 0)
-        {
-            return [];
-        }
-
-        var normalizedQuestion = NormalizeForSimilarity(question);
-        var questionTokens = TokenizeForSimilarity(question);
-        var anchors = ExtractQuestionAnchors(question);
-        var snippetFirstChunks = SelectSnippetFirstChunks(chunks, anchors, maxChunks);
-        if (snippetFirstChunks.Count > 0)
-        {
-            return snippetFirstChunks;
-        }
-
-        var rankedChunks = chunks
-            .Select((chunk, index) => new RankedChunk(index, chunk, ComputeChunkRelevanceScore(chunk, normalizedQuestion, questionTokens, anchors)))
-            .OrderByDescending(item => item.Score)
-            .ThenBy(item => item.Index)
-            .Take(Math.Max(1, maxChunks))
-            .ToArray();
-
-        var selected = rankedChunks
-            .Where(item => item.Score > 0d)
-            .Select(item => item.Chunk)
-            .ToArray();
-
-        if (selected.Length > 0)
-        {
-            return selected;
-        }
-
-        return chunks.Take(Math.Max(1, maxChunks)).ToArray();
-    }
-
-    private async Task<IReadOnlyList<SupplementalFollowUpContext>> ResolveSupplementalFollowUpContextsAsync(
-        string question,
-        ReviewRun run,
-        FollowUpChunkSelection selection,
-        CancellationToken cancellationToken)
-    {
-        if (IsGeneralFollowUpQuestion(question))
-        {
-            return [];
-        }
-
-        var anchors = ExtractQuestionAnchors(question);
-        var contexts = new List<SupplementalFollowUpContext>();
-        var candidateFiles = SelectSupplementalCandidateFiles(run, anchors);
-
-        foreach (var file in candidateFiles)
-        {
-            if (TryBuildSupplementalContext(file.FilePath, file.FullContent, anchors, file.Source, out var context))
-            {
-                contexts.Add(context);
-            }
-        }
-
-        if (contexts.Count > 0)
-        {
-            return contexts
-                .DistinctBy(context => context.FilePath, StringComparer.OrdinalIgnoreCase)
-                .Take(2)
-                .ToArray();
-        }
-
-        var repositoryFallback = await TryResolveSupplementalContextFromRepositoryAsync(run, anchors, cancellationToken);
-        if (repositoryFallback is not null)
-        {
-            return [repositoryFallback];
-        }
-
-        return [];
-    }
-
-    private IReadOnlyList<SupplementalCandidateFile> SelectSupplementalCandidateFiles(ReviewRun run, QuestionAnchors anchors)
-    {
-        return run.Artifacts.ReviewedFiles
-            .Where(file => !string.IsNullOrWhiteSpace(file.FullContent))
-            .Select(file => new
-            {
-                File = file,
-                Score = ComputeSupplementalFileScore(file, anchors)
-            })
-            .Where(item => item.Score > 0d)
-            .OrderByDescending(item => item.Score)
-            .ThenBy(item => item.File.FilePath, StringComparer.OrdinalIgnoreCase)
-            .Take(3)
-            .Select(item => new SupplementalCandidateFile(item.File.FilePath, item.File.FullContent, "reviewed-file"))
-            .ToArray();
-    }
-
-    private async Task<SupplementalFollowUpContext?> TryResolveSupplementalContextFromRepositoryAsync(
-        ReviewRun run,
-        QuestionAnchors anchors,
-        CancellationToken cancellationToken)
-    {
-        if (string.IsNullOrWhiteSpace(run.Target.RepositoryPath) ||
-            string.IsNullOrWhiteSpace(run.Target.SourceBranch))
-        {
-            return null;
-        }
-
-        var candidatePaths = run.Artifacts.ChangedFiles
-            .Where(filePath => IsAnchoredFilePath(filePath, anchors))
-            .Distinct(StringComparer.OrdinalIgnoreCase)
-            .Take(3)
-            .ToArray();
-
-        foreach (var filePath in candidatePaths)
-        {
-            var fullContent = await repositoryFileContentService.TryGetFileContentAsync(
-                run.Target.RepositoryPath!,
-                run.Target.SourceBranch!,
-                filePath,
-                cancellationToken);
-
-            if (TryBuildSupplementalContext(filePath, fullContent, anchors, "repository-file", out var context))
-            {
-                return context;
-            }
-        }
-
-        return null;
-    }
-
-    private static bool TryBuildSupplementalContext(
-        string filePath,
-        string? fullContent,
-        QuestionAnchors anchors,
-        string source,
-        out SupplementalFollowUpContext context)
-    {
-        const int maxWholeFileContextCharacters = 24000;
-        context = default!;
-
-        if (string.IsNullOrWhiteSpace(fullContent))
-        {
-            return false;
-        }
-
-        var lines = fullContent.Replace("\r\n", "\n", StringComparison.Ordinal).Split('\n');
-        if (IsAnchoredFilePath(filePath, anchors) && fullContent.Length <= maxWholeFileContextCharacters)
-        {
-            context = new SupplementalFollowUpContext(
-                filePath,
-                1,
-                lines.Length,
-                BuildNumberedContent(lines, 1, lines.Length),
-                $"{source}/whole-file",
-                BuildWholeFilePreview(lines));
-            return true;
-        }
-
-        var anchorLine = TryFindAnchorLine(lines, anchors);
-        if (anchorLine <= 0)
-        {
-            return false;
-        }
-
-        var (startLine, endLine) = TryExtractMethodRange(lines, anchorLine, anchors.MethodNames)
-            ?? BuildWindowRange(lines.Length, anchorLine, 14);
-        var snippetBuilder = new StringBuilder();
-        for (var lineIndex = startLine; lineIndex <= endLine; lineIndex++)
-        {
-            snippetBuilder.Append(lineIndex.ToString(CultureInfo.InvariantCulture).PadLeft(4))
-                .Append(": ")
-                .AppendLine(lines[lineIndex - 1]);
-        }
-
-        context = new SupplementalFollowUpContext(
-            filePath,
-            startLine,
-            endLine,
-            snippetBuilder.ToString(),
-            source,
-            BuildSupplementalPreview(lines, anchorLine));
-        return true;
-    }
-
-    private static string BuildNumberedContent(IReadOnlyList<string> lines, int startLine, int endLine)
-    {
-        var builder = new StringBuilder();
-        for (var lineIndex = startLine; lineIndex <= endLine; lineIndex++)
-        {
-            builder.Append(lineIndex.ToString(CultureInfo.InvariantCulture).PadLeft(4))
-                .Append(": ")
-                .AppendLine(lines[lineIndex - 1]);
-        }
-
-        return builder.ToString();
-    }
-
-    private static int TryFindAnchorLine(IReadOnlyList<string> lines, QuestionAnchors anchors)
-    {
-        var normalizedLines = lines
-            .Select(NormalizeForSimilarity)
-            .ToArray();
-
-        var strongestAnchors = anchors.Signatures
-            .Concat(anchors.CodeSnippets)
-            .Where(anchor => anchor.Length >= 12)
-            .OrderByDescending(anchor => anchor.Length)
-            .Take(10)
-            .ToArray();
-
-        foreach (var anchor in strongestAnchors)
-        {
-            for (var index = 0; index < normalizedLines.Length; index++)
-            {
-                if (normalizedLines[index].Contains(anchor, StringComparison.Ordinal))
-                {
-                    return index + 1;
-                }
-            }
-        }
-
-        foreach (var methodName in anchors.MethodNames)
-        {
-            for (var index = 0; index < normalizedLines.Length; index++)
-            {
-                if (normalizedLines[index].Contains($"{methodName}(", StringComparison.Ordinal))
-                {
-                    return index + 1;
-                }
-            }
-        }
-
-        return 0;
-    }
-
-    private static (int StartLine, int EndLine)? TryExtractMethodRange(
-        IReadOnlyList<string> lines,
-        int anchorLine,
-        IReadOnlyList<string> methodNames)
-    {
-        var startLine = 0;
-        for (var index = Math.Min(anchorLine - 1, lines.Count - 1); index >= 0; index--)
-        {
-            if (IsMethodDeclarationLine(lines[index], methodNames))
-            {
-                startLine = index + 1;
-                break;
-            }
-        }
-
-        if (startLine == 0)
-        {
-            return null;
-        }
-
-        var braceBalance = 0;
-        var seenOpeningBrace = false;
-        for (var index = startLine - 1; index < lines.Count; index++)
-        {
-            foreach (var character in lines[index])
-            {
-                if (character == '{')
-                {
-                    braceBalance++;
-                    seenOpeningBrace = true;
-                }
-                else if (character == '}')
-                {
-                    braceBalance--;
-                }
-            }
-
-            if (seenOpeningBrace && braceBalance <= 0 && index + 1 > startLine)
-            {
-                return (startLine, index + 1);
-            }
-        }
-
-        return null;
-    }
-
-    private static bool IsMethodDeclarationLine(string line, IReadOnlyList<string> methodNames)
-    {
-        var normalized = NormalizeForSimilarity(line);
-        if (string.IsNullOrWhiteSpace(normalized) ||
-            !normalized.Contains('(') ||
-            normalized.StartsWith("if ", StringComparison.Ordinal) ||
-            normalized.StartsWith("if(", StringComparison.Ordinal) ||
-            normalized.StartsWith("for ", StringComparison.Ordinal) ||
-            normalized.StartsWith("foreach ", StringComparison.Ordinal) ||
-            normalized.StartsWith("while ", StringComparison.Ordinal) ||
-            normalized.StartsWith("switch ", StringComparison.Ordinal) ||
-            normalized.StartsWith("catch ", StringComparison.Ordinal))
-        {
-            return false;
-        }
-
-        if (methodNames.Any(methodName => normalized.Contains($"{methodName}(", StringComparison.Ordinal)))
-        {
-            return true;
-        }
-
-        return Regex.IsMatch(
-            normalized,
-            @"\b(public|private|protected|internal)\b.*\(",
-            RegexOptions.CultureInvariant);
-    }
-
-    private static (int StartLine, int EndLine) BuildWindowRange(int totalLines, int anchorLine, int radius)
-    {
-        var startLine = Math.Max(1, anchorLine - radius);
-        var endLine = Math.Min(totalLines, anchorLine + radius);
-        return (startLine, endLine);
-    }
-
-    private static string BuildSupplementalPreview(IReadOnlyList<string> lines, int anchorLine)
-    {
-        var startLine = Math.Max(1, anchorLine - 1);
-        var endLine = Math.Min(lines.Count, anchorLine + 1);
-        return string.Join(
-            " / ",
-            Enumerable.Range(startLine, endLine - startLine + 1)
-                .Select(line => lines[line - 1].Trim())
-                .Where(line => !string.IsNullOrWhiteSpace(line)));
-    }
-
-    private static string BuildWholeFilePreview(IReadOnlyList<string> lines)
-    {
-        return string.Join(
-            " / ",
-            lines.Select(line => line.Trim())
-                .Where(line => !string.IsNullOrWhiteSpace(line))
-                .Take(3));
-    }
-
-    private static double ComputeSupplementalFileScore(ReviewedFileArtifact file, QuestionAnchors anchors)
-    {
-        var normalizedPath = NormalizeForSimilarity(file.FilePath);
-        var normalizedContent = NormalizeForSimilarity(file.FullContent);
-        var score = 0d;
-
-        if (IsAnchoredFilePath(file.FilePath, anchors))
-        {
-            score += 100d;
-        }
-
-        foreach (var signature in anchors.Signatures)
-        {
-            if (normalizedContent.Contains(signature, StringComparison.Ordinal))
-            {
-                score += 120d;
-            }
-        }
-
-        foreach (var snippet in anchors.CodeSnippets)
-        {
-            if (snippet.Length >= 18 && normalizedContent.Contains(snippet, StringComparison.Ordinal))
-            {
-                score += snippet.Length >= 40 ? 80d : 45d;
-            }
-        }
-
-        foreach (var methodName in anchors.MethodNames)
-        {
-            if (normalizedContent.Contains($"{methodName}(", StringComparison.Ordinal))
-            {
-                score += 30d;
-            }
-        }
-
-        return score;
-    }
-
-    private static bool IsAnchoredFilePath(string filePath, QuestionAnchors anchors)
-    {
-        var normalizedPath = NormalizeForSimilarity(filePath);
-        return anchors.FilePaths.Any(path => normalizedPath.Contains(path, StringComparison.Ordinal)) ||
-               anchors.FileNames.Any(fileName => normalizedPath.EndsWith(fileName, StringComparison.Ordinal));
-    }
-
-    private static IReadOnlyList<string> RerankSemanticChunks(
-        IReadOnlyList<string> semanticChunks,
-        IReadOnlyList<string> allPreparedChunks,
-        string question,
-        QuestionAnchors anchors,
-        IReadOnlyList<string> forcedSnippetChunks,
-        int maxChunks)
-    {
-        var normalizedQuestion = NormalizeForSimilarity(question);
-        var questionTokens = TokenizeForSimilarity(question);
-        var forcedIndices = forcedSnippetChunks
-            .Select(chunk => FindPreparedChunkIndex(allPreparedChunks, chunk))
-            .Where(index => index >= 0)
-            .ToHashSet();
-
-        var rankedSemanticChunks = semanticChunks
-            .Select(chunk =>
-            {
-                var chunkIndex = FindPreparedChunkIndex(allPreparedChunks, chunk);
-                var filePath = ExtractChunkFilePath(chunk);
-                var score = ComputeChunkRelevanceScore(chunk, normalizedQuestion, questionTokens, anchors);
-
-                if (chunkIndex >= 0 && forcedIndices.Contains(chunkIndex))
-                {
-                    score += 1000d;
-                }
-
-                if (IsChunkInAnchoredFile(filePath, anchors))
-                {
-                    score += 50d;
-                }
-
-                return new RankedChunk(chunkIndex, chunk, score);
-            })
-            .OrderByDescending(item => item.Score)
-            .ThenBy(item => item.Index < 0 ? int.MaxValue : item.Index)
-            .Select(item => item.Chunk)
-            .ToArray();
-
-        return PrependForcedChunks(forcedSnippetChunks, rankedSemanticChunks, maxChunks);
-    }
-
-    private static IReadOnlyList<string> PrependForcedChunks(
-        IReadOnlyList<string> forcedChunks,
-        IReadOnlyList<string> otherChunks,
-        int maxChunks)
-    {
-        var selected = new List<string>(Math.Max(1, maxChunks));
-
-        foreach (var chunk in forcedChunks.Concat(otherChunks))
-        {
-            if (string.IsNullOrWhiteSpace(chunk) || selected.Contains(chunk, StringComparer.Ordinal))
-            {
-                continue;
-            }
-
-            selected.Add(chunk);
-            if (selected.Count >= Math.Max(1, maxChunks))
-            {
-                break;
-            }
-        }
-
-        return selected;
-    }
-
-    private static IReadOnlyList<string> SelectSnippetFirstChunks(
-        IReadOnlyList<string> chunks,
-        QuestionAnchors anchors,
-        int maxChunks)
-    {
-        if (chunks.Count == 0)
-        {
-            return [];
-        }
-
-        var strongestAnchors = anchors.Signatures
-            .Concat(anchors.CodeSnippets)
-            .Where(anchor => anchor.Length >= 24)
-            .OrderByDescending(anchor => anchor.Length)
-            .Take(8)
-            .ToArray();
-        if (strongestAnchors.Length == 0)
-        {
-            return [];
-        }
-
-        var matchedIndices = new List<int>();
-        for (var index = 0; index < chunks.Count; index++)
-        {
-            var normalizedChunk = NormalizeForSimilarity(chunks[index]);
-            if (strongestAnchors.Any(anchor => normalizedChunk.Contains(anchor, StringComparison.Ordinal)))
-            {
-                matchedIndices.Add(index);
-            }
-        }
-
-        if (matchedIndices.Count == 0)
-        {
-            return [];
-        }
-
-        var selectedIndices = new List<int>();
-        foreach (var matchedIndex in matchedIndices)
-        {
-            if (!selectedIndices.Contains(matchedIndex))
-            {
-                selectedIndices.Add(matchedIndex);
-            }
-
-            if (selectedIndices.Count >= maxChunks)
-            {
-                break;
-            }
-
-            var nextIndex = matchedIndex + 1;
-            if (nextIndex < chunks.Count && !selectedIndices.Contains(nextIndex))
-            {
-                selectedIndices.Add(nextIndex);
-            }
-
-            if (selectedIndices.Count >= maxChunks)
-            {
-                break;
-            }
-        }
-
-        return selectedIndices
-            .OrderBy(index => index)
-            .Take(Math.Max(1, maxChunks))
-            .Select(index => chunks[index])
-            .ToArray();
-    }
-
-    private static double ComputeChunkRelevanceScore(
-        string chunk,
-        string normalizedQuestion,
-        HashSet<string> questionTokens,
-        QuestionAnchors anchors)
-    {
-        var normalizedChunk = NormalizeForSimilarity(chunk);
-        if (string.IsNullOrWhiteSpace(normalizedChunk))
-        {
-            return 0d;
-        }
-
-        var score = 0d;
-        foreach (var fileName in anchors.FileNames)
-        {
-            if (normalizedChunk.Contains(fileName, StringComparison.Ordinal))
-            {
-                score += 8d;
-            }
-        }
-
-        foreach (var filePath in anchors.FilePaths)
-        {
-            if (normalizedChunk.Contains(filePath, StringComparison.Ordinal))
-            {
-                score += 10d;
-            }
-        }
-
-        foreach (var methodName in anchors.MethodNames)
-        {
-            if (normalizedChunk.Contains(methodName, StringComparison.Ordinal))
-            {
-                score += 7d;
-            }
-        }
-
-        foreach (var signature in anchors.Signatures)
-        {
-            if (normalizedChunk.Contains(signature, StringComparison.Ordinal))
-            {
-                score += 12d;
-            }
-        }
-
-        foreach (var snippet in anchors.CodeSnippets)
-        {
-            if (normalizedChunk.Contains(snippet, StringComparison.Ordinal))
-            {
-                score += snippet.Length >= 60 ? 14d : 9d;
-            }
-        }
-
-        foreach (var token in questionTokens)
-        {
-            if (normalizedChunk.Contains(token, StringComparison.Ordinal))
-            {
-                score += token.Length >= 10 ? 1.2d : 0.75d;
-            }
-        }
-
-        var chunkTokens = TokenizeForSimilarity(chunk);
-        var overlap = questionTokens.Count > 0 && chunkTokens.Count > 0
-            ? (2d * questionTokens.Intersect(chunkTokens).Count()) / (questionTokens.Count + chunkTokens.Count)
-            : 0d;
-        score += overlap * 3d;
-
-        foreach (Match match in Regex.Matches(normalizedQuestion, @"[a-z_][a-z0-9_]{3,}", RegexOptions.CultureInvariant))
-        {
-            if (normalizedChunk.Contains(match.Value, StringComparison.Ordinal))
-            {
-                score += 0.5d;
-            }
-        }
-
-        return score;
-    }
-
-    private static bool IsChunkInAnchoredFile(string chunkFilePath, QuestionAnchors anchors)
-    {
-        if (string.IsNullOrWhiteSpace(chunkFilePath))
-        {
-            return false;
-        }
-
-        var normalizedChunkFilePath = NormalizeForSimilarity(chunkFilePath);
-        if (anchors.FilePaths.Any(filePath => normalizedChunkFilePath.Contains(filePath, StringComparison.Ordinal)))
-        {
-            return true;
-        }
-
-        return anchors.FileNames.Any(fileName => normalizedChunkFilePath.EndsWith(fileName, StringComparison.Ordinal));
-    }
-
-    private static QuestionAnchors ExtractQuestionAnchors(string question)
-    {
-        var fileNames = Regex.Matches(question, @"\b[\w.-]+\.cs\b", RegexOptions.CultureInvariant)
-            .Select(match => NormalizeForSimilarity(match.Value))
-            .Distinct(StringComparer.Ordinal)
-            .ToArray();
-
-        var filePaths = Regex.Matches(question, @"[\w./\\-]+\.cs", RegexOptions.CultureInvariant)
-            .Select(match => NormalizeForSimilarity(match.Value))
-            .Where(path => path.Contains('/', StringComparison.Ordinal) || path.Contains('\\', StringComparison.Ordinal))
-            .Distinct(StringComparer.Ordinal)
-            .ToArray();
-
-        var methodNames = Regex.Matches(question, @"\b([A-Za-z_][A-Za-z0-9_]{4,})\s*\(", RegexOptions.CultureInvariant)
-            .Select(match => NormalizeForSimilarity(match.Groups[1].Value))
-            .Distinct(StringComparer.Ordinal)
-            .ToArray();
-
-        var signatures = ExtractCandidateCodeLines(question)
-            .Where(line => line.Contains('(') && (line.Contains("async ", StringComparison.OrdinalIgnoreCase) ||
-                                                  line.Contains("public ", StringComparison.OrdinalIgnoreCase) ||
-                                                  line.Contains("private ", StringComparison.OrdinalIgnoreCase) ||
-                                                  line.Contains("protected ", StringComparison.OrdinalIgnoreCase) ||
-                                                  line.Contains("internal ", StringComparison.OrdinalIgnoreCase)))
-            .Select(NormalizeForSimilarity)
-            .Distinct(StringComparer.Ordinal)
-            .ToArray();
-
-        var codeSnippets = ExtractCandidateCodeLines(question)
-            .Where(line => line.Length >= 18)
-            .Select(NormalizeForSimilarity)
-            .Where(line => line.Length >= 18)
-            .Distinct(StringComparer.Ordinal)
-            .ToArray();
-
-        return new QuestionAnchors(fileNames, filePaths, methodNames, signatures, codeSnippets);
-    }
-
-    private static IReadOnlyList<string> ExtractCandidateCodeLines(string question)
-    {
-        return question
-            .Replace("\r\n", "\n", StringComparison.Ordinal)
-            .Split(['\n', ';', '{', '}'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
-            .Select(line => line.Trim())
-            .Where(line =>
-                line.Length >= 10 &&
-                (line.Contains('(') ||
-                 line.Contains('=') ||
-                 line.Contains("await ", StringComparison.OrdinalIgnoreCase) ||
-                 line.Contains("return ", StringComparison.OrdinalIgnoreCase) ||
-                 line.Contains("if ", StringComparison.OrdinalIgnoreCase) ||
-                 line.Contains("if(", StringComparison.OrdinalIgnoreCase)))
-            .ToArray();
-    }
-
-    private static bool IsGeneralFollowUpQuestion(string question)
-    {
-        if (string.IsNullOrWhiteSpace(question))
-        {
-            return true;
-        }
-
-        var normalizedQuestion = NormalizeForSimilarity(question);
-        var hasSpecificFileAnchor =
-            normalizedQuestion.Contains(".cs", StringComparison.Ordinal) ||
-            normalizedQuestion.Contains("/", StringComparison.Ordinal) ||
-            normalizedQuestion.Contains("\\", StringComparison.Ordinal);
-        var hasSpecificLineAnchor = Regex.IsMatch(normalizedQuestion, @"\b(строк|line)\s*\d+\b", RegexOptions.CultureInvariant);
-        var hasSpecificMethodAnchor = Regex.IsMatch(question, @"\b[A-Za-z_][A-Za-z0-9_]{4,}\s*\(", RegexOptions.CultureInvariant);
-        var hasSpecificIdentifierAnchor = Regex.IsMatch(question, @"\b[a-z]+[A-Z][A-Za-z0-9]+\b", RegexOptions.CultureInvariant);
-
-        return !(hasSpecificFileAnchor || hasSpecificLineAnchor || hasSpecificMethodAnchor || hasSpecificIdentifierAnchor);
     }
 
     private static ParsedReviewDiscussionResult MergeReviewDiscussionResults(
@@ -2711,46 +2089,27 @@ public sealed class ReviewOrchestrator(
             : ReviewFindingSource.InitialReview;
     }
 
-    private sealed record QuestionAnchors(
-        IReadOnlyList<string> FileNames,
-        IReadOnlyList<string> FilePaths,
-        IReadOnlyList<string> MethodNames,
-        IReadOnlyList<string> Signatures,
-        IReadOnlyList<string> CodeSnippets);
-
-    private sealed record RankedChunk(int Index, string Chunk, double Score);
-
-    private sealed record SupplementalCandidateFile(
-        string FilePath,
-        string FullContent,
-        string Source);
-
-    private sealed record SupplementalFollowUpContext(
-        string FilePath,
-        int StartLine,
-        int EndLine,
-        string Content,
-        string Source,
-        string Preview);
-
     private sealed record FollowUpChunkSelection(
         FollowUpChunkSelectionMode Mode,
-        IReadOnlyList<string> Chunks);
+        IReadOnlyList<string> Chunks,
+        string Reason = "");
+
+    private sealed record FollowUpChunkSelectorDecision(
+        IReadOnlyList<int> SelectedChunkIndexes,
+        string Reason);
 
     private enum FollowUpChunkSelectionMode
     {
-        Semantic,
-        RelevantFallback,
-        AllChunks
+        SemanticLlm,
+        SemanticFallback
     }
 
     private static string ToLogValue(FollowUpChunkSelectionMode mode)
     {
         return mode switch
         {
-            FollowUpChunkSelectionMode.Semantic => "semantic",
-            FollowUpChunkSelectionMode.RelevantFallback => "relevant-fallback",
-            FollowUpChunkSelectionMode.AllChunks => "all-chunks",
+            FollowUpChunkSelectionMode.SemanticLlm => "semantic-llm",
+            FollowUpChunkSelectionMode.SemanticFallback => "semantic-fallback",
             _ => mode.ToString()
         };
     }

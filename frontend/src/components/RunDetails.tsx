@@ -2,7 +2,12 @@ import { useEffect, useState } from 'react';
 import { MarkdownBlock } from './MarkdownBlock';
 import { MermaidDiagram } from './MermaidDiagram';
 import { ReviewedFilesWorkspace, ThreadMessageBody } from './ReviewedFilesWorkspace';
-import type { ChangeDescriptionStructuredContent, InlineDiscussionOpportunityItem, ReviewRun } from '../lib/types';
+import type {
+  ChangeDescriptionStructuredContent,
+  InlineDiscussionOpportunityItem,
+  ReviewOpportunityItem,
+  ReviewRun
+} from '../lib/types';
 
 interface RunDetailsProps {
   run: ReviewRun | null;
@@ -28,18 +33,21 @@ export function RunDetails({
   const [isDiagramCollapsed, setIsDiagramCollapsed] = useState(true);
   const [isDescriptionCollapsed, setIsDescriptionCollapsed] = useState(true);
   const [isDiscussionCollapsed, setIsDiscussionCollapsed] = useState(true);
+  const [isPrimaryOpportunitiesCollapsed, setIsPrimaryOpportunitiesCollapsed] = useState(true);
   const [isOpportunitiesCollapsed, setIsOpportunitiesCollapsed] = useState(true);
   const [isReportCollapsed, setIsReportCollapsed] = useState(true);
   const [discussionDraft, setDiscussionDraft] = useState('');
   const [discussionBusy, setDiscussionBusy] = useState(false);
   const [discussionError, setDiscussionError] = useState('');
   const publishTargetLabel = getPublishTargetLabel(run?.pullRequestUrl);
+  const primaryOpportunities = run ? collectPrimaryOpportunities(run) : [];
   const followUpOpportunities = run ? collectFollowUpOpportunities(run) : [];
 
   useEffect(() => {
     setIsDiagramCollapsed(true);
     setIsDescriptionCollapsed(true);
     setIsDiscussionCollapsed(true);
+    setIsPrimaryOpportunitiesCollapsed(true);
     setIsOpportunitiesCollapsed(true);
     setIsReportCollapsed(true);
     setDiscussionDraft('');
@@ -185,11 +193,33 @@ export function RunDetails({
         />
       </div>
 
+      {primaryOpportunities.length ? (
+        <div className="subsection">
+          <div className="subsection-header">
+            <div>
+              <h3>Возможности для улучшения из первичного ревью</h3>
+              <p>Полезные улучшения, которые не попали в дефекты и риски.</p>
+            </div>
+            <div className="result-toolbar">
+              <button
+                aria-expanded={!isPrimaryOpportunitiesCollapsed}
+                className="secondary-button"
+                onClick={() => setIsPrimaryOpportunitiesCollapsed((value) => !value)}
+                type="button"
+              >
+                {isPrimaryOpportunitiesCollapsed ? 'Развернуть улучшения' : 'Свернуть улучшения'}
+              </button>
+            </div>
+          </div>
+          {!isPrimaryOpportunitiesCollapsed ? <OpportunitiesOverview items={primaryOpportunities} run={run} /> : null}
+        </div>
+      ) : null}
+
       {followUpOpportunities.length ? (
         <div className="subsection">
           <div className="subsection-header">
             <div>
-              <h3>Возможности для улучшения</h3>
+              <h3>Дополнительные возможности для улучшения</h3>
               <p>Полезные улучшения из блока «Спросить LLM по ревью», не добавленные в дефекты.</p>
             </div>
             <div className="result-toolbar">
@@ -340,6 +370,7 @@ function OpportunitiesOverview({ items, run }: { items: CollectedOpportunity[]; 
                   </div>
                 </div>
                 {item.description ? <p className="opportunity-description">{item.description}</p> : null}
+                {item.suggestion ? <p className="opportunity-description"><strong>Предложение:</strong> {item.suggestion}</p> : null}
                 {item.contextSnippet ? (
                   <div className="thread-snippet opportunity-snippet">
                     <p>Контекст кода ({item.contextStartLine}-{item.contextEndLine})</p>
@@ -365,10 +396,22 @@ function OpportunitiesOverview({ items, run }: { items: CollectedOpportunity[]; 
   );
 }
 
-type CollectedOpportunity = InlineDiscussionOpportunityItem & {
+type CollectedOpportunity = {
+  file: string;
+  lineHint: string;
+  startLine: number;
+  title: string;
+  description: string;
+  suggestion: string;
   exampleCode: string;
   exampleCodeLanguage: string;
 };
+
+function collectPrimaryOpportunities(run: ReviewRun): CollectedOpportunity[] {
+  return dedupeOpportunities(
+    run.primaryOpportunities.map((item) => toCollectedOpportunity(item))
+  );
+}
 
 function collectFollowUpOpportunities(run: ReviewRun): CollectedOpportunity[] {
   const items = run.reviewDiscussionMessages.flatMap((message) => {
@@ -378,15 +421,23 @@ function collectFollowUpOpportunities(run: ReviewRun): CollectedOpportunity[] {
     }
 
     if (structured.addedOpportunityItems?.length) {
-      return structured.addedOpportunityItems.map((item) => ({
-        ...item,
-        exampleCode: structured.exampleCode ?? '',
-        exampleCodeLanguage: structured.exampleCodeLanguage ?? ''
-      }));
+      const collectedItems = structured.addedOpportunityItems.map((item) => toCollectedOpportunity(item));
+
+      return assignExampleCodeToBestOpportunity(
+        collectedItems,
+        structured.exampleCode ?? '',
+        structured.exampleCodeLanguage ?? ''
+      );
     }
 
-    return (structured.addedOpportunities ?? []).map((summary) =>
-      parseOpportunitySummary(summary, structured.exampleCode ?? '', structured.exampleCodeLanguage ?? '')
+    const collectedItems = (structured.addedOpportunities ?? []).map((summary) =>
+      parseOpportunitySummary(summary)
+    );
+
+    return assignExampleCodeToBestOpportunity(
+      collectedItems,
+      structured.exampleCode ?? '',
+      structured.exampleCodeLanguage ?? ''
     );
   });
 
@@ -394,22 +445,21 @@ function collectFollowUpOpportunities(run: ReviewRun): CollectedOpportunity[] {
 }
 
 function parseOpportunitySummary(
-  summary: string,
-  exampleCode = '',
-  exampleCodeLanguage = ''
+  summary: string
 ): CollectedOpportunity {
   const trimmed = summary.trim();
   const fileMatch = trimmed.match(/^(.*?)(?:\s+\((строка\s+\d+|Line\s+\d+|[^)]+)\))?:\s+(.*)$/i);
   if (!fileMatch) {
-    return {
-      file: '',
-      lineHint: '',
-      startLine: 0,
-      title: trimmed,
-      description: '',
-      exampleCode,
-      exampleCodeLanguage
-    };
+      return {
+        file: '',
+        lineHint: '',
+        startLine: 0,
+        title: trimmed,
+        description: '',
+        suggestion: '',
+        exampleCode: '',
+        exampleCodeLanguage: ''
+      };
   }
 
   const [, rawFile = '', rawLineHint = '', rawTitle = ''] = fileMatch;
@@ -421,9 +471,84 @@ function parseOpportunitySummary(
     startLine: lineNumberMatch ? Number(lineNumberMatch[1]) : 0,
     title: rawTitle.trim(),
     description: '',
-    exampleCode,
-    exampleCodeLanguage
+    suggestion: '',
+    exampleCode: '',
+    exampleCodeLanguage: ''
   };
+}
+
+function toCollectedOpportunity(item: InlineDiscussionOpportunityItem | ReviewOpportunityItem): CollectedOpportunity {
+  return {
+    file: item.file,
+    lineHint: item.lineHint,
+    startLine: item.startLine,
+    title: item.title,
+    description: item.description,
+    suggestion: 'suggestion' in item ? item.suggestion ?? '' : '',
+    exampleCode: '',
+    exampleCodeLanguage: ''
+  };
+}
+
+function assignExampleCodeToBestOpportunity(
+  items: CollectedOpportunity[],
+  exampleCode: string,
+  exampleCodeLanguage: string
+): CollectedOpportunity[] {
+  if (!exampleCode.trim() || !items.length) {
+    return items;
+  }
+
+  if (items.length === 1) {
+    return items.map((item) => ({
+      ...item,
+      exampleCode,
+      exampleCodeLanguage
+    }));
+  }
+
+  let bestIndex = -1;
+  let bestScore = 0;
+  for (let index = 0; index < items.length; index += 1) {
+    const score = computeOpportunityCodeScore(items[index], exampleCode);
+    if (score > bestScore) {
+      bestScore = score;
+      bestIndex = index;
+    }
+  }
+
+  return items.map((item, index) => ({
+    ...item,
+    exampleCode: index === bestIndex && bestScore >= 3 ? exampleCode : '',
+    exampleCodeLanguage: index === bestIndex && bestScore >= 3 ? exampleCodeLanguage : ''
+  }));
+}
+
+function computeOpportunityCodeScore(item: CollectedOpportunity, exampleCode: string): number {
+  const normalizedCode = normalizeOpportunityPhrase(exampleCode);
+  if (!normalizedCode) {
+    return 0;
+  }
+
+  let score = 0;
+  const significantIdentifiers = extractCodeIdentifiers(`${item.title} ${item.description}`);
+  for (const identifier of significantIdentifiers) {
+    if (normalizedCode.includes(identifier.toLowerCase())) {
+      score += identifier.length >= 10 ? 5 : 3;
+    }
+  }
+
+  const opportunityTokens = buildOpportunityTokens(`${item.title} ${item.description}`);
+  const codeTokens = buildOpportunityTokens(exampleCode);
+  const overlap = opportunityTokens.filter((token) => codeTokens.includes(token)).length;
+  score += overlap;
+
+  return score;
+}
+
+function extractCodeIdentifiers(value: string): string[] {
+  const matches = value.match(/\b[A-Z][A-Za-z0-9_]{3,}\b/g) ?? [];
+  return [...new Set(matches)];
 }
 
 function dedupeOpportunities(items: CollectedOpportunity[]): CollectedOpportunity[] {
@@ -542,6 +667,7 @@ function mergeOpportunities(left: CollectedOpportunity, right: CollectedOpportun
     startLine: left.startLine || right.startLine,
     title: preferMoreSpecificTitle(left.title, right.title),
     description: preferLonger(left.description, right.description),
+    suggestion: preferLonger(left.suggestion, right.suggestion),
     exampleCode: preferLonger(left.exampleCode, right.exampleCode),
     exampleCodeLanguage: left.exampleCodeLanguage || right.exampleCodeLanguage
   };

@@ -625,6 +625,9 @@ public sealed class QdrantReviewSemanticIndex(
         [JsonPropertyName("chunk_text")]
         public string? ChunkText { get; init; }
 
+        [JsonPropertyName("file_path")]
+        public string? FilePath { get; init; }
+
         [JsonPropertyName("file")]
         public string? File { get; init; }
 

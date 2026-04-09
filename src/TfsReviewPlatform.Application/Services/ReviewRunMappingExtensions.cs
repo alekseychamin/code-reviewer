@@ -48,6 +48,7 @@ public static class ReviewRunMappingExtensions
             PublishSucceeded = run.PublishSucceeded,
             ChangedFiles = run.Artifacts.ChangedFiles,
             Findings = run.Findings.Select(MapFinding).ToArray(),
+            PrimaryOpportunities = run.Artifacts.PrimaryOpportunities.Select(MapOpportunity).ToArray(),
             FindingsComparison = run.Artifacts.FindingsComparison is null
                 ? null
                 : new FindingsComparisonDto
@@ -235,6 +236,19 @@ public static class ReviewRunMappingExtensions
             Description = finding.Description,
             ExistingCode = finding.ExistingCode,
             Suggestion = finding.Suggestion
+        };
+    }
+
+    private static ReviewOpportunityItemDto MapOpportunity(ReviewOpportunityItem opportunity)
+    {
+        return new ReviewOpportunityItemDto
+        {
+            File = opportunity.File,
+            LineHint = opportunity.LineHint,
+            StartLine = opportunity.StartLine,
+            Title = opportunity.Title,
+            Description = opportunity.Description,
+            Suggestion = opportunity.Suggestion
         };
     }
 }

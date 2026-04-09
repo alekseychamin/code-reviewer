@@ -46,7 +46,7 @@ public sealed class DiffPreprocessor(IOptions<ReviewPipelineOptions> options) : 
         var reviewChunks = BuildChunks(
             chunkSource,
             Math.Max(4000, options.Value.MaxPrimaryReviewChunkCharacters),
-            mergeFormattedChunks: true);
+            mergeFormattedChunks: false);
         var preparedChunks = BuildChunks(
             chunkSource,
             Math.Max(2000, options.Value.MaxChunkCharacters),
@@ -120,10 +120,16 @@ public sealed class DiffPreprocessor(IOptions<ReviewPipelineOptions> options) : 
 
         var header = string.Join('\n', lines[..firstHunkIndex]).TrimEnd('\n');
         var contentLines = lines[firstHunkIndex..];
-        var effectiveBudget = Math.Max(1000, maxCharacters - header.Length - 1);
-        var lineChunks = SplitLinesByBudget(contentLines, effectiveBudget);
+        var hunks = ExtractHunks(contentLines);
+        if (hunks.Count == 0)
+        {
+            return SplitByCharacterBudget(fileDiff, maxCharacters);
+        }
 
-        return lineChunks
+        var effectiveBudget = Math.Max(1000, maxCharacters - header.Length - 1);
+        var groupedHunks = GroupHunksByBudget(hunks, effectiveBudget);
+
+        return groupedHunks
             .Select(chunk => string.IsNullOrWhiteSpace(header)
                 ? chunk
                 : $"{header}\n{chunk}")
@@ -197,7 +203,9 @@ public sealed class DiffPreprocessor(IOptions<ReviewPipelineOptions> options) : 
 
             if (structuredHunk.Length + GetChunkHeaderLength(filePath) > maxCharacters)
             {
-                var oversizedHunkChunks = SplitByCharacterBudget(structuredHunk, Math.Max(1000, maxCharacters - GetChunkHeaderLength(filePath)))
+                var oversizedHunkChunks = SplitStructuredHunkByBudget(
+                        structuredHunk,
+                        Math.Max(1000, maxCharacters - GetChunkHeaderLength(filePath)))
                     .Select(part =>
                     {
                         var builder = new StringBuilder();
@@ -239,6 +247,13 @@ public sealed class DiffPreprocessor(IOptions<ReviewPipelineOptions> options) : 
         var builder = new StringBuilder();
         builder.AppendLine();
         builder.AppendLine(hunk[0]);
+
+        var scope = ExtractSectionHeader(hunk[0]);
+        if (!string.IsNullOrWhiteSpace(scope))
+        {
+            builder.Append("Context: ")
+                .AppendLine(scope);
+        }
 
         var (newHunk, oldHunk) = BuildStructuredHunk(hunk);
         builder.AppendLine("__new hunk__");
@@ -334,6 +349,20 @@ public sealed class DiffPreprocessor(IOptions<ReviewPipelineOptions> options) : 
             : 1;
     }
 
+    private static string ExtractSectionHeader(string hunkHeader)
+    {
+        var match = Regex.Match(
+            hunkHeader,
+            @"^@@ -\d+(?:,\d+)? \+\d+(?:,\d+)? @@\s*(.*)$",
+            RegexOptions.CultureInvariant);
+        if (!match.Success)
+        {
+            return string.Empty;
+        }
+
+        return match.Groups[1].Value.Trim();
+    }
+
     private static IReadOnlyList<string> SplitByCharacterBudget(string content, int maxCharacters)
     {
         var results = new List<string>();
@@ -344,6 +373,150 @@ public sealed class DiffPreprocessor(IOptions<ReviewPipelineOptions> options) : 
         }
 
         return results;
+    }
+
+    private static IReadOnlyList<string> SplitStructuredHunkByBudget(string structuredHunk, int maxCharacters)
+    {
+        var normalized = structuredHunk.Replace("\r\n", "\n", StringComparison.Ordinal).TrimEnd('\n');
+        if (normalized.Length <= maxCharacters)
+        {
+            return [normalized];
+        }
+
+        var lines = normalized.Split('\n');
+        var newHunkMarkerIndex = Array.FindIndex(lines, line => line == "__new hunk__");
+        if (newHunkMarkerIndex < 0)
+        {
+            return SplitByCharacterBudget(normalized, maxCharacters);
+        }
+
+        var oldHunkMarkerIndex = Array.FindIndex(lines, line => line == "__old hunk__");
+        var prefixLines = lines[..(newHunkMarkerIndex + 1)];
+        var newLines = oldHunkMarkerIndex >= 0
+            ? lines[(newHunkMarkerIndex + 1)..oldHunkMarkerIndex]
+            : lines[(newHunkMarkerIndex + 1)..];
+        var oldSectionLines = oldHunkMarkerIndex >= 0
+            ? lines[oldHunkMarkerIndex..]
+            : [];
+
+        var prefix = string.Join('\n', prefixLines).TrimEnd('\n');
+        var oldSection = oldSectionLines.Length > 0
+            ? "\n" + string.Join('\n', oldSectionLines).TrimEnd('\n')
+            : string.Empty;
+        var bodyBudget = Math.Max(200, maxCharacters - prefix.Length - oldSection.Length - 1);
+
+        var results = new List<string>();
+        var current = new StringBuilder(prefix);
+
+        foreach (var line in newLines)
+        {
+            var normalizedLine = "\n" + line;
+            if (current.Length > prefix.Length && current.Length + normalizedLine.Length > maxCharacters)
+            {
+                results.Add(current.ToString().TrimEnd());
+                current.Clear();
+                current.Append(prefix);
+            }
+
+            if (current.Length == prefix.Length && normalizedLine.Length > bodyBudget)
+            {
+                var lineParts = SplitByCharacterBudget(line, bodyBudget);
+                foreach (var part in lineParts)
+                {
+                    if (current.Length > prefix.Length)
+                    {
+                        results.Add(current.ToString().TrimEnd());
+                        current.Clear();
+                        current.Append(prefix);
+                    }
+
+                    current.Append('\n').Append(part);
+                    results.Add(current.ToString().TrimEnd());
+                    current.Clear();
+                    current.Append(prefix);
+                }
+
+                continue;
+            }
+
+            current.Append(normalizedLine);
+        }
+
+        if (!string.IsNullOrWhiteSpace(oldSection))
+        {
+            if (current.Length > prefix.Length && current.Length + oldSection.Length > maxCharacters)
+            {
+                results.Add(current.ToString().TrimEnd());
+                current.Clear();
+                current.Append(prefix);
+            }
+
+            current.Append(oldSection);
+        }
+
+        if (current.Length > prefix.Length || results.Count == 0)
+        {
+            results.Add(current.ToString().TrimEnd());
+        }
+
+        return results;
+    }
+
+    private static IReadOnlyList<string> GroupHunksByBudget(
+        IReadOnlyList<IReadOnlyList<string>> hunks,
+        int maxCharacters)
+    {
+        var results = new List<string>();
+        var current = new StringBuilder();
+        string? currentScope = null;
+
+        foreach (var hunk in hunks)
+        {
+            var hunkText = string.Join('\n', hunk).TrimEnd('\n');
+            var hunkScope = ExtractSectionHeader(hunk[0]);
+
+            if (hunkText.Length > maxCharacters)
+            {
+                if (current.Length > 0)
+                {
+                    results.Add(current.ToString().TrimEnd());
+                    current.Clear();
+                    currentScope = null;
+                }
+
+                results.Add(hunkText);
+                continue;
+            }
+
+            var needsSplitForBudget = current.Length > 0 && current.Length + 1 + hunkText.Length > maxCharacters;
+            var scopeChanged = current.Length > 0 &&
+                               !string.IsNullOrWhiteSpace(currentScope) &&
+                               !string.IsNullOrWhiteSpace(hunkScope) &&
+                               !string.Equals(currentScope, hunkScope, StringComparison.Ordinal) &&
+                               current.Length + 1 + hunkText.Length > (maxCharacters * 0.7);
+
+            if (needsSplitForBudget || scopeChanged)
+            {
+                results.Add(current.ToString().TrimEnd());
+                current.Clear();
+                currentScope = null;
+            }
+
+            if (current.Length > 0)
+            {
+                current.AppendLine();
+            }
+
+            current.Append(hunkText);
+            currentScope = string.IsNullOrWhiteSpace(hunkScope) ? currentScope : hunkScope;
+        }
+
+        if (current.Length > 0)
+        {
+            results.Add(current.ToString().TrimEnd());
+        }
+
+        return results.Count == 0 ? [string.Empty] : results;
     }
 
     private static string CompressForReviewContext(string fileDiff)

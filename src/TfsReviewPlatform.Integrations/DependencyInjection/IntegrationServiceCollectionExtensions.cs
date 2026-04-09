@@ -63,6 +63,7 @@ public static class IntegrationServiceCollectionExtensions
         services.AddSingleton<ShellGitCommandRunner>();
         services.AddSingleton<IBranchRepositoryLookupService, GitBranchRepositoryLookupService>();
         services.AddSingleton<IRepositoryFileContentService, GitRepositoryFileContentService>();
+        services.AddSingleton<IReviewWorkspaceToolExecutor, GitReviewWorkspaceToolExecutor>();
         services.AddSingleton<IBranchComparisonDiffService, BranchComparisonDiffService>();
         services.AddSingleton<IPullRequestDiffProvider, AzureDevOpsPullRequestDiffProvider>();
         services.AddSingleton<IPullRequestDiffProvider, GitHubPullRequestDiffProvider>();

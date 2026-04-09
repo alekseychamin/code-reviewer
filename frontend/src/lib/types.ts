@@ -81,6 +81,15 @@ export interface InlineDiscussionOpportunityItem {
   description: string;
 }
 
+export interface ReviewOpportunityItem {
+  file: string;
+  lineHint: string;
+  startLine: number;
+  title: string;
+  description: string;
+  suggestion: string;
+}
+
 export interface ReviewedFile {
   filePath: string;
   displayName: string;
@@ -121,6 +130,7 @@ export interface ReviewRun {
   publishSucceeded: boolean;
   changedFiles: string[];
   findings: ReviewFinding[];
+  primaryOpportunities: ReviewOpportunityItem[];
   reviewDiscussionMessages: ReviewCommentMessage[];
   inlineComments: InlineComment[];
   reviewedFiles: ReviewedFile[];

@@ -1,4 +1,5 @@
 using TfsReviewPlatform.Application.Abstractions;
+using TfsReviewPlatform.Application.Prompts;
 using TfsReviewPlatform.Domain.Enums;
 
 namespace TfsReviewPlatform.Integrations.Prompts;
@@ -47,61 +48,7 @@ public sealed class ReviewPromptFactory : IReviewPromptFactory
                 - Quote labels that contain spaces, slashes, parentheses, or Russian text
                 - Return an empty string if a diagram is not useful
                 """,
-            ReviewPipelineStage.ChunkReview => """
-                You are a Principal .NET Architect and strict code reviewer.
-                Answer in Russian.
-                Review the supplied diff chunk and return ONLY a valid JSON array.
-                Review context:
-                """ + "\n" + reviewContext + "\n\n" + """
-                Scope and priorities:
-                - Focus only on changed code in the supplied diff chunk, primarily added or modified logic
-                - Prioritize high-signal issues: security, reliability, race conditions, N+1, blocking async calls, resource leaks, architecture regressions, broken test intent, and real logic bugs
-                - Prefer returning fewer findings over noisy or speculative findings
-
-                Important review rules:
-                - Do not flag issues that are already fixed by the patch
-                - Do not suggest style-only, naming-only, formatting-only, comment-only, docstring-only, or type-hint-only changes
-                - Do not suggest adding imports, removing unused imports, or using a more specific exception type unless correctness directly depends on it
-                - Do not assume missing surrounding code is a bug; you only see a diff chunk, not the whole file or repository
-                - If the visible code ends at a scope boundary like if/for/try/method/class, do not treat that as incomplete code
-                - Do not question declarations, using directives, or helpers that may exist outside the shown diff unless the diff itself makes the defect clear
-                - Only report an issue when the visible changed code provides enough evidence
-                - All string fields must be plain text without markdown markers such as **, __, bullets, or fenced code blocks
-                - All human-readable output fields must be in Russian
-                - file must stay as the original file path from the diff
-                - existing_code must stay as the original code snippet from the diff
-                - line_hint may use method, class, or test identifiers from code and does not need translation
-
-                JSON item schema:
-                {
-                  "kind": "Defect | Risk",
-                  "file": "path/to/file.cs",
-                  "line_hint": "nearest method, class, or test name from the changed code",
-                  "start_line": 123,
-                  "end_line": 126,
-                  "type": "Security | Performance | Architecture | Bug | Reliability | Logic",
-                  "severity": "Critical | High | Medium | Low",
-                  "title": "short title, ideally 3-8 words",
-                  "description": "why this matters, concrete and concise",
-                  "existing_code": "code snippet from the changed lines only",
-                  "suggestion": "minimal mitigation or improved code"
-                }
-
-                Additional output rules:
-                - kind must be either Defect or Risk
-                - Every finding must describe a concrete defect or an operational risk directly evidenced by the changed code
-                - If an observation is mainly an improvement suggestion, refactoring idea, readability improvement, cleanup, or code-style preference, do not return it
-                - title, description, and suggestion must be written in Russian
-                - Only include findings that a human reviewer should realistically inspect before merge
-                - Do not propose alternative designs unless the current changed code is likely wrong, unsafe, or materially inefficient
-                - Do not suggest extra validation, null checks, logging, retries, caching, or abstractions unless the diff shows a realistic failing path
-                - Use Low severity sparingly; if the issue would not change a reviewer decision, omit it
-                - start_line and end_line must refer to the changed code in the new version of the file
-                - If you know only one exact line, set start_line and end_line to the same value
-                - suggestion must stay narrowly scoped to the reported defect or risk; use an empty string if no safe fix can be inferred
-                - If there are no clear issues, return []
-                If there are no issues, return [].
-                """,
+            ReviewPipelineStage.ChunkReview => BuildChunkReviewSystemPrompt(reviewContext),
             _ => string.Empty
         };
     }
@@ -114,5 +61,104 @@ public sealed class ReviewPromptFactory : IReviewPromptFactory
             ReviewPipelineStage.ChunkReview => $"Review this diff chunk:\n\n{payload}",
             _ => payload
         };
+    }
+
+    public string BuildChunkReviewSystemPrompt(string reviewContext, string? additionalRules = null)
+    {
+        var extraRulesBlock = string.IsNullOrWhiteSpace(additionalRules)
+            ? string.Empty
+            : additionalRules.Trim() + "\n\n";
+
+        return """
+            You are a Principal .NET Architect and strict code reviewer.
+            Answer in Russian.
+            Review the supplied diff chunk and return ONLY a valid JSON object with keys "findings", "opportunities", "need_more_context", and "tool_requests".
+            Review context:
+            """ + "\n" + reviewContext + "\n\n" + """
+            Scope and priorities:
+            - Focus only on changed code in the supplied diff chunk, primarily added or modified logic
+            - Prioritize high-signal issues: security, reliability, race conditions, N+1, blocking async calls, resource leaks, architecture regressions, broken test intent, and real logic bugs
+            - Prefer returning fewer findings over noisy or speculative findings
+            - Prefer an empty findings list over uncertain or low-confidence findings
+            - Also capture useful non-blocking improvements separately as opportunities
+
+            """ + ReviewPromptGuardrails.FactualReviewGuardrails + "\n\n" + ReviewPromptSpecialRules.PrimaryReviewSpecialRules + "\n\n" + extraRulesBlock + """
+
+            Important review rules:
+            - Do not flag issues that are already fixed by the patch
+            - Do not suggest style-only, naming-only, formatting-only, comment-only, docstring-only, or type-hint-only changes
+            - Do not suggest adding imports, removing unused imports, or using a more specific exception type unless correctness directly depends on it
+            - If the visible code ends at a scope boundary like if/for/try/method/class, do not treat that as incomplete code
+            - Do not question declarations, using directives, or helpers that may exist outside the shown diff unless the diff itself makes the defect clear
+            - All string fields must be plain text without markdown markers such as **, __, bullets, or fenced code blocks
+            - All human-readable output fields must be in Russian
+            - file must stay as the original file path from the diff
+            - existing_code must stay as the original code snippet from the diff
+            - line_hint may use method, class, or test identifiers from code and does not need translation
+
+            JSON schema:
+            {
+              "findings": [
+                {
+                  "kind": "Defect | Risk",
+                  "file": "path/to/file.cs",
+                  "line_hint": "nearest method, class, or test name from the changed code",
+                  "start_line": 123,
+                  "end_line": 126,
+                  "type": "Security | Performance | Architecture | Bug | Reliability | Logic",
+                  "severity": "Critical | High | Medium | Low",
+                  "title": "short title, ideally 3-8 words",
+                  "description": "why this matters, plus the concrete trigger scenario or failure mode, concise and specific",
+                  "existing_code": "code snippet from the changed lines only",
+                  "suggestion": "minimal mitigation or improved code"
+                }
+              ],
+              "opportunities": [
+                {
+                  "file": "path/to/file.cs",
+                  "line_hint": "nearest method, class, or test name from the changed code",
+                  "start_line": 123,
+                  "title": "short improvement title",
+                  "description": "what can be improved and why",
+                  "suggestion": "concise improvement direction"
+                }
+              ],
+              "need_more_context": false,
+              "tool_requests": [
+                {
+                  "tool_name": "find_files | find_usage | grep_code | read_file",
+                  "query": "optional search query, symbol name, file name fragment, or SQL fragment",
+                  "file_path": "repository-relative file path when known",
+                  "path_scope": "optional folder or feature scope",
+                  "reason": "why this file is needed",
+                  "start_line": 1,
+                  "max_lines": 200
+                }
+              ]
+            }
+
+            Additional output rules:
+            - kind must be either Defect or Risk
+            - Every finding must describe a concrete defect or an operational risk directly evidenced by the changed code
+            - Every finding description must name a realistic trigger scenario, failing path, or concrete condition where the issue manifests
+            - title, description, and suggestion must be written in Russian
+            - Only include findings that a human reviewer should realistically inspect before merge
+            - Do not propose alternative designs unless the current changed code is likely wrong, unsafe, or materially inefficient
+            - Do not suggest extra validation, null checks, logging, retries, caching, or abstractions unless the diff shows a realistic failing path
+            - Use Low severity sparingly; if the issue would not change a reviewer decision, omit it
+            - start_line and end_line must refer to the changed code in the new version of the file
+            - If you know only one exact line, set start_line and end_line to the same value
+            - suggestion must stay narrowly scoped to the reported defect or risk; use an empty string if no safe fix can be inferred
+            - opportunities must stay grounded in the shown code and should not rest on hidden infrastructure assumptions
+            - If the shown diff chunk is sufficient, return need_more_context=false and tool_requests=[]
+            - Request extra context only when it is necessary to avoid speculation
+            - tool_requests must contain at most 3 items
+            - Use find_files when the file path is uncertain
+            - Use find_usage when you need callers, consumers, or usage sites of a symbol, query-like method, or SQL use-case
+            - Use grep_code when you need to discover the exact file or line before reading
+            - Use read_file when the target path is already known or strongly inferable
+            - If there are no clear defects, return "findings": []
+            - If there are no useful improvement opportunities, return "opportunities": []
+            """;
     }
 }

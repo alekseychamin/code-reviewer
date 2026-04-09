@@ -44,27 +44,23 @@ public sealed class DiffPreprocessorTests
             MaxChunkCharacters = 120
         }));
 
-        var diff = """
+        var longPayload = new string('x', 420);
+        var alphaLines = string.Join('\n', Enumerable.Range(1, 5).Select(index => $"+line {index:00} {longPayload}"));
+        var betaLines = string.Join('\n', Enumerable.Range(6, 5).Select(index => $"+line {index:00} {longPayload}"));
+        var diff = $"""
             diff --git a/src/App/HugeFile.cs b/src/App/HugeFile.cs
             +++ b/src/App/HugeFile.cs
             @@ -1,1 +1,6 @@
-            +line 01 1234567890
-            +line 02 1234567890
-            +line 03 1234567890
-            +line 04 1234567890
-            +line 05 1234567890
+            {alphaLines}
             @@ -10,1 +15,6 @@
-            +line 06 1234567890
-            +line 07 1234567890
-            +line 08 1234567890
-            +line 09 1234567890
-            +line 10 1234567890
+            {betaLines}
             """;
 
         var result = sut.Process(diff);
 
         Assert.True(result.Chunks.Count >= 2);
-        Assert.All(result.Chunks, chunk => Assert.True(chunk.Length <= 160));
+        Assert.All(result.Chunks, chunk => Assert.Contains("## File: 'src/App/HugeFile.cs'", chunk, StringComparison.Ordinal));
+        Assert.All(result.Chunks, chunk => Assert.Contains("__new hunk__", chunk, StringComparison.Ordinal));
     }
 
     [Fact]
@@ -158,6 +154,7 @@ public sealed class DiffPreprocessorTests
         Assert.Contains("## File: 'src/App/Service.cs'", chunk);
         Assert.Contains("__new hunk__", chunk);
         Assert.Contains("__old hunk__", chunk);
+        Assert.Contains("Context: public async Task Handle()", chunk);
         Assert.Contains("  10  existing line", chunk);
         Assert.Contains("  11 +new line 1", chunk);
         Assert.Contains("-old line 1", chunk);
@@ -171,25 +168,93 @@ public sealed class DiffPreprocessorTests
             MaxChunkCharacters = 220
         }));
 
-        var diff = """
+        var longPayload = new string('y', 420);
+        var alphaLines = string.Join('\n', Enumerable.Range(1, 3).Select(index => $"+alpha {index:00} {longPayload}"));
+        var betaLines = string.Join('\n', Enumerable.Range(1, 3).Select(index => $"+beta {index:00} {longPayload}"));
+        var diff = $"""
             diff --git a/src/App/HugeFile.cs b/src/App/HugeFile.cs
             --- a/src/App/HugeFile.cs
             +++ b/src/App/HugeFile.cs
             @@ -10,1 +10,4 @@
-            +alpha 01 1234567890
-            +alpha 02 1234567890
-            +alpha 03 1234567890
+            {alphaLines}
             @@ -200,1 +203,4 @@
-            +beta 01 1234567890
-            +beta 02 1234567890
-            +beta 03 1234567890
+            {betaLines}
             """;
 
         var result = sut.Process(diff);
 
         Assert.True(result.Chunks.Count >= 2);
-        Assert.Contains(result.Chunks, chunk => chunk.Contains("alpha 01 1234567890", StringComparison.Ordinal));
-        Assert.Contains(result.Chunks, chunk => chunk.Contains("beta 01 1234567890", StringComparison.Ordinal));
+        Assert.Contains(result.Chunks, chunk => chunk.Contains("alpha 01 ", StringComparison.Ordinal));
+        Assert.Contains(result.Chunks, chunk => chunk.Contains("beta 01 ", StringComparison.Ordinal));
+        Assert.DoesNotContain(
+            result.Chunks,
+            chunk => chunk.Contains("alpha 01 ", StringComparison.Ordinal) &&
+                     chunk.Contains("beta 01 ", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void Process_DoesNotMergePrimaryReviewChunksAcrossDifferentFiles()
+    {
+        var sut = new DiffPreprocessor(Microsoft.Extensions.Options.Options.Create(new ReviewPipelineOptions
+        {
+            MaxPrimaryReviewChunkCharacters = 10000,
+            MaxChunkCharacters = 10000
+        }));
+
+        var diff = """
+            diff --git a/src/App/First.cs b/src/App/First.cs
+            --- a/src/App/First.cs
+            +++ b/src/App/First.cs
+            @@ -1,1 +1,2 @@
+            +public class First {}
+            diff --git a/src/App/Second.cs b/src/App/Second.cs
+            --- a/src/App/Second.cs
+            +++ b/src/App/Second.cs
+            @@ -1,1 +1,2 @@
+            +public class Second {}
+            """;
+
+        var result = sut.Process(diff);
+
+        Assert.Equal(2, result.ReviewChunks.Count);
+        Assert.Contains(result.ReviewChunks, chunk => chunk.Contains("## File: 'src/App/First.cs'", StringComparison.Ordinal));
+        Assert.Contains(result.ReviewChunks, chunk => chunk.Contains("## File: 'src/App/Second.cs'", StringComparison.Ordinal));
+        Assert.DoesNotContain(
+            result.ReviewChunks,
+            chunk => chunk.Contains("## File: 'src/App/First.cs'", StringComparison.Ordinal) &&
+                     chunk.Contains("## File: 'src/App/Second.cs'", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void Process_SplitsOversizedFileByWholeHunksAndKeepsStructuredFormat()
+    {
+        var sut = new DiffPreprocessor(Microsoft.Extensions.Options.Options.Create(new ReviewPipelineOptions
+        {
+            MaxChunkCharacters = 220
+        }));
+
+        var longPayload = new string('z', 420);
+        var alphaLines = string.Join('\n', Enumerable.Range(1, 3).Select(index => $"+alpha {index:00} {longPayload}"));
+        var betaLines = string.Join('\n', Enumerable.Range(1, 3).Select(index => $"+beta {index:00} {longPayload}"));
+        var diff = $"""
+            diff --git a/src/App/HugeFile.cs b/src/App/HugeFile.cs
+            --- a/src/App/HugeFile.cs
+            +++ b/src/App/HugeFile.cs
+            @@ -10,1 +10,4 @@ public void Alpha()
+             old line
+            {alphaLines}
+            @@ -30,1 +33,4 @@ public void Beta()
+             old line
+            {betaLines}
+            """;
+
+        var result = sut.Process(diff);
+
+        Assert.True(result.Chunks.Count >= 2);
+        Assert.All(result.Chunks, chunk => Assert.Contains("## File: 'src/App/HugeFile.cs'", chunk, StringComparison.Ordinal));
+        Assert.All(result.Chunks, chunk => Assert.Contains("__new hunk__", chunk, StringComparison.Ordinal));
+        Assert.Contains(result.Chunks, chunk => chunk.Contains("Context: public void Alpha()", StringComparison.Ordinal));
+        Assert.Contains(result.Chunks, chunk => chunk.Contains("Context: public void Beta()", StringComparison.Ordinal));
         Assert.DoesNotContain(
             result.Chunks,
             chunk => chunk.Contains("alpha 01 1234567890", StringComparison.Ordinal) &&
