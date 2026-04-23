@@ -1,0 +1,11 @@
+.git
+.idea
+.qodo
+.codex
+.DS_Store
+
+**/bin
+**/obj
+**/node_modules
+
+frontend/dist
