@@ -69,6 +69,10 @@ If you want persistent review history in PostgreSQL, start the database profile 
 With the default `.env.example` values, the API will then store full review history, findings, diagrams, markdown reports, and inline discussion threads in PostgreSQL through:
 `POSTGRES_CONNECTION_STRING=Host=postgres;Port=5432;Database=tfs_review;Username=tfs_review;Password=tfs_review`
 
+The `postgres` service is exposed only inside the docker compose network. It is reachable from the `api` container as `postgres:5432`, but it is not published on the host machine, which avoids local port conflicts with another PostgreSQL instance.
+
+The `qdrant` service follows the same internal-only network model. It is reachable from the `api` container as `qdrant:6333`, but port `6333` is not published on the host machine.
+
 `docker-compose.yml` uses `env_file: .env`, so the same local file can hold LLM API keys, PR platform tokens, PostgreSQL settings, and frontend runtime settings for local development. In compose mode the frontend uses same-origin `/api` requests and Vite proxies them to the `api` service, which is more reliable than calling `localhost:8080` directly from the browser. Pull request review and publishing tokens are read on the backend from environment variables, so they no longer need to be entered in the UI.
 
 ## Pull request platforms

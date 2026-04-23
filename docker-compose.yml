@@ -56,8 +56,6 @@ services:
       - POSTGRES_DB=${POSTGRES_DB:-tfs_review}
       - POSTGRES_USER=${POSTGRES_USER:-tfs_review}
       - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-tfs_review}
-    ports:
-      - "5432:5432"
     volumes:
       - postgres-data:/var/lib/postgresql/data
     profiles:
@@ -66,8 +64,6 @@ services:
   qdrant:
     image: qdrant/qdrant:latest
     restart: unless-stopped
-    ports:
-      - "6333:6333"
     volumes:
       - qdrant-data:/qdrant/storage
     profiles:
