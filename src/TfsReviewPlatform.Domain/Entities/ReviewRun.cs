@@ -105,7 +105,16 @@ public sealed class ReviewRun
     {
         lock (_gate)
         {
-            Artifacts = artifacts;
+            Artifacts = PreserveProgressUpdates(artifacts);
+            UpdatedAt = DateTimeOffset.UtcNow;
+        }
+    }
+
+    public void RecordProgress(ReviewProgressUpdate update)
+    {
+        lock (_gate)
+        {
+            Artifacts = CopyArtifacts(Artifacts, [.. Artifacts.ProgressUpdates, update]);
             UpdatedAt = DateTimeOffset.UtcNow;
         }
     }
@@ -132,7 +141,7 @@ public sealed class ReviewRun
             CurrentMessage = "Review completed";
             UpdatedAt = DateTimeOffset.UtcNow;
             Findings = findings;
-            Artifacts = artifacts;
+            Artifacts = PreserveProgressUpdates(artifacts);
             PublishSucceeded = publishSucceeded;
             ErrorMessage = null;
         }
@@ -192,5 +201,46 @@ public sealed class ReviewRun
             CurrentMessage = errorMessage;
             UpdatedAt = DateTimeOffset.UtcNow;
         }
+    }
+
+    public void Cancel(string message)
+    {
+        lock (_gate)
+        {
+            Status = ReviewRunStatus.Cancelled;
+            ErrorMessage = null;
+            CurrentMessage = message;
+            UpdatedAt = DateTimeOffset.UtcNow;
+        }
+    }
+
+    private ReviewArtifacts PreserveProgressUpdates(ReviewArtifacts artifacts)
+    {
+        return artifacts.ProgressUpdates.Count > 0
+            ? artifacts
+            : CopyArtifacts(artifacts, Artifacts.ProgressUpdates);
+    }
+
+    private static ReviewArtifacts CopyArtifacts(
+        ReviewArtifacts artifacts,
+        IReadOnlyList<ReviewProgressUpdate> progressUpdates)
+    {
+        return new ReviewArtifacts
+        {
+            DiffText = artifacts.DiffText,
+            PreparedChunks = artifacts.PreparedChunks,
+            ChangedFiles = artifacts.ChangedFiles,
+            ChangeDescription = artifacts.ChangeDescription,
+            ChangeDescriptionStructured = artifacts.ChangeDescriptionStructured,
+            ChangeDiagramMermaid = artifacts.ChangeDiagramMermaid,
+            MarkdownReport = artifacts.MarkdownReport,
+            SummaryComment = artifacts.SummaryComment,
+            ReviewDiscussionMessages = artifacts.ReviewDiscussionMessages,
+            InlineComments = artifacts.InlineComments,
+            ReviewedFiles = artifacts.ReviewedFiles,
+            PrimaryOpportunities = artifacts.PrimaryOpportunities,
+            FindingsComparison = artifacts.FindingsComparison,
+            ProgressUpdates = progressUpdates
+        };
     }
 }

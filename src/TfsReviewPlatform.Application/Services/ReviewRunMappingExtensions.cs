@@ -40,7 +40,7 @@ public static class ReviewRunMappingExtensions
             UpdatedAt = run.UpdatedAt,
             ChangeDescription = run.Artifacts.ChangeDescription,
             ChangeDescriptionStructured = MapChangeDescription(run.Artifacts.ChangeDescriptionStructured),
-            ChangeDiagramMermaid = run.Artifacts.ChangeDiagramMermaid,
+            ChangeDiagramMermaid = MermaidDiagramNormalizer.Normalize(run.Artifacts.ChangeDiagramMermaid),
             HasDiffArtifact = !string.IsNullOrWhiteSpace(run.Artifacts.DiffText),
             MarkdownReport = run.Artifacts.MarkdownReport,
             HasMarkdownReportArtifact = !string.IsNullOrWhiteSpace(run.Artifacts.MarkdownReport),
@@ -59,6 +59,7 @@ public static class ReviewRunMappingExtensions
                     NewFindingsCount = run.Artifacts.FindingsComparison.NewFindingsCount,
                     StillRelevantFindingsCount = run.Artifacts.FindingsComparison.StillRelevantFindingsCount,
                     ResolvedFindingsCount = run.Artifacts.FindingsComparison.ResolvedFindingsCount,
+                    IsDiffUnchanged = run.Artifacts.FindingsComparison.IsDiffUnchanged,
                     NewFindings = run.Artifacts.FindingsComparison.NewFindings.Select(MapFinding).ToArray(),
                     StillRelevantFindings = run.Artifacts.FindingsComparison.StillRelevantFindings.Select(MapFinding).ToArray(),
                     ResolvedFindings = run.Artifacts.FindingsComparison.ResolvedFindings.Select(MapFinding).ToArray()
@@ -140,6 +141,16 @@ public static class ReviewRunMappingExtensions
                         StructuredContent = MapStructuredContent(message.StructuredContent)
                     }).ToArray()
                 }).ToArray()
+            }).ToArray(),
+            ProgressUpdates = run.Artifacts.ProgressUpdates.Select(update => new ReviewProgressUpdateDto
+            {
+                RunId = update.RunId,
+                Status = update.Status,
+                Stage = update.Stage,
+                ProgressPercent = update.ProgressPercent,
+                Message = update.Message,
+                Timestamp = update.Timestamp,
+                IsTerminal = update.IsTerminal
             }).ToArray()
         };
     }

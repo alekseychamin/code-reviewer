@@ -13,6 +13,10 @@ public sealed class StartPullRequestReviewRequest
 
     public PublishMode PublishMode { get; init; }
 
+    public bool ForceRerun { get; init; }
+
+    public Guid? BaselineRunId { get; init; }
+
     public string? AccessToken { get; init; }
 
     public string? AzureDevOpsAccessToken { get; init; }

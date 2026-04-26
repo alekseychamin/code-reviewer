@@ -100,6 +100,43 @@ public sealed class FindingsComparisonServiceTests
         Assert.Equal(0, comparison.ResolvedFindingsCount);
     }
 
+    [Fact]
+    public void CompareUnchangedDiff_SuppressesNewAndResolvedBucketsForRerun()
+    {
+        var sut = new FindingsComparisonService();
+        var previous = new[]
+        {
+            CreateFinding(
+                "src/App/Service.cs",
+                "Possible null dereference",
+                "return request.Value.Length;",
+                FindingSeverity.High),
+            CreateFinding(
+                "src/App/Cache.cs",
+                "Cache ttl is unused",
+                "_cacheTtlMinutes = options.Value.Ttl;",
+                FindingSeverity.Medium)
+        };
+        var current = new[]
+        {
+            CreateFinding(
+                "src/App/Service.cs",
+                "Request value may be null",
+                "return request.Value.Length;",
+                FindingSeverity.High)
+        };
+
+        var comparison = sut.CompareUnchangedDiff(Guid.NewGuid(), previous, current);
+
+        Assert.True(comparison.IsDiffUnchanged);
+        Assert.Equal(0, comparison.NewFindingsCount);
+        Assert.Equal(1, comparison.StillRelevantFindingsCount);
+        Assert.Equal(0, comparison.ResolvedFindingsCount);
+        Assert.Empty(comparison.NewFindings);
+        Assert.Empty(comparison.ResolvedFindings);
+        Assert.Single(comparison.StillRelevantFindings);
+    }
+
     private static ReviewFinding CreateFinding(
         string file,
         string title,

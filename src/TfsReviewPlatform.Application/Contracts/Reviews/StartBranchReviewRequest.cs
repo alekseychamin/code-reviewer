@@ -18,5 +18,9 @@ public sealed class StartBranchReviewRequest
 
     public PublishMode PublishMode { get; init; }
 
+    public bool ForceRerun { get; init; }
+
+    public Guid? BaselineRunId { get; init; }
+
     public List<StageRouteOverrideDto> StageOverrides { get; init; } = [];
 }

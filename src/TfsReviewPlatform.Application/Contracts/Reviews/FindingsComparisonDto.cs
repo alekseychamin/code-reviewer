@@ -14,6 +14,8 @@ public sealed class FindingsComparisonDto
 
     public int ResolvedFindingsCount { get; init; }
 
+    public bool IsDiffUnchanged { get; init; }
+
     public IReadOnlyList<ReviewFindingDto> NewFindings { get; init; } = [];
 
     public IReadOnlyList<ReviewFindingDto> StillRelevantFindings { get; init; } = [];

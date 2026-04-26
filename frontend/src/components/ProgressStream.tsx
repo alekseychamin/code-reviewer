@@ -43,7 +43,20 @@ export function ProgressStream({ run, events }: ProgressStreamProps) {
 
       {!isTimelineCollapsed ? (
         <div className="timeline">
-          {events.length === 0 ? (
+          {events.length === 0 && run ? (
+            <div className="timeline-item">
+              <span className="timeline-stage">{toRussianStage(run.currentStage) ?? toRussianStatus(run.status)}</span>
+              <span>{translateProgressMessage(run.currentMessage) || toRussianStatus(run.status)}</span>
+              <time>
+                {new Date(run.updatedAt).toLocaleTimeString('ru-RU', {
+                  hour: '2-digit',
+                  minute: '2-digit',
+                  second: '2-digit',
+                  hour12: false
+                })}
+              </time>
+            </div>
+          ) : events.length === 0 ? (
             <div className="timeline-item muted">Ожидание первого запуска ревью.</div>
           ) : (
             events.map((event, index) => (
@@ -77,6 +90,8 @@ function toRussianStatus(status: string | undefined): string {
       return 'Завершено';
     case 'Failed':
       return 'Ошибка';
+    case 'Cancelled':
+      return 'Остановлено';
     default:
       return status ?? '';
   }
@@ -117,7 +132,9 @@ function translateProgressMessage(message: string | undefined): string {
     'File review workspace generated': 'Рабочее пространство по файлам подготовлено',
     'Final report generated': 'Финальный отчёт сформирован',
     'Publishing review comments': 'Публикация комментариев ревью',
-    'Review completed': 'Ревью завершено'
+    'Review completed': 'Ревью завершено',
+    'Остановка ревью запрошена пользователем.': 'Остановка ревью запрошена пользователем.',
+    'Ревью остановлено пользователем.': 'Ревью остановлено пользователем.'
   };
 
   if (directMap[message]) {

@@ -96,6 +96,23 @@ public sealed class PostgresReviewRunRepository(string connectionString) : IRevi
         await command.ExecuteNonQueryAsync(cancellationToken);
     }
 
+    public async Task DeleteAsync(Guid id, CancellationToken cancellationToken)
+    {
+        await EnsureInitializedAsync(cancellationToken);
+
+        await using var connection = new NpgsqlConnection(connectionString);
+        await connection.OpenAsync(cancellationToken);
+
+        await using var command = connection.CreateCommand();
+        command.CommandText = """
+            delete from review_runs
+            where id = @id;
+            """;
+        command.Parameters.AddWithValue("id", id);
+
+        await command.ExecuteNonQueryAsync(cancellationToken);
+    }
+
     public async Task<ReviewRun?> FindLatestCompletedForTargetAsync(
         ReviewTargetDescriptor target,
         DateTimeOffset createdBefore,

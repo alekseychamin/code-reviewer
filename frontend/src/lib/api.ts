@@ -110,6 +110,18 @@ export async function getReviewRun(runId: string): Promise<ReviewRun> {
   return request<ReviewRun>(`/api/reviews/${runId}`);
 }
 
+export async function deleteReviewRun(runId: string): Promise<void> {
+  await request<void>(`/api/reviews/${runId}`, {
+    method: 'DELETE'
+  });
+}
+
+export async function stopReviewRun(runId: string): Promise<ReviewRun> {
+  return request<ReviewRun>(`/api/reviews/${runId}/stop`, {
+    method: 'POST'
+  });
+}
+
 export async function getPullRequestReviewHistory(pullRequestUrl: string): Promise<ReviewHistory> {
   const query = new URLSearchParams({ pullRequestUrl });
   return request<ReviewHistory>(`/api/reviews/history/pull-requests?${query.toString()}`);
@@ -209,6 +221,16 @@ export async function continueReviewDiscussion(runId: string, message: string): 
   return request<ReviewRun>(`/api/reviews/${runId}/discussion`, {
     method: 'POST',
     body: JSON.stringify({ message })
+  });
+}
+
+export async function regenerateReviewArtifacts(
+  runId: string,
+  options: { regenerateDescription: boolean; regenerateDiagram: boolean }
+): Promise<ReviewRun> {
+  return request<ReviewRun>(`/api/reviews/${runId}/artifacts/regenerate`, {
+    method: 'POST',
+    body: JSON.stringify(options)
   });
 }
 

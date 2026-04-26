@@ -5,4 +5,6 @@ namespace TfsReviewPlatform.Application.Abstractions;
 public interface IBackgroundReviewScheduler
 {
     void Schedule(Guid runId, ReviewExecutionRequest request);
+
+    bool Stop(Guid runId);
 }

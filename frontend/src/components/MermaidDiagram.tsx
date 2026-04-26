@@ -1,5 +1,5 @@
 import mermaid from 'mermaid';
-import { useEffect, useId, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 
 interface MermaidDiagramProps {
   chart: string;
@@ -12,7 +12,7 @@ mermaid.initialize({
 });
 
 export function MermaidDiagram({ chart }: MermaidDiagramProps) {
-  const id = useId().replace(/:/g, '-');
+  const renderAttemptRef = useRef(0);
   const [svg, setSvg] = useState<string>('');
   const [error, setError] = useState<string | null>(null);
 
@@ -21,18 +21,23 @@ export function MermaidDiagram({ chart }: MermaidDiagramProps) {
 
     async function render(): Promise<void> {
       try {
-        const candidates = [chart, normalizeMermaidChart(chart)];
+        const renderAttempt = ++renderAttemptRef.current;
+        const candidates = Array.from(new Set([chart.trim(), normalizeMermaidChart(chart)]))
+          .filter((candidate) => candidate.length > 0);
         let lastError: unknown = null;
+
+        setSvg('');
+        setError(null);
 
         for (let index = 0; index < candidates.length; index++) {
           try {
-            const result = await mermaid.render(`diagram-${id}-${index}`, candidates[index]);
+            const result = await mermaid.render(buildRenderId(renderAttempt, index), candidates[index]);
             if (!active) {
               return;
             }
 
             setSvg(result.svg);
-            setError(index === 0 ? null : 'Диаграмма была автоматически скорректирована для рендера Mermaid.');
+            setError(null);
             return;
           } catch (reason) {
             lastError = reason;
@@ -60,7 +65,7 @@ export function MermaidDiagram({ chart }: MermaidDiagramProps) {
     return () => {
       active = false;
     };
-  }, [chart, id]);
+  }, [chart]);
 
   if (error) {
     return (
@@ -78,13 +83,24 @@ export function MermaidDiagram({ chart }: MermaidDiagramProps) {
   return <div className="mermaid-diagram" dangerouslySetInnerHTML={{ __html: svg }} />;
 }
 
+function buildRenderId(renderAttempt: number, candidateIndex: number): string {
+  const randomPart = Math.random().toString(36).slice(2);
+  return `diagram-${Date.now()}-${renderAttempt}-${candidateIndex}-${randomPart}`;
+}
+
 function normalizeMermaidChart(chart: string): string {
   const stripped = chart
     .replace(/```mermaid/gi, '')
     .replace(/```/g, '')
     .trim();
 
-  const sanitized = stripped
+  const withJsonEscapes = stripped
+    .replace(/\\r\\n/g, '<br/>')
+    .replace(/\\n/g, '<br/>')
+    .replace(/\\r/g, '<br/>')
+    .replace(/\\t/g, ' ');
+
+  const sanitized = withJsonEscapes
     .replace(/\[\]/g, '()')
     .replace(/<br\s*\/?>/gi, '<br/>');
 
@@ -109,7 +125,9 @@ function normalizeMermaidLine(line: string): string {
     return line;
   }
 
-  return line.replace(
+  const withLegacyTextEdges = normalizeLegacyQuotedTextEdges(line);
+  const withNormalizedEdgeLabel = normalizeMermaidEdgeLabel(withLegacyTextEdges);
+  return withNormalizedEdgeLabel.replace(
     /\b([A-Za-z][A-Za-z0-9_]*)\s*\[\((.*?)\)\]|\b([A-Za-z][A-Za-z0-9_]*)\s*\[(.*?)\]/g,
     (_, cylinderId: string, cylinderLabel: string, boxId: string, boxLabel: string) => {
       const nodeId = cylinderId || boxId;
@@ -118,11 +136,62 @@ function normalizeMermaidLine(line: string): string {
     });
 }
 
-function sanitizeNodeLabel(label: string): string {
+function normalizeMermaidEdgeLabel(line: string): string {
+  return line.replace(
+    /^(\s*)([A-Za-z][A-Za-z0-9_]*)\s*(-->|---|-.->|==>)\s*([A-Za-z][A-Za-z0-9_]*)\s*:\s*(.+?)\s*$/,
+    (_, indent: string, from: string, edge: string, to: string, label: string) =>
+      `${indent}${from} ${edge}|${sanitizeEdgeLabel(label)}| ${to}`);
+}
+
+/** Mermaid 11 is flaky with `A -- "text" --> B`; normalize to `A -->|text| B`. */
+function normalizeLegacyQuotedTextEdges(line: string): string {
+  const doubleQuoted = line.replace(
+    /^(\s*)([A-Za-z][A-Za-z0-9_]*)\s*--\s*"([^"]*)"\s*-->\s*([A-Za-z][A-Za-z0-9_]*)\s*$/,
+    (_, indent: string, from: string, text: string, to: string) =>
+      `${indent}${from} -->|${sanitizeEdgeLabel(text)}| ${to}`
+  );
+  return doubleQuoted.replace(
+    /^(\s*)([A-Za-z][A-Za-z0-9_]*)\s*--\s*'([^']*)'\s*-->\s*([A-Za-z][A-Za-z0-9_]*)\s*$/,
+    (_, indent: string, from: string, text: string, to: string) =>
+      `${indent}${from} -->|${sanitizeEdgeLabel(text)}| ${to}`
+  );
+}
+
+function sanitizeEdgeLabel(label: string): string {
   return label
+    .replace(/\|/g, '/')
+    .replace(/"/g, "'")
+    .trim();
+}
+
+function sanitizeNodeLabel(label: string): string {
+  let s = label.trim();
+  if (s.length >= 2 && ((s.startsWith('"') && s.endsWith('"')) || (s.startsWith("'") && s.endsWith("'")))) {
+    s = s.slice(1, -1).trim();
+  }
+  s = s.replace(/`/g, '');
+  s = stripBogusParenQuoteWrappers(s);
+  return s
     .replace(/\[\]/g, '()')
     .replace(/\[/g, '(')
     .replace(/\]/g, ')')
     .replace(/"/g, "'")
     .trim();
+}
+
+function stripBogusParenQuoteWrappers(value: string): string {
+  let s = value.trim();
+  while (s.length >= 4 && s.startsWith("('") && s.endsWith("')")) {
+    s = s.slice(2, -2).trim();
+  }
+  while (s.length >= 4 && s.startsWith('("') && s.endsWith('")')) {
+    s = s.slice(2, -2).trim();
+  }
+  if (s.length >= 3 && s.startsWith("('") && s.endsWith("'") && !s.endsWith("')")) {
+    s = s.slice(2, -1).trim();
+  }
+  if (s.length >= 3 && s.startsWith('("') && s.endsWith('"') && !s.endsWith('")')) {
+    s = s.slice(2, -1).trim();
+  }
+  return s.trim();
 }

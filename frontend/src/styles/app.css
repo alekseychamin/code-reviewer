@@ -286,6 +286,14 @@ select {
   font-size: 1rem;
 }
 
+.history-selected-summary {
+  margin: 4px 0 0;
+  color: var(--muted);
+  font-size: 0.84rem;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
 .history-actions {
   display: flex;
   align-items: center;
@@ -312,11 +320,49 @@ select {
 
 .history-item {
   display: grid;
-  gap: 4px;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 8px;
   padding: 8px 10px;
   border-radius: 16px;
   background: rgba(255, 252, 247, 0.88);
   border: 1px solid rgba(29, 36, 51, 0.08);
+}
+
+.history-item-main {
+  width: 100%;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+  border: 0;
+  background: transparent;
+  padding: 0;
+  display: grid;
+  gap: 4px;
+}
+
+.history-item:has(.history-item-main:hover) {
+  border-color: rgba(15, 123, 108, 0.28);
+  background: rgba(15, 123, 108, 0.05);
+}
+
+.history-delete-button {
+  align-self: center;
+  padding: 7px 10px;
+}
+
+.history-stop-button {
+  align-self: center;
+  padding: 7px 10px;
+  border-color: rgba(180, 35, 24, 0.2);
+  color: var(--critical);
+}
+
+.history-item-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  align-items: stretch;
 }
 
 .history-item strong {
@@ -326,6 +372,15 @@ select {
 .history-item.baseline {
   border-color: rgba(15, 123, 108, 0.28);
   background: rgba(15, 123, 108, 0.06);
+}
+
+.history-item.selected {
+  box-shadow: 0 0 0 2px rgba(15, 123, 108, 0.16);
+}
+
+.history-item.active {
+  border-color: rgba(197, 98, 50, 0.35);
+  background: rgba(197, 98, 50, 0.06);
 }
 
 .history-item-row {
@@ -369,6 +424,11 @@ button.primary {
 .secondary-button:disabled {
   cursor: not-allowed;
   opacity: 0.6;
+}
+
+.danger-button {
+  border-color: rgba(180, 35, 24, 0.2);
+  color: var(--critical);
 }
 
 .progress-shell {
@@ -449,6 +509,11 @@ button.primary {
 .status-failed {
   background: rgba(180, 35, 24, 0.12);
   color: var(--critical);
+}
+
+.status-cancelled {
+  background: rgba(100, 116, 139, 0.14);
+  color: var(--muted);
 }
 
 .results-grid {

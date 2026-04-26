@@ -1,4 +1,4 @@
-export type ReviewRunStatus = 'Pending' | 'Running' | 'Completed' | 'Failed';
+export type ReviewRunStatus = 'Pending' | 'Running' | 'Completed' | 'Failed' | 'Cancelled';
 export type ReviewTargetKind = 'PullRequest' | 'BranchComparison';
 export type PublishMode = 'None' | 'SummaryOnly' | 'SummaryAndInline';
 
@@ -134,6 +134,7 @@ export interface ReviewRun {
   reviewDiscussionMessages: ReviewCommentMessage[];
   inlineComments: InlineComment[];
   reviewedFiles: ReviewedFile[];
+  progressUpdates: ReviewProgressEvent[];
 }
 
 export interface ReviewHistory {
@@ -181,6 +182,8 @@ export interface PullRequestReviewPayload {
   accessToken?: string;
   providerProfileId?: string;
   publishMode: PublishMode;
+  forceRerun?: boolean;
+  baselineRunId?: string;
   stageOverrides: Array<{ stage: string; profileId: string; model?: string; temperature?: number }>;
 }
 
@@ -190,5 +193,7 @@ export interface BranchReviewPayload {
   sourceBranch: string;
   providerProfileId?: string;
   publishMode: PublishMode;
+  forceRerun?: boolean;
+  baselineRunId?: string;
   stageOverrides: Array<{ stage: string; profileId: string; model?: string; temperature?: number }>;
 }

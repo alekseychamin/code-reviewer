@@ -15,6 +15,8 @@ interface RunDetailsProps {
   reportDownloadUrl?: string;
   onPublishReport: () => Promise<void>;
   onPublishInlineComment: (commentId: string) => Promise<void>;
+  onRegenerateArtifacts: (regenerateDescription: boolean, regenerateDiagram: boolean) => Promise<void>;
+  onStopReviewRun: (runId: string) => Promise<void>;
   onSetInlineCommentRelevance: (commentId: string, isRelevant: boolean) => Promise<void>;
   onAskInlineQuestion: (commentId: string, message: string) => Promise<void>;
   onAskReviewQuestion: (message: string) => Promise<void>;
@@ -26,6 +28,8 @@ export function RunDetails({
   reportDownloadUrl,
   onPublishReport,
   onPublishInlineComment,
+  onRegenerateArtifacts,
+  onStopReviewRun,
   onSetInlineCommentRelevance,
   onAskInlineQuestion,
   onAskReviewQuestion
@@ -39,9 +43,13 @@ export function RunDetails({
   const [discussionDraft, setDiscussionDraft] = useState('');
   const [discussionBusy, setDiscussionBusy] = useState(false);
   const [discussionError, setDiscussionError] = useState('');
+  const [stopBusy, setStopBusy] = useState(false);
+  const [artifactBusy, setArtifactBusy] = useState<'description' | null>(null);
   const publishTargetLabel = getPublishTargetLabel(run?.pullRequestUrl);
   const primaryOpportunities = run ? collectPrimaryOpportunities(run) : [];
   const followUpOpportunities = run ? collectFollowUpOpportunities(run) : [];
+  const isReviewRunning = run?.status === 'Running' || run?.status === 'Pending';
+  const canRegenerateArtifacts = Boolean(run?.hasDiffArtifact) && !isReviewRunning;
 
   useEffect(() => {
     setIsDiagramCollapsed(true);
@@ -53,6 +61,8 @@ export function RunDetails({
     setDiscussionDraft('');
     setDiscussionBusy(false);
     setDiscussionError('');
+    setStopBusy(false);
+    setArtifactBusy(null);
   }, [run?.id]);
 
   async function handleAskReviewQuestion(): Promise<void> {
@@ -70,6 +80,30 @@ export function RunDetails({
       setDiscussionError(error instanceof Error ? error.message : String(error));
     } finally {
       setDiscussionBusy(false);
+    }
+  }
+
+  async function handleStopReview(): Promise<void> {
+    if (!run || !window.confirm('Остановить выбранное ревью?')) {
+      return;
+    }
+
+    setStopBusy(true);
+    try {
+      await onStopReviewRun(run.id);
+    } finally {
+      setStopBusy(false);
+    }
+  }
+
+  async function handleRegenerateDescriptionAndDiagram(): Promise<void> {
+    setArtifactBusy('description');
+    try {
+      // Backend: RegenerateDescription runs GenerateChangeSummaryForRunAsync, which returns
+      // description + diagram in one JSON — more reliable than RegenerateDiagram-only path.
+      await onRegenerateArtifacts(true, false);
+    } finally {
+      setArtifactBusy(null);
     }
   }
 
@@ -127,6 +161,16 @@ export function RunDetails({
           >
               Скачать report.md
           </button>
+          {run.status === 'Running' || run.status === 'Pending' ? (
+            <button
+              className="secondary-button danger-button"
+              disabled={stopBusy}
+              onClick={() => void handleStopReview()}
+              type="button"
+            >
+              {stopBusy ? 'Останавливаем...' : 'Остановить ревью'}
+            </button>
+          ) : null}
           <span className="secondary-chip">{run.findings.length} замечаний</span>
         </div>
       </div>
@@ -170,6 +214,19 @@ export function RunDetails({
                 type="button"
               >
                 {isDescriptionCollapsed ? 'Развернуть описание' : 'Свернуть описание'}
+              </button>
+              <button
+                className="secondary-button"
+                disabled={artifactBusy !== null || !canRegenerateArtifacts}
+                onClick={() => void handleRegenerateDescriptionAndDiagram()}
+                type="button"
+                title={
+                  isReviewRunning
+                    ? 'Дождитесь завершения ревью.'
+                    : 'Пересоздаёт диаграмму и описание из одного ответа LLM (этап описания изменений).'
+                }
+              >
+                {artifactBusy === 'description' ? 'Обновляем...' : 'Пересоздать диаграмму и описание'}
               </button>
             </div>
           </div>

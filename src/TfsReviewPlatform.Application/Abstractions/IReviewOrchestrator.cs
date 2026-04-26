@@ -19,6 +19,10 @@ public interface IReviewOrchestrator
 
     Task DeletePullRequestHistoryAsync(string pullRequestUrl, CancellationToken cancellationToken);
 
+    Task DeleteReviewRunAsync(Guid runId, CancellationToken cancellationToken);
+
+    Task<ReviewRunDto> StopReviewRunAsync(Guid runId, CancellationToken cancellationToken);
+
     Task<ReviewHistoryDto> GetBranchReviewHistoryAsync(
         string repositoryName,
         string sourceBranch,
@@ -57,6 +61,11 @@ public interface IReviewOrchestrator
     Task<ReviewRunDto> ContinueReviewDiscussionAsync(
         Guid runId,
         ContinueReviewDiscussionRequest request,
+        CancellationToken cancellationToken);
+
+    Task<ReviewRunDto> RegenerateReviewArtifactsAsync(
+        Guid runId,
+        RegenerateReviewArtifactsRequest request,
         CancellationToken cancellationToken);
 
     Task<ArtifactDownloadResult?> GetDiffDownloadAsync(Guid runId, CancellationToken cancellationToken);

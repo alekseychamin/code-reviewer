@@ -14,6 +14,10 @@ public sealed class ReviewExecutionRequest
 
     public PublishMode PublishMode { get; init; }
 
+    public bool ForceRerun { get; init; }
+
+    public Guid? BaselineRunId { get; init; }
+
     public string? PullRequestAccessToken { get; init; }
 
     public IReadOnlyList<StageRouteOverrideDto> StageOverrides { get; init; } = [];

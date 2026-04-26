@@ -7,6 +7,24 @@ namespace TfsReviewPlatform.Application.Services;
 
 public sealed class FindingsComparisonService : IFindingsComparisonService
 {
+    public FindingsComparisonSnapshot CompareUnchangedDiff(
+        Guid? previousRunId,
+        IReadOnlyList<ReviewFinding> previousFindings,
+        IReadOnlyList<ReviewFinding> currentFindings)
+    {
+        return new FindingsComparisonSnapshot
+        {
+            PreviousRunId = previousRunId,
+            PreviousFindingsCount = previousFindings.Count,
+            CurrentFindingsCount = currentFindings.Count,
+            NewFindingsCount = 0,
+            StillRelevantFindingsCount = currentFindings.Count,
+            ResolvedFindingsCount = 0,
+            IsDiffUnchanged = true,
+            StillRelevantFindings = Order(currentFindings)
+        };
+    }
+
     public FindingsComparisonSnapshot Compare(
         Guid? previousRunId,
         IReadOnlyList<ReviewFinding> previousFindings,
@@ -119,6 +137,8 @@ public sealed class FindingsComparisonService : IFindingsComparisonService
     {
         var previousFile = Normalize(previous.File);
         var currentFile = Normalize(current.File);
+        var previousCode = Normalize(previous.ExistingCode);
+        var currentCode = Normalize(current.ExistingCode);
         var titleScore = ComputeSimilarity(previous.Title, current.Title);
         var descriptionScore = ComputeSimilarity(previous.Description, current.Description);
         var codeScore = ComputeSimilarity(previous.ExistingCode, current.ExistingCode);
@@ -145,6 +165,11 @@ public sealed class FindingsComparisonService : IFindingsComparisonService
         if (previous.Severity == current.Severity)
         {
             score += 0.02d;
+        }
+
+        if (previousCode.Length > 0 && previousCode == currentCode)
+        {
+            score += 0.08d;
         }
 
         return score;

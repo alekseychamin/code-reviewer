@@ -7,6 +7,7 @@ using TfsReviewPlatform.Application.Models;
 using TfsReviewPlatform.Application.Prompts;
 using TfsReviewPlatform.Domain.Entities;
 using TfsReviewPlatform.Domain.Enums;
+using TfsReviewPlatform.Domain.ValueObjects;
 
 namespace TfsReviewPlatform.Application.Services;
 
@@ -32,15 +33,25 @@ public sealed class ReviewRunExecutor(
 {
     public async Task ExecuteAsync(Guid runId, ReviewExecutionRequest request, CancellationToken cancellationToken)
     {
-        var run = await reviewRunRepository.GetAsync(runId, cancellationToken)
+        var run = await reviewRunRepository.GetAsync(runId, CancellationToken.None)
                   ?? throw new InvalidOperationException($"Review run '{runId}' was not found.");
-        var previousRun = await reviewRunRepository.FindLatestCompletedForTargetAsync(run.Target, run.CreatedAt, cancellationToken);
+        if (run.Status == ReviewRunStatus.Cancelled)
+        {
+            await reviewProgressStore.PublishAsync(
+                new ReviewProgressUpdate(run.Id, run.Status, run.CurrentStage, run.ProgressPercent, run.CurrentMessage, DateTimeOffset.UtcNow, true),
+                CancellationToken.None);
+            reviewProgressStore.Complete(run.Id);
+            return;
+        }
+
+        ReviewRun? previousRun = null;
         DiffAcquisitionResult? diffResult = null;
 
         try
         {
             run.Start();
             await PersistAndPublishAsync(run, "Review started", ReviewPipelineStage.DiffAcquisition, 2, cancellationToken);
+            previousRun = await ResolveBaselineRunAsync(request, run, cancellationToken);
 
             diffResult = await AcquireDiffAsync(request, cancellationToken);
             run.UpdateMetadata(diffResult.ServiceName, diffResult.AuthorName, diffResult.PullRequestTitle);
@@ -62,9 +73,9 @@ public sealed class ReviewRunExecutor(
                 30,
                 cancellationToken);
 
-            if (previousRun is not null && HasNoChangesSincePreviousReview(previousRun, preprocessed))
+            if (!request.ForceRerun && previousRun is not null && HasNoChangesSincePreviousReview(previousRun, preprocessed))
             {
-                var reusedComparison = findingsComparisonService.Compare(
+                var reusedComparison = findingsComparisonService.CompareUnchangedDiff(
                     previousRun.Id,
                     previousRun.Findings,
                     previousRun.Findings);
@@ -96,11 +107,18 @@ public sealed class ReviewRunExecutor(
                     cancellationToken);
 
                 run.Complete(reusedArtifacts, previousRun.Findings, false);
+                var reusedCompletedUpdate = new ReviewProgressUpdate(
+                    run.Id,
+                    run.Status,
+                    run.CurrentStage,
+                    run.ProgressPercent,
+                    run.CurrentMessage,
+                    DateTimeOffset.UtcNow,
+                    true);
+                run.RecordProgress(reusedCompletedUpdate);
                 await reviewRunRepository.UpdateAsync(run, cancellationToken);
                 await TryIndexSemanticArtifactsAsync(run, cancellationToken);
-                await reviewProgressStore.PublishAsync(
-                    new ReviewProgressUpdate(run.Id, run.Status, run.CurrentStage, run.ProgressPercent, run.CurrentMessage, DateTimeOffset.UtcNow, true),
-                    cancellationToken);
+                await reviewProgressStore.PublishAsync(reusedCompletedUpdate, cancellationToken);
                 reviewProgressStore.Complete(run.Id);
                 return;
             }
@@ -127,10 +145,15 @@ public sealed class ReviewRunExecutor(
             var primaryOpportunities = normalizedReview.Opportunities;
             var findingsComparison = previousRun is null
                 ? null
-                : findingsComparisonService.Compare(
-                    previousRun.Id,
-                    previousRun.Findings,
-                    findings);
+                : HasNoChangesSincePreviousReview(previousRun, preprocessed)
+                    ? findingsComparisonService.CompareUnchangedDiff(
+                        previousRun.Id,
+                        previousRun.Findings,
+                        findings)
+                    : findingsComparisonService.Compare(
+                        previousRun.Id,
+                        previousRun.Findings,
+                        findings);
             run.UpdateFindings(findings);
             await reviewRunRepository.UpdateAsync(run, cancellationToken);
             await PersistAndPublishAsync(run, $"Normalized {findings.Count} findings", ReviewPipelineStage.FinalSynthesis, 87, cancellationToken);
@@ -207,21 +230,52 @@ public sealed class ReviewRunExecutor(
             };
 
             run.Complete(artifacts, findings, publishSucceeded);
+            var completedUpdate = new ReviewProgressUpdate(
+                run.Id,
+                run.Status,
+                run.CurrentStage,
+                run.ProgressPercent,
+                run.CurrentMessage,
+                DateTimeOffset.UtcNow,
+                true);
+            run.RecordProgress(completedUpdate);
             await reviewRunRepository.UpdateAsync(run, cancellationToken);
             await TryIndexSemanticArtifactsAsync(run, cancellationToken);
-            await reviewProgressStore.PublishAsync(
-                new ReviewProgressUpdate(run.Id, run.Status, run.CurrentStage, run.ProgressPercent, run.CurrentMessage, DateTimeOffset.UtcNow, true),
-                cancellationToken);
+            await reviewProgressStore.PublishAsync(completedUpdate, cancellationToken);
+            reviewProgressStore.Complete(run.Id);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            logger.LogInformation("Review run {RunId} was cancelled", runId);
+            run.Cancel("Ревью остановлено пользователем.");
+            var cancelledUpdate = new ReviewProgressUpdate(
+                run.Id,
+                run.Status,
+                run.CurrentStage,
+                run.ProgressPercent,
+                run.CurrentMessage,
+                DateTimeOffset.UtcNow,
+                true);
+            run.RecordProgress(cancelledUpdate);
+            await reviewRunRepository.UpdateAsync(run, CancellationToken.None);
+            await reviewProgressStore.PublishAsync(cancelledUpdate, CancellationToken.None);
             reviewProgressStore.Complete(run.Id);
         }
         catch (Exception exception)
         {
             logger.LogError(exception, "Review run {RunId} failed", runId);
             run.Fail(exception.Message);
+            var failedUpdate = new ReviewProgressUpdate(
+                run.Id,
+                run.Status,
+                run.CurrentStage,
+                run.ProgressPercent,
+                exception.Message,
+                DateTimeOffset.UtcNow,
+                true);
+            run.RecordProgress(failedUpdate);
             await reviewRunRepository.UpdateAsync(run, CancellationToken.None);
-            await reviewProgressStore.PublishAsync(
-                new ReviewProgressUpdate(run.Id, run.Status, run.CurrentStage, run.ProgressPercent, exception.Message, DateTimeOffset.UtcNow, true),
-                CancellationToken.None);
+            await reviewProgressStore.PublishAsync(failedUpdate, CancellationToken.None);
             reviewProgressStore.Complete(run.Id);
         }
         finally
@@ -252,6 +306,41 @@ public sealed class ReviewRunExecutor(
         {
             logger.LogWarning(exception, "Failed to index semantic review artifacts for run {RunId}", run.Id);
         }
+    }
+
+    private async Task<ReviewRun?> ResolveBaselineRunAsync(
+        ReviewExecutionRequest request,
+        ReviewRun run,
+        CancellationToken cancellationToken)
+    {
+        if (request.BaselineRunId is null)
+        {
+            return await reviewRunRepository.FindLatestCompletedForTargetAsync(run.Target, run.CreatedAt, cancellationToken);
+        }
+
+        var baselineRun = await reviewRunRepository.GetAsync(request.BaselineRunId.Value, cancellationToken)
+                          ?? throw new InvalidOperationException($"Baseline review run '{request.BaselineRunId}' was not found.");
+        if (baselineRun.Status != ReviewRunStatus.Completed)
+        {
+            throw new InvalidOperationException("Baseline review run must be completed.");
+        }
+
+        if (!IsSameReviewTarget(run.Target, baselineRun.Target))
+        {
+            throw new InvalidOperationException("Baseline review run belongs to another target.");
+        }
+
+        return baselineRun;
+    }
+
+    private static bool IsSameReviewTarget(ReviewTargetDescriptor left, ReviewTargetDescriptor right)
+    {
+        return left.Kind == right.Kind &&
+               string.Equals(left.PullRequestUrl, right.PullRequestUrl, StringComparison.OrdinalIgnoreCase) &&
+               string.Equals(left.RepositoryPath, right.RepositoryPath, StringComparison.OrdinalIgnoreCase) &&
+               string.Equals(left.RepositoryName, right.RepositoryName, StringComparison.OrdinalIgnoreCase) &&
+               string.Equals(left.SourceBranch, right.SourceBranch, StringComparison.OrdinalIgnoreCase) &&
+               string.Equals(left.TargetBranch, right.TargetBranch, StringComparison.OrdinalIgnoreCase);
     }
 
     private async Task<DiffAcquisitionResult> AcquireDiffAsync(
@@ -358,7 +447,7 @@ public sealed class ReviewRunExecutor(
                 return new ChangeSummaryResult
                 {
                     Description = description.Description,
-                    DiagramMermaid = NormalizeMermaidCode(diagram),
+                    DiagramMermaid = MermaidDiagramNormalizer.Normalize(diagram),
                     StructuredContent = description.StructuredContent
                 };
             }
@@ -528,39 +617,6 @@ public sealed class ReviewRunExecutor(
         return builder.ToString().Trim();
     }
 
-    private static string? NormalizeMermaidCode(string? content)
-    {
-        if (string.IsNullOrWhiteSpace(content))
-        {
-            return null;
-        }
-
-        var normalized = content.Trim();
-        if (normalized.StartsWith("```", StringComparison.Ordinal))
-        {
-            normalized = normalized
-                .Replace("```mermaid", string.Empty, StringComparison.OrdinalIgnoreCase)
-                .Replace("```", string.Empty, StringComparison.OrdinalIgnoreCase)
-                .Trim();
-        }
-
-        var graphIndex = normalized.IndexOf("graph", StringComparison.OrdinalIgnoreCase);
-        var flowchartIndex = normalized.IndexOf("flowchart", StringComparison.OrdinalIgnoreCase);
-        var startIndex = graphIndex >= 0 && flowchartIndex >= 0
-            ? Math.Min(graphIndex, flowchartIndex)
-            : Math.Max(graphIndex, flowchartIndex);
-
-        if (startIndex > 0)
-        {
-            normalized = normalized[startIndex..].Trim();
-        }
-
-        return normalized.StartsWith("graph", StringComparison.OrdinalIgnoreCase) ||
-               normalized.StartsWith("flowchart", StringComparison.OrdinalIgnoreCase)
-            ? normalized
-            : null;
-    }
-
     private async Task<string?> GenerateChangeDiagramAsync(
         ProviderProfile profile,
         string model,
@@ -597,7 +653,7 @@ public sealed class ReviewRunExecutor(
             },
             cancellationToken);
 
-        return NormalizeMermaidCode(response);
+        return MermaidDiagramNormalizer.Normalize(response);
     }
 
     private async Task<IReadOnlyList<string>> ReviewChunksAsync(
@@ -614,47 +670,77 @@ public sealed class ReviewRunExecutor(
             request.StageOverrides,
             cancellationToken);
 
-        var responses = new List<string>(chunks.Count);
+        var responses = new string[chunks.Count];
         var totalIterations = Math.Max(1, chunks.Count);
+        var maxConcurrency = Math.Clamp(
+            reviewPipelineOptions.Value.MaxConcurrentChunkReviews,
+            1,
+            totalIterations);
+        var completedChunks = 0;
 
-        for (var index = 0; index < chunks.Count; index++)
+        if (chunks.Count == 0)
         {
-            var progress = 45 + (int)Math.Round(((index + 1) / (double)totalIterations) * 25d);
-            await PersistAndPublishAsync(
-                run,
-                $"Ревью чанка {index + 1} из {chunks.Count}",
-                ReviewPipelineStage.ChunkReview,
-                progress,
-                cancellationToken);
-
-            var response = await llmCompletionService.CompleteAsync(
-                selection.Profile,
-                new LlmChatRequest
-                {
-                    Model = selection.Model,
-                    Temperature = selection.Temperature,
-                    ExpectJson = true,
-                    SystemPrompt = reviewPromptFactory.BuildChunkReviewSystemPrompt(
-                        description,
-                        ReviewPromptSpecialRules.PrimaryReviewToolRequestRules),
-                    UserPrompt = reviewPromptFactory.BuildUserPrompt(
-                        ReviewPipelineStage.ChunkReview,
-                        BuildInitialChunkReviewPayload(chunks[index]))
-                },
-                cancellationToken);
-
-            var finalResponse = await MaybeCompleteChunkReviewWithAdditionalContextAsync(
-                response,
-                description,
-                chunks[index],
-                diffResult,
-                selection,
-                run,
-                index,
-                cancellationToken);
-
-            responses.Add(finalResponse);
+            return responses;
         }
+
+        await PersistAndPublishAsync(
+            run,
+            $"Старт ревью {chunks.Count} чанков, параллельность {maxConcurrency}",
+            ReviewPipelineStage.ChunkReview,
+            45,
+            cancellationToken);
+
+        using var semaphore = new SemaphoreSlim(maxConcurrency, maxConcurrency);
+        var tasks = Enumerable.Range(0, chunks.Count)
+            .Select(async index =>
+            {
+                await semaphore.WaitAsync(cancellationToken);
+                try
+                {
+                    var response = await llmCompletionService.CompleteAsync(
+                        selection.Profile,
+                        new LlmChatRequest
+                        {
+                            Model = selection.Model,
+                            Temperature = selection.Temperature,
+                            ExpectJson = true,
+                            SystemPrompt = reviewPromptFactory.BuildChunkReviewSystemPrompt(
+                                description,
+                                ReviewPromptSpecialRules.PrimaryReviewToolRequestRules),
+                            UserPrompt = reviewPromptFactory.BuildUserPrompt(
+                                ReviewPipelineStage.ChunkReview,
+                                BuildInitialChunkReviewPayload(chunks[index]))
+                        },
+                        cancellationToken);
+
+                    var finalResponse = await MaybeCompleteChunkReviewWithAdditionalContextAsync(
+                        response,
+                        description,
+                        chunks[index],
+                        diffResult,
+                        selection,
+                        run,
+                        index,
+                        cancellationToken);
+
+                    responses[index] = finalResponse;
+                    var completed = Interlocked.Increment(ref completedChunks);
+                    var progress = 45 + (int)Math.Round((completed / (double)totalIterations) * 25d);
+                    await PersistAndPublishAsync(
+                        run,
+                        $"Завершено {completed} из {chunks.Count} чанков ревью",
+                        ReviewPipelineStage.ChunkReview,
+                        progress,
+                        cancellationToken);
+                }
+                finally
+                {
+                    semaphore.Release();
+                }
+            })
+            .ToArray();
+
+        await Task.WhenAll(tasks);
 
         return responses;
     }
@@ -983,10 +1069,10 @@ public sealed class ReviewRunExecutor(
         CancellationToken cancellationToken)
     {
         run.Advance(stage, percent, message);
+        var update = new ReviewProgressUpdate(run.Id, run.Status, stage, percent, message, DateTimeOffset.UtcNow, false);
+        run.RecordProgress(update);
         await reviewRunRepository.UpdateAsync(run, cancellationToken);
-        await reviewProgressStore.PublishAsync(
-            new ReviewProgressUpdate(run.Id, run.Status, stage, percent, message, DateTimeOffset.UtcNow, false),
-            cancellationToken);
+        await reviewProgressStore.PublishAsync(update, cancellationToken);
     }
 
     private static bool HasNoChangesSincePreviousReview(ReviewRun previousRun, PreprocessedDiff preprocessed)

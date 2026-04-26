@@ -198,7 +198,8 @@ public sealed class DiffPreprocessorTests
         var sut = new DiffPreprocessor(Microsoft.Extensions.Options.Options.Create(new ReviewPipelineOptions
         {
             MaxPrimaryReviewChunkCharacters = 10000,
-            MaxChunkCharacters = 10000
+            MaxChunkCharacters = 10000,
+            MergePrimaryReviewChunks = false
         }));
 
         var diff = """
@@ -223,6 +224,37 @@ public sealed class DiffPreprocessorTests
             result.ReviewChunks,
             chunk => chunk.Contains("## File: 'src/App/First.cs'", StringComparison.Ordinal) &&
                      chunk.Contains("## File: 'src/App/Second.cs'", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void Process_MergesPrimaryReviewChunksAcrossFiles_WhenEnabled()
+    {
+        var sut = new DiffPreprocessor(Microsoft.Extensions.Options.Options.Create(new ReviewPipelineOptions
+        {
+            MaxPrimaryReviewChunkCharacters = 10000,
+            MaxChunkCharacters = 10000,
+            MergePrimaryReviewChunks = true
+        }));
+
+        var diff = """
+            diff --git a/src/App/First.cs b/src/App/First.cs
+            --- a/src/App/First.cs
+            +++ b/src/App/First.cs
+            @@ -1,1 +1,2 @@
+            +public class First {}
+            diff --git a/src/App/Second.cs b/src/App/Second.cs
+            --- a/src/App/Second.cs
+            +++ b/src/App/Second.cs
+            @@ -1,1 +1,2 @@
+            +public class Second {}
+            """;
+
+        var result = sut.Process(diff);
+
+        Assert.Single(result.ReviewChunks);
+        Assert.Contains("## File: 'src/App/First.cs'", result.ReviewChunks[0], StringComparison.Ordinal);
+        Assert.Contains("## File: 'src/App/Second.cs'", result.ReviewChunks[0], StringComparison.Ordinal);
+        Assert.Equal(2, result.Chunks.Count);
     }
 
     [Fact]

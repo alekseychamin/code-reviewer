@@ -4,6 +4,7 @@ import type {
   BranchReviewPayload,
   ProviderProfile,
   ReviewHistory,
+  ReviewHistoryItem,
   PullRequestReviewPayload
 } from '../lib/types';
 
@@ -19,13 +20,20 @@ interface ReviewFormProps {
   branchHistoryError: string | null;
   branchHistoryLoading: boolean;
   branchHistoryDeleting: boolean;
+  selectedBaselineRunId?: string;
   onStartPullRequestReview: (payload: PullRequestReviewPayload) => Promise<void>;
   onStartBranchReview: (payload: BranchReviewPayload) => Promise<void>;
   onDeletePullRequestHistory: (url: string) => Promise<void>;
   onDeleteBranchHistory: (repositoryName: string, sourceBranch: string, targetBranch: string) => Promise<void>;
+  onDeleteHistoryRun: (runId: string) => Promise<void>;
+  onStopReviewRun: (runId: string) => Promise<void>;
+  onSelectHistoryRun: (runId: string) => Promise<void>;
+  onSelectBaselineRun: (runId: string) => void;
   onBranchContextChange: (repositoryName: string, sourceBranch: string, targetBranch: string) => void;
   onPullRequestUrlChange: (url: string) => void;
   onModeChange: (mode: ReviewMode) => void;
+  activeRunId?: string;
+  selectedRunId?: string;
 }
 
 export function ReviewForm({
@@ -38,13 +46,20 @@ export function ReviewForm({
   branchHistoryError,
   branchHistoryLoading,
   branchHistoryDeleting,
+  selectedBaselineRunId,
   onStartPullRequestReview,
   onStartBranchReview,
   onDeletePullRequestHistory,
   onDeleteBranchHistory,
+  onDeleteHistoryRun,
+  onStopReviewRun,
+  onSelectHistoryRun,
+  onSelectBaselineRun,
   onBranchContextChange,
   onPullRequestUrlChange,
-  onModeChange
+  onModeChange,
+  activeRunId,
+  selectedRunId
 }: ReviewFormProps) {
   const [mode, setMode] = useState<ReviewMode>('pullRequest');
   const [providerProfileId, setProviderProfileId] = useState('');
@@ -86,7 +101,7 @@ export function ReviewForm({
     return null;
   }
 
-  async function handleSubmit(): Promise<void> {
+  async function handleSubmit(forceRerun = false): Promise<void> {
     const validationError = validate();
     if (validationError) {
       setSubmitError(validationError);
@@ -102,6 +117,8 @@ export function ReviewForm({
           pullRequestUrl,
           providerProfileId: providerProfileId || undefined,
           publishMode: 'None',
+          forceRerun,
+          baselineRunId: selectedBaselineRunId || undefined,
           stageOverrides: []
         });
       } else {
@@ -111,6 +128,8 @@ export function ReviewForm({
           sourceBranch,
           providerProfileId: providerProfileId || undefined,
           publishMode: 'None',
+          forceRerun,
+          baselineRunId: selectedBaselineRunId || undefined,
           stageOverrides: []
         });
       }
@@ -363,7 +382,14 @@ export function ReviewForm({
               isLoading={pullRequestHistoryLoading}
               error={pullRequestHistoryError}
               onDeleteHistory={onDeletePullRequestHistory}
+              onDeleteRun={onDeleteHistoryRun}
+              onStopRun={onStopReviewRun}
+              onSelectRun={onSelectHistoryRun}
+              onSelectBaselineRun={onSelectBaselineRun}
               pullRequestUrl={pullRequestUrl}
+              activeRunId={activeRunId}
+              selectedBaselineRunId={selectedBaselineRunId}
+              selectedRunId={selectedRunId}
             />
           </div>
         ) : (
@@ -490,8 +516,15 @@ export function ReviewForm({
               isLoading={branchHistoryLoading}
               error={branchHistoryError}
               onDeleteHistory={onDeleteBranchHistory}
+              onDeleteRun={onDeleteHistoryRun}
+              onStopRun={onStopReviewRun}
+              onSelectRun={onSelectHistoryRun}
+              onSelectBaselineRun={onSelectBaselineRun}
               repositoryName={repositoryName}
+              activeRunId={activeRunId}
               sourceBranch={sourceBranch}
+              selectedBaselineRunId={selectedBaselineRunId}
+              selectedRunId={selectedRunId}
               targetBranch={targetBranch}
             />
           </>
@@ -514,6 +547,9 @@ export function ReviewForm({
         <button className="primary" disabled={isSubmitting} onClick={() => void handleSubmit()} type="button">
           {isSubmitting ? 'Запуск ревью...' : 'Запустить ревью'}
         </button>
+        <button className="secondary-button" disabled={isSubmitting} onClick={() => void handleSubmit(true)} type="button">
+          {isSubmitting ? 'Запуск...' : 'Rerun ревью'}
+        </button>
       </div>
 
       {submitError ? <div className="inline-error">{submitError}</div> : null}
@@ -527,7 +563,14 @@ interface BranchHistoryPanelProps {
   isLoading: boolean;
   error: string | null;
   onDeleteHistory: (repositoryName: string, sourceBranch: string, targetBranch: string) => Promise<void>;
+  onDeleteRun: (runId: string) => Promise<void>;
+  onStopRun: (runId: string) => Promise<void>;
+  onSelectRun: (runId: string) => Promise<void>;
+  onSelectBaselineRun: (runId: string) => void;
   repositoryName: string;
+  activeRunId?: string;
+  selectedBaselineRunId?: string;
+  selectedRunId?: string;
   sourceBranch: string;
   targetBranch: string;
 }
@@ -538,11 +581,20 @@ function BranchHistoryPanel({
   isLoading,
   error,
   onDeleteHistory,
+  onDeleteRun,
+  onStopRun,
+  onSelectRun,
+  onSelectBaselineRun,
   repositoryName,
+  activeRunId,
+  selectedBaselineRunId,
+  selectedRunId,
   sourceBranch,
   targetBranch
 }: BranchHistoryPanelProps) {
   const hasSelection = repositoryName.trim().length > 0 && sourceBranch.trim().length > 0;
+  const [isCollapsed, setIsCollapsed] = useState(false);
+  const selectedItem = getSelectedBaselineHistoryItem(history, selectedBaselineRunId);
 
   if (!hasSelection && !isLoading && !error && !history) {
     return null;
@@ -554,9 +606,20 @@ function BranchHistoryPanel({
         <div>
           <p className="eyebrow">История ревью</p>
           <h3>Предыдущие запуски для этого сравнения веток</h3>
+          <p className="history-selected-summary">{renderSelectedBaselineSummary(selectedItem)}</p>
         </div>
         <div className="history-actions">
           {isLoading ? <span className="secondary-chip">Загрузка...</span> : null}
+          {history && history.items.length > 0 ? (
+            <button
+              aria-expanded={!isCollapsed}
+              className="secondary-button"
+              onClick={() => setIsCollapsed((value) => !value)}
+              type="button"
+            >
+              {isCollapsed ? 'Развернуть историю' : 'Свернуть историю'}
+            </button>
+          ) : null}
           {history && history.items.length > 0 ? (
             <button
               className="secondary-button"
@@ -582,11 +645,11 @@ function BranchHistoryPanel({
 
       {error ? <div className="inline-error">{error}</div> : null}
 
-      {!error && !isLoading && history && history.items.length > 0 ? (
+      {!isCollapsed && !error && !isLoading && history && history.items.length > 0 ? (
         <>
           {history.baselineRunId ? (
             <p className="history-note">
-              Последний завершённый запуск из этого списка будет использован как база для следующего ревью и блока
+              Если baseline не выбран вручную, последний завершённый запуск из этого списка будет базой для следующего ревью и блока
               <span className="history-highlight"> Delta Since Previous Review</span>.
             </p>
           ) : (
@@ -594,22 +657,79 @@ function BranchHistoryPanel({
           )}
           <div className="history-list">
             {history.items.map((item) => {
-              const isBaseline = item.id === history.baselineRunId;
+              const isBaseline = item.id === (selectedBaselineRunId || history.baselineRunId);
+              const isSelected = item.id === selectedRunId;
+              const isActive = item.id === activeRunId;
+              const isDefaultBaseline = item.id === history.baselineRunId;
+              const canUseAsBaseline = item.status === 'Completed';
+              const canStopRun = item.status === 'Running' || item.status === 'Pending';
+              const canDeleteRun = item.status !== 'Running' && item.status !== 'Pending';
               return (
-                <article className={`history-item ${isBaseline ? 'baseline' : ''}`} key={item.id}>
-                  <div className="history-item-row">
-                    <strong>{item.serviceName || item.title}</strong>
-                    <span className={`status-pill status-${String(item.status).toLowerCase()}`}>{translateStatus(item.status)}</span>
-                  </div>
-                  <div className="history-item-row">
-                    <span className="history-meta">{formatTimestamp(item.createdAt)}</span>
-                    {isBaseline ? <span className="secondary-chip">Будет baseline</span> : null}
-                  </div>
-                  <div className="history-meta">
-                    Найдено: {item.findingsCount}
-                    {item.criticalCount > 0 ? ` · critical ${item.criticalCount}` : ''}
-                    {item.highCount > 0 ? ` · high ${item.highCount}` : ''}
-                    {item.authorName ? ` · ${item.authorName}` : ''}
+                <article className={`history-item ${isBaseline ? 'baseline' : ''} ${isSelected ? 'selected' : ''} ${isActive ? 'active' : ''}`} key={item.id}>
+                  <button
+                    className="history-item-main"
+                    onClick={() => {
+                      if (canUseAsBaseline) {
+                        onSelectBaselineRun(item.id);
+                      }
+
+                      void onSelectRun(item.id);
+                    }}
+                    type="button"
+                  >
+                    <div className="history-item-row">
+                      <strong>{item.serviceName || item.title}</strong>
+                      <span className={`status-pill status-${String(item.status).toLowerCase()}`}>{translateStatus(item.status)}</span>
+                    </div>
+                    <div className="history-item-row">
+                      <span className="history-meta">{formatTimestamp(item.createdAt)}</span>
+                      {isActive ? <span className="secondary-chip">Текущий прогресс</span> : null}
+                      {isSelected ? <span className="secondary-chip">Открыт запуск</span> : null}
+                      {isBaseline ? <span className="secondary-chip">Выбран baseline</span> : null}
+                      {isDefaultBaseline && !selectedBaselineRunId ? <span className="secondary-chip">По умолчанию</span> : null}
+                    </div>
+                    <div className="history-meta">
+                      Найдено: {item.findingsCount}
+                      {item.criticalCount > 0 ? ` · critical ${item.criticalCount}` : ''}
+                      {item.highCount > 0 ? ` · high ${item.highCount}` : ''}
+                      {item.authorName ? ` · ${item.authorName}` : ''}
+                    </div>
+                    <div className="history-meta">
+                      {canUseAsBaseline
+                        ? 'Клик: открыть результат и использовать как baseline.'
+                        : 'Клик: открыть текущий результат. Baseline доступен после завершения.'}
+                    </div>
+                  </button>
+                  <div className="history-item-actions">
+                    {canStopRun ? (
+                      <button
+                        className="secondary-button history-stop-button"
+                        onClick={() => {
+                          if (!window.confirm('Остановить это ревью?')) {
+                            return;
+                          }
+
+                          void onStopRun(item.id);
+                        }}
+                        type="button"
+                      >
+                        Остановить
+                      </button>
+                    ) : null}
+                    <button
+                      className="secondary-button history-delete-button"
+                      disabled={!canDeleteRun}
+                      onClick={() => {
+                        if (!window.confirm('Удалить этот запуск ревью из истории?')) {
+                          return;
+                        }
+
+                        void onDeleteRun(item.id);
+                      }}
+                      type="button"
+                    >
+                      Удалить
+                    </button>
                   </div>
                 </article>
               );
@@ -631,7 +751,14 @@ interface PullRequestHistoryPanelProps {
   isLoading: boolean;
   error: string | null;
   onDeleteHistory: (url: string) => Promise<void>;
+  onDeleteRun: (runId: string) => Promise<void>;
+  onStopRun: (runId: string) => Promise<void>;
+  onSelectRun: (runId: string) => Promise<void>;
+  onSelectBaselineRun: (runId: string) => void;
   pullRequestUrl: string;
+  activeRunId?: string;
+  selectedBaselineRunId?: string;
+  selectedRunId?: string;
 }
 
 function PullRequestHistoryPanel({
@@ -640,9 +767,18 @@ function PullRequestHistoryPanel({
   isLoading,
   error,
   onDeleteHistory,
-  pullRequestUrl
+  onDeleteRun,
+  onStopRun,
+  onSelectRun,
+  onSelectBaselineRun,
+  pullRequestUrl,
+  activeRunId,
+  selectedBaselineRunId,
+  selectedRunId
 }: PullRequestHistoryPanelProps) {
   const hasUrl = pullRequestUrl.trim().length > 0;
+  const [isCollapsed, setIsCollapsed] = useState(false);
+  const selectedItem = getSelectedBaselineHistoryItem(history, selectedBaselineRunId);
 
   if (!hasUrl && !isLoading && !error && !history) {
     return null;
@@ -654,9 +790,20 @@ function PullRequestHistoryPanel({
         <div>
           <p className="eyebrow">История ревью</p>
           <h3>Предыдущие запуски по этому PR</h3>
+          <p className="history-selected-summary">{renderSelectedBaselineSummary(selectedItem)}</p>
         </div>
         <div className="history-actions">
           {isLoading ? <span className="secondary-chip">Загрузка...</span> : null}
+          {history && history.items.length > 0 ? (
+            <button
+              aria-expanded={!isCollapsed}
+              className="secondary-button"
+              onClick={() => setIsCollapsed((value) => !value)}
+              type="button"
+            >
+              {isCollapsed ? 'Развернуть историю' : 'Свернуть историю'}
+            </button>
+          ) : null}
           {history && history.items.length > 0 ? (
             <button
               className="secondary-button"
@@ -682,11 +829,11 @@ function PullRequestHistoryPanel({
 
       {error ? <div className="inline-error">{error}</div> : null}
 
-      {!error && !isLoading && history && history.items.length > 0 ? (
+      {!isCollapsed && !error && !isLoading && history && history.items.length > 0 ? (
         <>
           {history.baselineRunId ? (
             <p className="history-note">
-              Последний завершённый запуск из этого списка будет использован как база для следующего ревью и блока
+              Если baseline не выбран вручную, последний завершённый запуск из этого списка будет базой для следующего ревью и блока
               <span className="history-highlight"> Delta Since Previous Review</span>.
             </p>
           ) : (
@@ -694,22 +841,79 @@ function PullRequestHistoryPanel({
           )}
           <div className="history-list">
             {history.items.map((item) => {
-              const isBaseline = item.id === history.baselineRunId;
+              const isBaseline = item.id === (selectedBaselineRunId || history.baselineRunId);
+              const isSelected = item.id === selectedRunId;
+              const isActive = item.id === activeRunId;
+              const isDefaultBaseline = item.id === history.baselineRunId;
+              const canUseAsBaseline = item.status === 'Completed';
+              const canStopRun = item.status === 'Running' || item.status === 'Pending';
+              const canDeleteRun = item.status !== 'Running' && item.status !== 'Pending';
               return (
-                <article className={`history-item ${isBaseline ? 'baseline' : ''}`} key={item.id}>
-                  <div className="history-item-row">
-                    <strong>{item.serviceName || item.title}</strong>
-                    <span className={`status-pill status-${String(item.status).toLowerCase()}`}>{translateStatus(item.status)}</span>
-                  </div>
-                  <div className="history-item-row">
-                    <span className="history-meta">{formatTimestamp(item.createdAt)}</span>
-                    {isBaseline ? <span className="secondary-chip">Будет baseline</span> : null}
-                  </div>
-                  <div className="history-meta">
-                    Найдено: {item.findingsCount}
-                    {item.criticalCount > 0 ? ` · critical ${item.criticalCount}` : ''}
-                    {item.highCount > 0 ? ` · high ${item.highCount}` : ''}
-                    {item.authorName ? ` · ${item.authorName}` : ''}
+                <article className={`history-item ${isBaseline ? 'baseline' : ''} ${isSelected ? 'selected' : ''} ${isActive ? 'active' : ''}`} key={item.id}>
+                  <button
+                    className="history-item-main"
+                    onClick={() => {
+                      if (canUseAsBaseline) {
+                        onSelectBaselineRun(item.id);
+                      }
+
+                      void onSelectRun(item.id);
+                    }}
+                    type="button"
+                  >
+                    <div className="history-item-row">
+                      <strong>{item.serviceName || item.title}</strong>
+                      <span className={`status-pill status-${String(item.status).toLowerCase()}`}>{translateStatus(item.status)}</span>
+                    </div>
+                    <div className="history-item-row">
+                      <span className="history-meta">{formatTimestamp(item.createdAt)}</span>
+                      {isActive ? <span className="secondary-chip">Текущий прогресс</span> : null}
+                      {isSelected ? <span className="secondary-chip">Открыт запуск</span> : null}
+                      {isBaseline ? <span className="secondary-chip">Выбран baseline</span> : null}
+                      {isDefaultBaseline && !selectedBaselineRunId ? <span className="secondary-chip">По умолчанию</span> : null}
+                    </div>
+                    <div className="history-meta">
+                      Найдено: {item.findingsCount}
+                      {item.criticalCount > 0 ? ` · critical ${item.criticalCount}` : ''}
+                      {item.highCount > 0 ? ` · high ${item.highCount}` : ''}
+                      {item.authorName ? ` · ${item.authorName}` : ''}
+                    </div>
+                    <div className="history-meta">
+                      {canUseAsBaseline
+                        ? 'Клик: открыть результат и использовать как baseline.'
+                        : 'Клик: открыть текущий результат. Baseline доступен после завершения.'}
+                    </div>
+                  </button>
+                  <div className="history-item-actions">
+                    {canStopRun ? (
+                      <button
+                        className="secondary-button history-stop-button"
+                        onClick={() => {
+                          if (!window.confirm('Остановить это ревью?')) {
+                            return;
+                          }
+
+                          void onStopRun(item.id);
+                        }}
+                        type="button"
+                      >
+                        Остановить
+                      </button>
+                    ) : null}
+                    <button
+                      className="secondary-button history-delete-button"
+                      disabled={!canDeleteRun}
+                      onClick={() => {
+                        if (!window.confirm('Удалить этот запуск ревью из истории?')) {
+                          return;
+                        }
+
+                        void onDeleteRun(item.id);
+                      }}
+                      type="button"
+                    >
+                      Удалить
+                    </button>
                   </div>
                 </article>
               );
@@ -725,6 +929,27 @@ function PullRequestHistoryPanel({
   );
 }
 
+function getSelectedBaselineHistoryItem(
+  history: ReviewHistory | null,
+  selectedBaselineRunId?: string
+): ReviewHistoryItem | undefined {
+  if (!history) {
+    return undefined;
+  }
+
+  const baselineId = selectedBaselineRunId || history.baselineRunId;
+  return baselineId ? history.items.find((item) => item.id === baselineId) : undefined;
+}
+
+function renderSelectedBaselineSummary(item: ReviewHistoryItem | undefined): string {
+  if (!item) {
+    return 'Baseline не выбран: будет использован последний завершённый запуск, если он есть.';
+  }
+
+  const title = item.serviceName || item.title;
+  return `Baseline: ${title} · ${formatTimestamp(item.createdAt)} · ${item.findingsCount} замечаний`;
+}
+
 function translateStatus(status: string): string {
   switch (status) {
     case 'Pending':
@@ -735,6 +960,8 @@ function translateStatus(status: string): string {
       return 'Завершено';
     case 'Failed':
       return 'Ошибка';
+    case 'Cancelled':
+      return 'Остановлено';
     default:
       return status;
   }

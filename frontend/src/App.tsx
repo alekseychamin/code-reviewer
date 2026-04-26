@@ -8,6 +8,7 @@ import {
   buildReportDownloadUrl,
   continueReviewDiscussion,
   continueInlineDiscussion,
+  deleteReviewRun,
   deleteBranchReviewHistory,
   deletePullRequestReviewHistory,
   fetchProviderProfiles,
@@ -16,7 +17,9 @@ import {
   getReviewRun,
   publishInlineComment,
   publishReport,
+  regenerateReviewArtifacts,
   setInlineCommentRelevance,
+  stopReviewRun,
   startBranchReview,
   startPullRequestReview
 } from './lib/api';
@@ -92,6 +95,7 @@ function shouldHideRun(
 export default function App() {
   const [profiles, setProfiles] = useState<ProviderProfile[]>([]);
   const [currentRun, setCurrentRun] = useState<ReviewRun | null>(null);
+  const [activeRun, setActiveRun] = useState<ReviewRun | null>(null);
   const [events, setEvents] = useState<ReviewProgressEvent[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [pullRequestUrl, setPullRequestUrl] = useState('');
@@ -103,6 +107,7 @@ export default function App() {
   const [branchHistoryLoading, setBranchHistoryLoading] = useState(false);
   const [branchHistoryError, setBranchHistoryError] = useState<string | null>(null);
   const [branchHistoryDeleting, setBranchHistoryDeleting] = useState(false);
+  const [selectedBaselineRunId, setSelectedBaselineRunId] = useState<string | undefined>();
   const [branchSelection, setBranchSelection] = useState<BranchHistorySelection>({
     repositoryName: '',
     sourceBranch: '',
@@ -112,6 +117,14 @@ export default function App() {
   const historyRequestIdRef = useRef(0);
   const branchHistoryRequestIdRef = useRef(0);
   const displayedRun = shouldHideRun(currentRun, reviewMode, pullRequestUrl, branchSelection) ? null : currentRun;
+  const progressRun = shouldHideRun(activeRun, reviewMode, pullRequestUrl, branchSelection) ? null : activeRun;
+  const liveProgressRun = progressRun?.status === 'Running' || progressRun?.status === 'Pending'
+    ? progressRun
+    : null;
+  const progressDisplayRun = liveProgressRun ?? displayedRun;
+  const progressEvents = liveProgressRun
+    ? events
+    : displayedRun?.progressUpdates ?? [];
 
   const handleBranchContextChange = useCallback(
     (repositoryName: string, sourceBranch: string, targetBranch: string) => {
@@ -124,6 +137,7 @@ export default function App() {
           return current;
         }
 
+        setSelectedBaselineRunId(undefined);
         return { repositoryName, sourceBranch, targetBranch };
       });
     },
@@ -133,7 +147,8 @@ export default function App() {
   async function refreshRun(runId: string): Promise<ReviewRun | null> {
     try {
       const run = await getReviewRun(runId);
-      setCurrentRun(run);
+      setCurrentRun((existing) => (existing?.id === runId ? run : existing));
+      setActiveRun((existing) => (existing?.id === runId ? run : existing));
       return run;
     } catch {
       return null;
@@ -182,10 +197,18 @@ export default function App() {
     const normalizedUrl = pullRequestUrl.trim();
     if (!normalizedUrl) {
       historyRequestIdRef.current += 1;
+        setSelectedBaselineRunId(undefined);
       setPullRequestHistory(null);
       setPullRequestHistoryError(null);
       setPullRequestHistoryLoading(false);
       setCurrentRun((existing) => {
+        if (!shouldHideRun(existing, 'pullRequest', normalizedUrl, branchSelection)) {
+          return existing;
+        }
+
+        return null;
+      });
+      setActiveRun((existing) => {
         if (!shouldHideRun(existing, 'pullRequest', normalizedUrl, branchSelection)) {
           return existing;
         }
@@ -199,9 +222,17 @@ export default function App() {
     const requestId = historyRequestIdRef.current;
 
     setPullRequestHistory(null);
+    setSelectedBaselineRunId(undefined);
     setPullRequestHistoryError(null);
     setPullRequestHistoryLoading(false);
     setCurrentRun((existing) => {
+      if (!shouldHideRun(existing, 'pullRequest', normalizedUrl, branchSelection)) {
+        return existing;
+      }
+
+      return null;
+    });
+    setActiveRun((existing) => {
       if (!shouldHideRun(existing, 'pullRequest', normalizedUrl, branchSelection)) {
         return existing;
       }
@@ -274,10 +305,18 @@ export default function App() {
     const normalizedTargetBranch = branchSelection.targetBranch.trim();
     if (!normalizedRepositoryName || !normalizedSourceBranch || !normalizedTargetBranch) {
       branchHistoryRequestIdRef.current += 1;
+      setSelectedBaselineRunId(undefined);
       setBranchHistory(null);
       setBranchHistoryError(null);
       setBranchHistoryLoading(false);
       setCurrentRun((existing) => {
+        if (!shouldHideRun(existing, 'branches', pullRequestUrl, branchSelection)) {
+          return existing;
+        }
+
+        return null;
+      });
+      setActiveRun((existing) => {
         if (!shouldHideRun(existing, 'branches', pullRequestUrl, branchSelection)) {
           return existing;
         }
@@ -291,9 +330,17 @@ export default function App() {
     const requestId = branchHistoryRequestIdRef.current;
 
     setBranchHistory(null);
+    setSelectedBaselineRunId(undefined);
     setBranchHistoryError(null);
     setBranchHistoryLoading(false);
     setCurrentRun((existing) => {
+      if (!shouldHideRun(existing, 'branches', pullRequestUrl, branchSelection)) {
+        return existing;
+      }
+
+      return null;
+    });
+    setActiveRun((existing) => {
       if (!shouldHideRun(existing, 'branches', pullRequestUrl, branchSelection)) {
         return existing;
       }
@@ -378,23 +425,46 @@ export default function App() {
   }, [reviewMode, branchSelection, pullRequestUrl]);
 
   useEffect(() => {
-    if (!currentRun) {
+    if (!activeRun) {
       return;
     }
 
-    const eventSource = new EventSource(buildEventsUrl(currentRun.id));
+    const subscribedRunId = activeRun.id;
+    let active = true;
+    const eventSource = new EventSource(buildEventsUrl(subscribedRunId));
 
     eventSource.addEventListener('snapshot', (event) => {
+      if (!active) {
+        return;
+      }
+
       const run = JSON.parse(event.data) as ReviewRun;
-      setCurrentRun(run);
+      setActiveRun((existing) => (existing?.id === subscribedRunId ? run : existing));
+      setCurrentRun((existing) => (existing?.id === subscribedRunId ? run : existing));
       setEvents([]);
     });
 
     const onProgress = async (event: MessageEvent<string>) => {
       const progressEvent = JSON.parse(event.data) as ReviewProgressEvent;
+      if (!active || progressEvent.runId !== subscribedRunId) {
+        return;
+      }
+
       setEvents((existing) => [...existing, progressEvent]);
+      setActiveRun((existing) =>
+        existing?.id === subscribedRunId
+          ? {
+              ...existing,
+              status: progressEvent.status,
+              currentStage: progressEvent.stage,
+              progressPercent: progressEvent.progressPercent,
+              currentMessage: progressEvent.message,
+              updatedAt: progressEvent.timestamp
+            }
+          : existing
+      );
       setCurrentRun((existing) =>
-        existing
+        existing?.id === subscribedRunId
           ? {
               ...existing,
               status: progressEvent.status,
@@ -410,9 +480,13 @@ export default function App() {
 
     const onCompleted = async (event: MessageEvent<string>) => {
       const progressEvent = JSON.parse(event.data) as ReviewProgressEvent;
+      if (!active || progressEvent.runId !== subscribedRunId) {
+        return;
+      }
+
       setEvents((existing) => [...existing, progressEvent]);
       const run = await refreshRun(progressEvent.runId);
-      if (run) {
+      if (active && run) {
         await refreshHistoryForRun(run);
       }
       eventSource.close();
@@ -432,24 +506,100 @@ export default function App() {
     };
 
     return () => {
+      active = false;
       eventSource.removeEventListener('progress', progressListener);
       eventSource.removeEventListener('completed', completedListener);
       eventSource.close();
     };
-  }, [currentRun?.id]);
+  }, [activeRun?.id]);
 
   async function handleStartPullRequestReview(payload: PullRequestReviewPayload): Promise<void> {
     setError(null);
     setEvents([]);
-    const run = await startPullRequestReview(payload);
+    const run = await startPullRequestReview({
+      ...payload,
+      baselineRunId: payload.baselineRunId || selectedBaselineRunId
+    });
     setCurrentRun(run);
+    setActiveRun(run);
+    await refreshHistoryForRun(run);
   }
 
   async function handleStartBranchReview(payload: BranchReviewPayload): Promise<void> {
     setError(null);
     setEvents([]);
-    const run = await startBranchReview(payload);
+    const run = await startBranchReview({
+      ...payload,
+      baselineRunId: payload.baselineRunId || selectedBaselineRunId
+    });
     setCurrentRun(run);
+    setActiveRun(run);
+    await refreshHistoryForRun(run);
+  }
+
+  async function handleSelectHistoryRun(runId: string): Promise<void> {
+    setError(null);
+    const run = await getReviewRun(runId);
+    setCurrentRun(run);
+    if (run.status === 'Running' || run.status === 'Pending') {
+      setActiveRun(run);
+      setEvents((existing) => (activeRun?.id === run.id ? existing : []));
+    }
+  }
+
+  async function handleDeleteHistoryRun(runId: string): Promise<void> {
+    setError(null);
+    try {
+      await deleteReviewRun(runId);
+      setPullRequestHistory((existing) =>
+        existing
+          ? {
+              baselineRunId: existing.baselineRunId === runId ? undefined : existing.baselineRunId,
+              items: existing.items.filter((item) => item.id !== runId)
+            }
+          : existing
+      );
+      setBranchHistory((existing) =>
+        existing
+          ? {
+              baselineRunId: existing.baselineRunId === runId ? undefined : existing.baselineRunId,
+              items: existing.items.filter((item) => item.id !== runId)
+            }
+          : existing
+      );
+      setSelectedBaselineRunId((existing) => (existing === runId ? undefined : existing));
+      setCurrentRun((existing) => (existing?.id === runId ? null : existing));
+      setActiveRun((existing) => (existing?.id === runId ? null : existing));
+      setEvents((existing) => (activeRun?.id === runId ? [] : existing));
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    }
+  }
+
+  async function handleStopReviewRun(runId: string): Promise<void> {
+    setError(null);
+    try {
+      const run = await stopReviewRun(runId);
+      setCurrentRun((existing) => (existing?.id === runId ? run : existing));
+      setActiveRun((existing) => (existing?.id === runId ? run : existing));
+      await refreshHistoryForRun(run);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    }
+  }
+
+  async function handleRegenerateReviewArtifacts(
+    regenerateDescription: boolean,
+    regenerateDiagram: boolean
+  ): Promise<void> {
+    if (!currentRun) {
+      return;
+    }
+
+    setError(null);
+    const run = await regenerateReviewArtifacts(currentRun.id, { regenerateDescription, regenerateDiagram });
+    setCurrentRun(run);
+    await refreshHistoryForRun(run);
   }
 
   async function handlePublishInlineComment(commentId: string): Promise<void> {
@@ -513,8 +663,19 @@ export default function App() {
     try {
       await deletePullRequestReviewHistory(normalizedUrl);
       setPullRequestHistory({ baselineRunId: undefined, items: [] });
+      setSelectedBaselineRunId(undefined);
       setPullRequestHistoryError(null);
       setEvents([]);
+      setActiveRun((existing) => {
+        if (!existing) {
+          return existing;
+        }
+
+        return existing.targetKind === 'PullRequest' &&
+          existing.pullRequestUrl?.trim() === normalizedUrl
+          ? null
+          : existing;
+      });
       setCurrentRun((existing) => {
         if (!existing) {
           return existing;
@@ -530,6 +691,20 @@ export default function App() {
     } finally {
       setPullRequestHistoryDeleting(false);
     }
+  }
+
+  function handlePullRequestUrlChange(url: string): void {
+    setPullRequestUrl(url);
+    setSelectedBaselineRunId(undefined);
+  }
+
+  function handleSelectBaselineRun(runId: string): void {
+    setSelectedBaselineRunId(runId);
+  }
+
+  function handleModeChange(mode: ReviewMode): void {
+    setReviewMode(mode);
+    setSelectedBaselineRunId(undefined);
   }
 
   async function handleDeleteBranchHistory(
@@ -549,8 +724,21 @@ export default function App() {
     try {
       await deleteBranchReviewHistory(normalizedRepositoryName, normalizedSourceBranch, normalizedTargetBranch);
       setBranchHistory({ baselineRunId: undefined, items: [] });
+      setSelectedBaselineRunId(undefined);
       setBranchHistoryError(null);
       setEvents([]);
+      setActiveRun((existing) => {
+        if (!existing) {
+          return existing;
+        }
+
+        return existing.targetKind === 'BranchComparison' &&
+          existing.repositoryName?.trim() === normalizedRepositoryName &&
+          existing.sourceBranch?.trim() === normalizedSourceBranch &&
+          existing.targetBranch?.trim() === normalizedTargetBranch
+          ? null
+          : existing;
+      });
       setCurrentRun((existing) => {
         if (!existing) {
           return existing;
@@ -593,18 +781,25 @@ export default function App() {
           branchHistoryLoading={branchHistoryLoading}
           onBranchContextChange={handleBranchContextChange}
           onDeleteBranchHistory={handleDeleteBranchHistory}
+          onDeleteHistoryRun={handleDeleteHistoryRun}
+          onStopReviewRun={handleStopReviewRun}
           pullRequestHistoryDeleting={pullRequestHistoryDeleting}
           pullRequestHistory={pullRequestHistory}
           pullRequestHistoryError={pullRequestHistoryError}
           pullRequestHistoryLoading={pullRequestHistoryLoading}
           profiles={profiles}
           onDeletePullRequestHistory={handleDeletePullRequestHistory}
-          onModeChange={setReviewMode}
-          onPullRequestUrlChange={setPullRequestUrl}
+          onSelectHistoryRun={handleSelectHistoryRun}
+          onModeChange={handleModeChange}
+          onPullRequestUrlChange={handlePullRequestUrlChange}
+          onSelectBaselineRun={handleSelectBaselineRun}
           onStartPullRequestReview={handleStartPullRequestReview}
           onStartBranchReview={handleStartBranchReview}
+          selectedBaselineRunId={selectedBaselineRunId}
+          activeRunId={liveProgressRun?.id}
+          selectedRunId={displayedRun?.id}
         />
-        <ProgressStream events={events} run={displayedRun} />
+        <ProgressStream events={progressEvents} run={progressDisplayRun} />
       </div>
 
       <RunDetails
@@ -613,7 +808,9 @@ export default function App() {
         onAskReviewQuestion={handleAskReviewQuestion}
         onPublishReport={handlePublishReport}
         onPublishInlineComment={handlePublishInlineComment}
+        onRegenerateArtifacts={handleRegenerateReviewArtifacts}
         onSetInlineCommentRelevance={handleSetInlineCommentRelevance}
+        onStopReviewRun={handleStopReviewRun}
         reportDownloadUrl={displayedRun ? buildReportDownloadUrl(displayedRun.id) : undefined}
         run={displayedRun}
       />

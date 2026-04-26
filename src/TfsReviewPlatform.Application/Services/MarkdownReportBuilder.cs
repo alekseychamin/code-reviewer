@@ -104,6 +104,10 @@ public sealed class MarkdownReportBuilder : IMarkdownReportBuilder
             sb.AppendLine($"- Всё ещё актуальны: {comparison.StillRelevantFindingsCount}");
             sb.AppendLine($"- Исправлены: {comparison.ResolvedFindingsCount}");
             sb.AppendLine($"- Новые: {comparison.NewFindingsCount}");
+            if (comparison.IsDiffUnchanged)
+            {
+                sb.AppendLine("- Diff не изменился: это повторный запуск, без code delta.");
+            }
             sb.AppendLine();
         }
 
@@ -230,6 +234,14 @@ public sealed class MarkdownReportBuilder : IMarkdownReportBuilder
         sb.AppendLine($"- Исправлены: {comparison.ResolvedFindingsCount}");
         sb.AppendLine($"- Новые: {comparison.NewFindingsCount}");
         sb.AppendLine();
+
+        if (comparison.IsDiffUnchanged)
+        {
+            sb.AppendLine("> Diff не изменился относительно baseline. Блок delta показывает повторный запуск ревью, поэтому новые и исправленные замечания не считаются code delta.");
+            sb.AppendLine();
+            AppendFindingList(sb, "Замечания текущего повторного ревью", comparison.StillRelevantFindings);
+            return;
+        }
 
         AppendFindingList(sb, "Новые замечания в этом ревью", comparison.NewFindings);
         AppendFindingList(sb, "Всё ещё актуальны с прошлого ревью", comparison.StillRelevantFindings);

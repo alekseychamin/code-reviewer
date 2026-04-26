@@ -23,6 +23,8 @@ public static class ReviewPromptSpecialRules
     public const string PrimaryReviewSpecialRules = """
         Primary review special rules:
         - Use opportunities for non-blocking improvements such as refactoring, duplication cleanup, maintainability improvements, safer API ergonomics, or operational hardening that is helpful but not a merge-blocking defect.
+        - For large merged chunks, still inspect the whole chunk for useful non-blocking improvements and return up to 5 high-signal opportunities when they are present.
+        - Do not omit opportunities merely because the same response also contains findings; keep defects/risks in findings and helpful non-blocking improvements in opportunities.
         - Prefer an empty findings list over speculative or low-confidence findings.
         - Return only findings that a human reviewer should realistically inspect before merge.
         - Every finding must include a concrete trigger scenario or failure mode visible from the changed code. If you cannot describe when the issue manifests, prefer omitting it or moving it to an opportunity.

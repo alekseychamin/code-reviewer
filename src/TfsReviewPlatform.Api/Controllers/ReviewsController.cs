@@ -58,6 +58,35 @@ public sealed class ReviewsController(
         return run is null ? NotFound() : Ok(run);
     }
 
+    [HttpDelete("{runId:guid}")]
+    [ProducesResponseType(StatusCodes.Status204NoContent)]
+    public async Task<IActionResult> DeleteById(Guid runId, CancellationToken cancellationToken)
+    {
+        try
+        {
+            await reviewOrchestrator.DeleteReviewRunAsync(runId, cancellationToken);
+            return NoContent();
+        }
+        catch (InvalidOperationException exception)
+        {
+            return ValidationProblem(detail: exception.Message);
+        }
+    }
+
+    [HttpPost("{runId:guid}/stop")]
+    [ProducesResponseType<ReviewRunDto>(StatusCodes.Status200OK)]
+    public async Task<ActionResult<ReviewRunDto>> StopById(Guid runId, CancellationToken cancellationToken)
+    {
+        try
+        {
+            return Ok(await reviewOrchestrator.StopReviewRunAsync(runId, cancellationToken));
+        }
+        catch (InvalidOperationException exception)
+        {
+            return ValidationProblem(detail: exception.Message);
+        }
+    }
+
     [HttpGet("history/pull-requests")]
     [ProducesResponseType<ReviewHistoryDto>(StatusCodes.Status200OK)]
     public async Task<ActionResult<ReviewHistoryDto>> GetPullRequestHistory(
@@ -233,6 +262,23 @@ public sealed class ReviewsController(
         try
         {
             return Ok(await reviewOrchestrator.SetInlineCommentRelevanceAsync(runId, commentId, request.IsRelevant, cancellationToken));
+        }
+        catch (InvalidOperationException exception)
+        {
+            return ValidationProblem(detail: exception.Message);
+        }
+    }
+
+    [HttpPost("{runId:guid}/artifacts/regenerate")]
+    [ProducesResponseType<ReviewRunDto>(StatusCodes.Status200OK)]
+    public async Task<ActionResult<ReviewRunDto>> RegenerateArtifacts(
+        Guid runId,
+        [FromBody] RegenerateReviewArtifactsRequest request,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            return Ok(await reviewOrchestrator.RegenerateReviewArtifactsAsync(runId, request, cancellationToken));
         }
         catch (InvalidOperationException exception)
         {

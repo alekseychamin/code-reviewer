@@ -8,4 +8,9 @@ public interface IFindingsComparisonService
         Guid? previousRunId,
         IReadOnlyList<ReviewFinding> previousFindings,
         IReadOnlyList<ReviewFinding> currentFindings);
+
+    FindingsComparisonSnapshot CompareUnchangedDiff(
+        Guid? previousRunId,
+        IReadOnlyList<ReviewFinding> previousFindings,
+        IReadOnlyList<ReviewFinding> currentFindings);
 }

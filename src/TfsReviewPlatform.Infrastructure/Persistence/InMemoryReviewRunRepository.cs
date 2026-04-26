@@ -52,6 +52,12 @@ public sealed class InMemoryReviewRunRepository : IReviewRunRepository
         return Task.CompletedTask;
     }
 
+    public Task DeleteAsync(Guid id, CancellationToken cancellationToken)
+    {
+        _runs.TryRemove(id, out _);
+        return Task.CompletedTask;
+    }
+
     public Task<ReviewRun?> FindLatestCompletedForTargetAsync(
         ReviewTargetDescriptor target,
         DateTimeOffset createdBefore,

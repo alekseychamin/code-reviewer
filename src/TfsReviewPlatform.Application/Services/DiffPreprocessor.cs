@@ -46,7 +46,7 @@ public sealed class DiffPreprocessor(IOptions<ReviewPipelineOptions> options) : 
         var reviewChunks = BuildChunks(
             chunkSource,
             Math.Max(4000, options.Value.MaxPrimaryReviewChunkCharacters),
-            mergeFormattedChunks: false);
+            mergeFormattedChunks: options.Value.MergePrimaryReviewChunks);
         var preparedChunks = BuildChunks(
             chunkSource,
             Math.Max(2000, options.Value.MaxChunkCharacters),

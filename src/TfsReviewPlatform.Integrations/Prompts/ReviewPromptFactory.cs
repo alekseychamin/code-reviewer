@@ -44,6 +44,9 @@ public sealed class ReviewPromptFactory : IReviewPromptFactory
                 - Use short readable labels focused on business or architectural meaning
                 - Always declare nodes as ID["Label text"]
                 - Do not use HTML tags except <br/>
+                - For line breaks inside labels use <br/> only; never use the two-character sequence backslash followed by n or r (JSON-style escapes are not valid Mermaid line breaks here)
+                - Do not wrap label text in (' ... ') or (" ... "); write plain text inside ID["..."] only
+                - Use link labels only as A -->|short label| B; do not use A -- "label" --> B
                 - Do not put [] inside labels; use () instead
                 - Quote labels that contain spaces, slashes, parentheses, or Russian text
                 - Return an empty string if a diagram is not useful
@@ -150,6 +153,8 @@ public sealed class ReviewPromptFactory : IReviewPromptFactory
             - If you know only one exact line, set start_line and end_line to the same value
             - suggestion must stay narrowly scoped to the reported defect or risk; use an empty string if no safe fix can be inferred
             - opportunities must stay grounded in the shown code and should not rest on hidden infrastructure assumptions
+            - For large merged chunks, include up to 5 high-signal opportunities when useful non-blocking improvements exist
+            - Do not leave opportunities empty solely because findings are present in the same response
             - If the shown diff chunk is sufficient, return need_more_context=false and tool_requests=[]
             - Request extra context only when it is necessary to avoid speculation
             - tool_requests must contain at most 3 items

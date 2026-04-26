@@ -5,5 +5,6 @@ public enum ReviewRunStatus
     Pending,
     Running,
     Completed,
-    Failed
+    Failed,
+    Cancelled
 }

@@ -27,4 +27,6 @@ public sealed class ReviewArtifacts
     public IReadOnlyList<ReviewOpportunityItem> PrimaryOpportunities { get; init; } = [];
 
     public FindingsComparisonSnapshot? FindingsComparison { get; init; }
+
+    public IReadOnlyList<ReviewProgressUpdate> ProgressUpdates { get; init; } = [];
 }

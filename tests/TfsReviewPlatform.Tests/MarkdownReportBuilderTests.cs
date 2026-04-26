@@ -49,9 +49,47 @@ public sealed class MarkdownReportBuilderTests
 
         var report = sut.BuildFullReport("demo", "desc", findings, comparison);
 
-        Assert.Contains("## Delta Since Previous Review", report);
-        Assert.Contains("- Resolved: 2", report);
+        Assert.Contains("## Изменения относительно предыдущего ревью", report);
+        Assert.Contains("- Исправлены: 2", report);
         Assert.Contains("Resolved issue", report);
+    }
+
+    [Fact]
+    public void BuildFullReport_ExplainsUnchangedDiffComparison()
+    {
+        var sut = new MarkdownReportBuilder();
+        var findings = new[]
+        {
+            new ReviewFinding(
+                "src/App/Service.cs",
+                "Line 10",
+                FindingCategory.Bug,
+                FindingSeverity.High,
+                ReviewFindingSource.InitialReview,
+                "Current issue",
+                "Current issue description.",
+                "return request.Value.Length;",
+                "return request?.Value?.Length ?? 0;")
+        };
+        var comparison = new FindingsComparisonSnapshot
+        {
+            PreviousRunId = Guid.NewGuid(),
+            PreviousFindingsCount = 2,
+            CurrentFindingsCount = 1,
+            NewFindingsCount = 0,
+            StillRelevantFindingsCount = 1,
+            ResolvedFindingsCount = 0,
+            IsDiffUnchanged = true,
+            StillRelevantFindings = findings
+        };
+
+        var report = sut.BuildFullReport("demo", "desc", findings, comparison);
+
+        Assert.Contains("- Исправлены: 0", report);
+        Assert.Contains("- Новые: 0", report);
+        Assert.Contains("Diff не изменился относительно baseline", report);
+        Assert.DoesNotContain("Новые замечания в этом ревью", report);
+        Assert.DoesNotContain("Исправлены с прошлого ревью", report);
     }
 
     [Fact]

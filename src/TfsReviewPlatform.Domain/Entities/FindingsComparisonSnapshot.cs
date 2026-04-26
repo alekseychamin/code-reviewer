@@ -14,6 +14,8 @@ public sealed class FindingsComparisonSnapshot
 
     public int ResolvedFindingsCount { get; init; }
 
+    public bool IsDiffUnchanged { get; init; }
+
     public IReadOnlyList<ReviewFinding> NewFindings { get; init; } = [];
 
     public IReadOnlyList<ReviewFinding> StillRelevantFindings { get; init; } = [];

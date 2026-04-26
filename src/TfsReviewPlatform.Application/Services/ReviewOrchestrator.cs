@@ -1,4 +1,5 @@
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 using System.Globalization;
 using System.Text;
 using System.Text.Json;
@@ -23,10 +24,13 @@ public sealed class ReviewOrchestrator(
     IReviewSemanticIndex reviewSemanticIndex,
     ILlmStageRouter llmStageRouter,
     ILlmCompletionService llmCompletionService,
+    IDiffPreprocessor diffPreprocessor,
+    IReviewPromptFactory reviewPromptFactory,
     IFindingsNormalizer findingsNormalizer,
     IFindingsComparisonService findingsComparisonService,
     IReviewPublisher reviewPublisher,
     IMarkdownReportBuilder markdownReportBuilder,
+    IOptions<ReviewPipelineOptions> reviewPipelineOptions,
     ILogger<ReviewOrchestrator> logger)
     : IReviewOrchestrator
 {
@@ -58,6 +62,8 @@ public sealed class ReviewOrchestrator(
             Target = target,
             ProviderProfileId = request.ProviderProfileId,
             PublishMode = request.PublishMode,
+            ForceRerun = request.ForceRerun,
+            BaselineRunId = request.BaselineRunId,
             PullRequestAccessToken = ResolvePullRequestAccessToken(
                 normalizedPullRequestUrl,
                 request.AccessToken ?? request.AzureDevOpsAccessToken),
@@ -90,6 +96,8 @@ public sealed class ReviewOrchestrator(
             Target = target,
             ProviderProfileId = request.ProviderProfileId,
             PublishMode = request.PublishMode,
+            ForceRerun = request.ForceRerun,
+            BaselineRunId = request.BaselineRunId,
             StageOverrides = request.StageOverrides
         };
 
@@ -181,6 +189,51 @@ public sealed class ReviewOrchestrator(
 
         await reviewRunRepository.DeleteForTargetAsync(target, cancellationToken);
         await reviewSemanticIndex.DeleteTargetAsync(target, cancellationToken);
+    }
+
+    public async Task DeleteReviewRunAsync(Guid runId, CancellationToken cancellationToken)
+    {
+        var run = await reviewRunRepository.GetAsync(runId, cancellationToken)
+                  ?? throw new InvalidOperationException($"Review run '{runId}' was not found.");
+        if (run.Status is ReviewRunStatus.Running or ReviewRunStatus.Pending)
+        {
+            throw new InvalidOperationException("Нельзя удалить запуск ревью, пока он выполняется.");
+        }
+
+        await reviewRunRepository.DeleteAsync(runId, cancellationToken);
+    }
+
+    public async Task<ReviewRunDto> StopReviewRunAsync(Guid runId, CancellationToken cancellationToken)
+    {
+        var run = await reviewRunRepository.GetAsync(runId, cancellationToken)
+                  ?? throw new InvalidOperationException($"Review run '{runId}' was not found.");
+        if (run.Status is not (ReviewRunStatus.Running or ReviewRunStatus.Pending))
+        {
+            return run.ToDto();
+        }
+
+        var cancellationRequested = backgroundReviewScheduler.Stop(runId);
+        run.Cancel(cancellationRequested
+            ? "Остановка ревью запрошена пользователем."
+            : "Ревью остановлено пользователем.");
+        var update = new ReviewProgressUpdate(run.Id, run.Status, run.CurrentStage, run.ProgressPercent, run.CurrentMessage, DateTimeOffset.UtcNow, !cancellationRequested);
+        run.RecordProgress(update);
+        await reviewRunRepository.UpdateAsync(run, cancellationToken);
+        try
+        {
+            await reviewProgressStore.PublishAsync(update, cancellationToken);
+        }
+        catch (InvalidOperationException)
+        {
+            // The executor can close the SSE channel first when cancellation wins the race.
+        }
+
+        if (!cancellationRequested)
+        {
+            reviewProgressStore.Complete(run.Id);
+        }
+
+        return run.ToDto();
     }
 
     public async Task<ReviewHistoryDto> GetBranchReviewHistoryAsync(
@@ -1093,6 +1146,11 @@ public sealed class ReviewOrchestrator(
         IReadOnlyList<ReviewFinding> NewFindings,
         IReadOnlyList<InlineDiscussionOpportunityItem> NewOpportunities);
 
+    private sealed record RegeneratedChangeSummary(
+        string Description,
+        ChangeDescriptionStructuredContent? StructuredContent,
+        string? DiagramMermaid);
+
     private static InlineDiscussionStructuredContent? WithFollowUpAdditions(
         InlineDiscussionStructuredContent? content,
         int addedFindingsCount,
@@ -1190,6 +1248,330 @@ public sealed class ReviewOrchestrator(
                 StringComparer.Ordinal)
             .Select(group => group.First())
             .ToArray();
+    }
+
+    public async Task<ReviewRunDto> RegenerateReviewArtifactsAsync(
+        Guid runId,
+        RegenerateReviewArtifactsRequest request,
+        CancellationToken cancellationToken)
+    {
+        if (!request.RegenerateDescription && !request.RegenerateDiagram)
+        {
+            throw new InvalidOperationException("Нужно выбрать пересоздание описания или диаграммы.");
+        }
+
+        var run = await reviewRunRepository.GetAsync(runId, cancellationToken)
+                  ?? throw new InvalidOperationException($"Review run '{runId}' was not found.");
+        if (run.Status is ReviewRunStatus.Running or ReviewRunStatus.Pending)
+        {
+            throw new InvalidOperationException("Нельзя пересоздать описание или диаграмму, пока ревью выполняется.");
+        }
+
+        if (string.IsNullOrWhiteSpace(run.Artifacts.DiffText))
+        {
+            throw new InvalidOperationException("Для выбранного запуска нет сохранённого diff artifact.");
+        }
+
+        var preprocessed = diffPreprocessor.Process(run.Artifacts.DiffText);
+        var description = run.Artifacts.ChangeDescription;
+        var structuredDescription = run.Artifacts.ChangeDescriptionStructured;
+        var diagram = run.Artifacts.ChangeDiagramMermaid;
+
+        if (request.RegenerateDescription)
+        {
+            var regenerated = await GenerateChangeSummaryForRunAsync(run.DisplayTitle, preprocessed, run.ProviderProfileId, cancellationToken);
+            description = regenerated.Description;
+            structuredDescription = regenerated.StructuredContent;
+            diagram = regenerated.DiagramMermaid;
+        }
+
+        if (request.RegenerateDiagram)
+        {
+            diagram = await GenerateChangeDiagramForRunAsync(run.ProviderProfileId, preprocessed, description, cancellationToken);
+        }
+
+        var markdownReport = markdownReportBuilder.BuildFullReport(
+            run.DisplayTitle,
+            description,
+            run.Findings,
+            run.Artifacts.FindingsComparison);
+        var summaryComment = markdownReportBuilder.BuildSummaryComment(
+            run.DisplayTitle,
+            description,
+            run.Findings,
+            run.Artifacts.FindingsComparison);
+
+        run.UpdateArtifacts(new ReviewArtifacts
+        {
+            DiffText = run.Artifacts.DiffText,
+            PreparedChunks = run.Artifacts.PreparedChunks,
+            ChangedFiles = run.Artifacts.ChangedFiles,
+            ChangeDescription = description,
+            ChangeDescriptionStructured = structuredDescription,
+            ChangeDiagramMermaid = diagram,
+            MarkdownReport = markdownReport,
+            SummaryComment = summaryComment,
+            ReviewDiscussionMessages = run.Artifacts.ReviewDiscussionMessages,
+            InlineComments = run.Artifacts.InlineComments,
+            ReviewedFiles = run.Artifacts.ReviewedFiles,
+            PrimaryOpportunities = run.Artifacts.PrimaryOpportunities,
+            FindingsComparison = run.Artifacts.FindingsComparison
+        });
+        await reviewRunRepository.UpdateAsync(run, cancellationToken);
+
+        return run.ToDto();
+    }
+
+    private async Task<RegeneratedChangeSummary> GenerateChangeSummaryForRunAsync(
+        string reviewTitle,
+        PreprocessedDiff preprocessed,
+        string? providerProfileId,
+        CancellationToken cancellationToken)
+    {
+        var selection = await llmStageRouter.ResolveAsync(
+            ReviewPipelineStage.ChangeDescription,
+            providerProfileId,
+            [],
+            cancellationToken);
+
+        var fileList = string.Join('\n', preprocessed.ChangedFiles.Take(100));
+        var maxChangeSummaryCharacters = Math.Max(4000, reviewPipelineOptions.Value.MaxChangeSummaryCharacters);
+        var diffSnippet = preprocessed.ReviewContextDiffText.Length > maxChangeSummaryCharacters
+            ? preprocessed.ReviewContextDiffText[..maxChangeSummaryCharacters]
+            : preprocessed.ReviewContextDiffText;
+
+        var response = await llmCompletionService.CompleteAsync(
+            selection.Profile,
+            new LlmChatRequest
+            {
+                Model = selection.Model,
+                Temperature = selection.Temperature,
+                ExpectJson = true,
+                SystemPrompt = reviewPromptFactory.BuildSystemPrompt(ReviewPipelineStage.ChangeDescription, reviewTitle),
+                UserPrompt = reviewPromptFactory.BuildUserPrompt(
+                    ReviewPipelineStage.ChangeDescription,
+                    $"Changed files:\n{fileList}\n\nDiff snippet:\n{diffSnippet}")
+            },
+            cancellationToken);
+
+        var parsed = ParseRegeneratedChangeSummary(response);
+        if (!string.IsNullOrWhiteSpace(parsed.DiagramMermaid))
+        {
+            return parsed;
+        }
+
+        return parsed with
+        {
+            DiagramMermaid = await GenerateChangeDiagramForRunAsync(providerProfileId, preprocessed, parsed.Description, cancellationToken)
+        };
+    }
+
+    private async Task<string?> GenerateChangeDiagramForRunAsync(
+        string? providerProfileId,
+        PreprocessedDiff preprocessed,
+        string description,
+        CancellationToken cancellationToken)
+    {
+        var selection = await llmStageRouter.ResolveAsync(
+            ReviewPipelineStage.ChangeDescription,
+            providerProfileId,
+            [],
+            cancellationToken);
+        var fileList = string.Join('\n', preprocessed.ChangedFiles.Take(40));
+
+        var response = await llmCompletionService.CompleteAsync(
+            selection.Profile,
+            new LlmChatRequest
+            {
+                Model = selection.Model,
+                Temperature = selection.Temperature,
+                SystemPrompt = """
+                    You are a Lead System Architect.
+                    Produce only Mermaid code for a concise high-level semantic change diagram.
+                    Prefer "flowchart LR".
+                    Show the changed capability as an architecture-level flow, not as a full class-by-class call graph.
+                    Prefer modules, layers, services, bounded contexts, and external systems over concrete classes.
+                    Keep the diagram easy to read: 4-8 nodes and no more than 8 edges.
+                    Return an empty response if a diagram is not useful.
+                    """,
+                UserPrompt = $"Description:\n{description}\n\nChanged files:\n{fileList}"
+            },
+            cancellationToken);
+
+        return MermaidDiagramNormalizer.Normalize(response);
+    }
+
+    private static RegeneratedChangeSummary ParseRegeneratedChangeSummary(string response)
+    {
+        if (string.IsNullOrWhiteSpace(response))
+        {
+            return new RegeneratedChangeSummary("Автоматическое описание изменений недоступно.", null, null);
+        }
+
+        var payload = response.Trim();
+        if (payload.StartsWith("```", StringComparison.Ordinal))
+        {
+            payload = payload.Replace("```json", string.Empty, StringComparison.OrdinalIgnoreCase)
+                .Replace("```", string.Empty, StringComparison.OrdinalIgnoreCase)
+                .Trim();
+        }
+
+        try
+        {
+            using var document = JsonDocument.Parse(payload);
+            var root = document.RootElement;
+            var diagram = root.TryGetProperty("diagram", out var diagramNode)
+                ? diagramNode.GetString()
+                : null;
+            var description = root.TryGetProperty("description", out var descriptionNode)
+                ? ParseRegeneratedDescription(descriptionNode)
+                : null;
+
+            if (description is not null)
+            {
+                return description with { DiagramMermaid = MermaidDiagramNormalizer.Normalize(diagram) };
+            }
+        }
+        catch (JsonException)
+        {
+        }
+
+        return new RegeneratedChangeSummary(response, null, null);
+    }
+
+    private static RegeneratedChangeSummary? ParseRegeneratedDescription(JsonElement node)
+    {
+        if (node.ValueKind == JsonValueKind.String)
+        {
+            var value = node.GetString();
+            return string.IsNullOrWhiteSpace(value)
+                ? null
+                : new RegeneratedChangeSummary(value.Trim(), null, null);
+        }
+
+        if (node.ValueKind != JsonValueKind.Object)
+        {
+            return null;
+        }
+
+        var category = ReadRegeneratedString(node, "category") ?? string.Empty;
+        var summary = ReadRegeneratedString(node, "summary") ?? string.Empty;
+        var impactedModules = node.TryGetProperty("impacted_modules", out var modulesNode)
+            ? ParseRegeneratedStringArray(modulesNode)
+            : [];
+        var risks = node.TryGetProperty("risks", out var risksNode)
+            ? ParseRegeneratedStringArray(risksNode)
+            : [];
+        var estimatedReviewEffort = ReadRegeneratedInt(node, "estimated_review_effort", 1, 5);
+        var qualityScore = ReadRegeneratedInt(node, "quality_score", 0, 100);
+        var description = RenderRegeneratedDescription(category, estimatedReviewEffort, qualityScore, summary, impactedModules, risks);
+
+        return string.IsNullOrWhiteSpace(description)
+            ? null
+            : new RegeneratedChangeSummary(
+                description,
+                new ChangeDescriptionStructuredContent
+                {
+                    Category = category,
+                    Summary = summary,
+                    ImpactedModules = impactedModules,
+                    Risks = risks,
+                    EstimatedReviewEffort = estimatedReviewEffort,
+                    QualityScore = qualityScore
+                },
+                null);
+    }
+
+    private static string RenderRegeneratedDescription(
+        string category,
+        int? estimatedReviewEffort,
+        int? qualityScore,
+        string summary,
+        IReadOnlyList<string> impactedModules,
+        IReadOnlyList<string> risks)
+    {
+        var builder = new StringBuilder();
+        if (estimatedReviewEffort is not null)
+        {
+            builder.AppendLine($"**Сложность ревью:** {estimatedReviewEffort}/5");
+            builder.AppendLine();
+        }
+
+        if (qualityScore is not null)
+        {
+            builder.AppendLine($"**Оценка качества PR:** {qualityScore}/100");
+            builder.AppendLine();
+        }
+
+        if (!string.IsNullOrWhiteSpace(category))
+        {
+            builder.AppendLine($"**Категория:** {category}");
+            builder.AppendLine();
+        }
+
+        if (!string.IsNullOrWhiteSpace(summary))
+        {
+            builder.AppendLine(summary);
+            builder.AppendLine();
+        }
+
+        if (impactedModules.Count > 0)
+        {
+            builder.AppendLine("**Затронутые модули:**");
+            foreach (var module in impactedModules)
+            {
+                builder.AppendLine($"- {module}");
+            }
+
+            builder.AppendLine();
+        }
+
+        if (risks.Count > 0)
+        {
+            builder.AppendLine("**Риски и точки внимания:**");
+            foreach (var risk in risks)
+            {
+                builder.AppendLine($"- {risk}");
+            }
+        }
+
+        return builder.ToString().Trim();
+    }
+
+    private static string? ReadRegeneratedString(JsonElement element, string propertyName)
+    {
+        return element.TryGetProperty(propertyName, out var property) && property.ValueKind == JsonValueKind.String
+            ? property.GetString()?.Trim()
+            : null;
+    }
+
+    private static int? ReadRegeneratedInt(JsonElement element, string propertyName, int min, int max)
+    {
+        if (!element.TryGetProperty(propertyName, out var property))
+        {
+            return null;
+        }
+
+        int? parsed = property.ValueKind switch
+        {
+            JsonValueKind.Number when property.TryGetInt32(out var number) => number,
+            JsonValueKind.String when int.TryParse(property.GetString(), out var value) => value,
+            _ => null
+        };
+
+        return parsed >= min && parsed <= max ? parsed : null;
+    }
+
+    private static IReadOnlyList<string> ParseRegeneratedStringArray(JsonElement node)
+    {
+        return node.ValueKind == JsonValueKind.Array
+            ? node.EnumerateArray()
+                .Where(item => item.ValueKind == JsonValueKind.String)
+                .Select(item => item.GetString()?.Trim())
+                .Where(item => !string.IsNullOrWhiteSpace(item))
+                .Cast<string>()
+                .ToArray()
+            : [];
     }
 
     public async Task<ArtifactDownloadResult?> GetDiffDownloadAsync(Guid runId, CancellationToken cancellationToken)
@@ -1408,8 +1790,13 @@ public sealed class ReviewOrchestrator(
         }
 
         var previousRun = await reviewRunRepository.GetAsync(previousRunId.Value, cancellationToken);
-        return previousRun is null
-            ? run.Artifacts.FindingsComparison
+        if (previousRun is null)
+        {
+            return run.Artifacts.FindingsComparison;
+        }
+
+        return HasSameDiff(previousRun, run)
+            ? findingsComparisonService.CompareUnchangedDiff(previousRun.Id, previousRun.Findings, mergedFindings)
             : findingsComparisonService.Compare(previousRun.Id, previousRun.Findings, mergedFindings);
     }
 
@@ -2472,10 +2859,18 @@ public sealed class ReviewOrchestrator(
             NewFindingsCount = newFindings.Length,
             StillRelevantFindingsCount = stillRelevantFindings.Length,
             ResolvedFindingsCount = comparison.ResolvedFindingsCount,
+            IsDiffUnchanged = comparison.IsDiffUnchanged,
             NewFindings = newFindings,
             StillRelevantFindings = stillRelevantFindings,
             ResolvedFindings = comparison.ResolvedFindings
         };
+    }
+
+    private static bool HasSameDiff(ReviewRun previousRun, ReviewRun currentRun)
+    {
+        return !string.IsNullOrWhiteSpace(previousRun.Artifacts.DiffText) &&
+               string.Equals(previousRun.Artifacts.DiffText, currentRun.Artifacts.DiffText, StringComparison.Ordinal) &&
+               previousRun.Artifacts.ChangedFiles.SequenceEqual(currentRun.Artifacts.ChangedFiles, StringComparer.Ordinal);
     }
 
     private static string BuildFindingKey(ReviewFinding finding)

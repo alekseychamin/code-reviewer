@@ -18,6 +18,8 @@ public interface IReviewRunRepository
         ReviewTargetDescriptor target,
         CancellationToken cancellationToken);
 
+    Task DeleteAsync(Guid id, CancellationToken cancellationToken);
+
     Task<ReviewRun?> FindLatestCompletedForTargetAsync(
         ReviewTargetDescriptor target,
         DateTimeOffset createdBefore,

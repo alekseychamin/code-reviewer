@@ -67,4 +67,23 @@ public sealed class ReviewRunDto
     public IReadOnlyList<InlineCommentDto> InlineComments { get; init; } = [];
 
     public IReadOnlyList<ReviewedFileDto> ReviewedFiles { get; init; } = [];
+
+    public IReadOnlyList<ReviewProgressUpdateDto> ProgressUpdates { get; init; } = [];
+}
+
+public sealed class ReviewProgressUpdateDto
+{
+    public Guid RunId { get; init; }
+
+    public ReviewRunStatus Status { get; init; }
+
+    public ReviewPipelineStage? Stage { get; init; }
+
+    public int ProgressPercent { get; init; }
+
+    public string Message { get; init; } = string.Empty;
+
+    public DateTimeOffset Timestamp { get; init; }
+
+    public bool IsTerminal { get; init; }
 }
