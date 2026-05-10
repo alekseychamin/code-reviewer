@@ -102,4 +102,6 @@ Supported URL examples:
 - In docker compose, host Ollama is the default local target. The optional compose `ollama` service sits under the `local-llm` profile.
 - Without `POSTGRES_CONNECTION_STRING`, the backend falls back to in-memory review storage.
 - With PostgreSQL enabled, review history persists across API restarts and stores service name, author, findings, diagrams, reports, inline discussions, and change deltas versus previous runs.
+- Historical finding retrieval can be recency-weighted with `QDRANT_HISTORICAL_FINDING_HALF_LIFE_DAYS`; the default is 45 days, and `0` disables decay.
+- Habr-inspired improvement options are tracked in `docs/habr-improvement-options.md`.
 - The prompt design follows the existing Python prototype flow from `main.py` and `prompts.py`, translated into explicit pipeline stages and deterministic markdown generation.

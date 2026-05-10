@@ -217,10 +217,19 @@ public sealed class QdrantReviewSemanticIndex(
                     ]),
                 cancellationToken);
 
+            var referenceTime = run.CreatedAt == default ? DateTimeOffset.UtcNow : run.CreatedAt;
+            var halfLifeDays = Math.Max(0d, options.Value.HistoricalFindingHalfLifeDays);
+
             return response?.Result?
-                .Select(item => item.Payload)
-                .Where(payload => payload is not null && !string.Equals(payload.RunId, run.Id.ToString("N"), StringComparison.OrdinalIgnoreCase))
-                .Select(payload => payload!)
+                .Select(item => new HistoricalFindingCandidate(
+                    item.Payload,
+                    BuildRecencyWeightedScore(item.Score, item.Payload?.CreatedAt, referenceTime, halfLifeDays)))
+                .Where(candidate =>
+                    candidate.Payload is not null &&
+                    !string.Equals(candidate.Payload.RunId, run.Id.ToString("N"), StringComparison.OrdinalIgnoreCase))
+                .OrderByDescending(candidate => candidate.WeightedScore)
+                .ThenByDescending(candidate => candidate.Payload?.CreatedAt ?? DateTimeOffset.MinValue)
+                .Select(candidate => candidate.Payload!)
                 .Select(payload => new SemanticFindingMatch(
                     ParseGuidOrDefault(payload.RunId),
                     payload.CreatedAt ?? DateTimeOffset.MinValue,
@@ -541,6 +550,23 @@ public sealed class QdrantReviewSemanticIndex(
         return Guid.TryParse(value, out var parsed) ? parsed : Guid.Empty;
     }
 
+    private static double BuildRecencyWeightedScore(
+        double semanticScore,
+        DateTimeOffset? createdAt,
+        DateTimeOffset referenceTime,
+        double halfLifeDays)
+    {
+        var safeScore = semanticScore > 0d ? semanticScore : 1d;
+        if (createdAt is null || halfLifeDays <= 0d)
+        {
+            return safeScore;
+        }
+
+        var ageDays = Math.Max(0d, (referenceTime - createdAt.Value).TotalDays);
+        var decay = Math.Pow(0.5d, ageDays / Math.Max(1d, halfLifeDays));
+        return safeScore * decay;
+    }
+
     private static string CreatePointId(string rawValue)
     {
         var bytes = SHA256.HashData(Encoding.UTF8.GetBytes(rawValue));
@@ -613,9 +639,16 @@ public sealed class QdrantReviewSemanticIndex(
 
     private sealed class QdrantSearchResultItem
     {
+        [JsonPropertyName("score")]
+        public double Score { get; init; }
+
         [JsonPropertyName("payload")]
         public QdrantPayload? Payload { get; init; }
     }
+
+    private sealed record HistoricalFindingCandidate(
+        QdrantPayload? Payload,
+        double WeightedScore);
 
     private sealed class QdrantPayload
     {

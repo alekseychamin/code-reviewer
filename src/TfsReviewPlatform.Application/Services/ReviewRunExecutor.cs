@@ -2,6 +2,7 @@ using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using System.Text.Json;
 using System.Text;
+using System.Text.RegularExpressions;
 using TfsReviewPlatform.Application.Abstractions;
 using TfsReviewPlatform.Application.Models;
 using TfsReviewPlatform.Application.Prompts;
@@ -22,7 +23,10 @@ public sealed class ReviewRunExecutor(
     ILlmStageRouter llmStageRouter,
     ILlmCompletionService llmCompletionService,
     IReviewPromptFactory reviewPromptFactory,
-    IFindingsNormalizer findingsNormalizer,
+    IChunkReviewResponseParser chunkReviewResponseParser,
+    IRoslynWorkspaceBootstrapper roslynWorkspaceBootstrapper,
+    IRoslynGraphBuilder roslynGraphBuilder,
+    IGraphAwareChunker graphAwareChunker,
     IReviewWorkspaceToolExecutor reviewWorkspaceToolExecutor,
     IFindingsComparisonService findingsComparisonService,
     IMarkdownReportBuilder markdownReportBuilder,
@@ -46,11 +50,13 @@ public sealed class ReviewRunExecutor(
 
         ReviewRun? previousRun = null;
         DiffAcquisitionResult? diffResult = null;
+        string? roslynCleanupDirectory = null;
 
         try
         {
             run.Start();
             await PersistAndPublishAsync(run, "Review started", ReviewPipelineStage.DiffAcquisition, 2, cancellationToken);
+            LogReviewPipelineConfiguration(run, request);
             previousRun = await ResolveBaselineRunAsync(request, run, cancellationToken);
 
             diffResult = await AcquireDiffAsync(request, cancellationToken);
@@ -59,6 +65,60 @@ public sealed class ReviewRunExecutor(
             await PersistAndPublishAsync(run, "Diff acquired", ReviewPipelineStage.Preprocessing, 15, cancellationToken);
 
             var preprocessed = diffPreprocessor.Process(diffResult.DiffText);
+
+            var pipelineOptsForRoslyn = reviewPipelineOptions.Value;
+            if (pipelineOptsForRoslyn.Roslyn.Enabled)
+            {
+                await PersistAndPublishAsync(
+                    run,
+                    "Ход выполнения пайплайна: подготовка Roslyn workspace для построения graph",
+                    ReviewPipelineStage.Preprocessing,
+                    18,
+                    cancellationToken);
+
+                var bootstrap = await roslynWorkspaceBootstrapper.TryPrepareAsync(
+                    run.Id,
+                    diffResult,
+                    request.PullRequestAccessToken,
+                    preprocessed.ChangedFiles,
+                    cancellationToken);
+                if (bootstrap is { Success: true, WorkspaceDirectory: { } ws, SolutionPath: { } sln })
+                {
+                    roslynCleanupDirectory = bootstrap.CleanupDirectory;
+
+                    await PersistAndPublishAsync(
+                        run,
+                        "Ход выполнения пайплайна: построение graph (RoslynGraphBuilder)",
+                        ReviewPipelineStage.Preprocessing,
+                        22,
+                        cancellationToken);
+
+                    var graph = await roslynGraphBuilder.BuildAsync(ws, sln, preprocessed.ChangedFiles, cancellationToken);
+                    preprocessed = await graphAwareChunker.AugmentWithGraphChunksAsync(
+                        preprocessed,
+                        graph,
+                        ws,
+                        pipelineOptsForRoslyn,
+                        cancellationToken);
+
+                    await PersistAndPublishAsync(
+                        run,
+                        "Ход выполнения пайплайна: graph построен, расширяем чанки контекстом",
+                        ReviewPipelineStage.Preprocessing,
+                        27,
+                        cancellationToken);
+                }
+                else
+                {
+                    await PersistAndPublishAsync(
+                        run,
+                        "Ход выполнения пайплайна: построение graph пропущено, используем diff-only чанки",
+                        ReviewPipelineStage.Preprocessing,
+                        22,
+                        cancellationToken);
+                }
+            }
+
             run.UpdateArtifacts(new ReviewArtifacts
             {
                 DiffText = preprocessed.FilteredDiffText,
@@ -123,7 +183,7 @@ public sealed class ReviewRunExecutor(
                 return;
             }
 
-            var changeSummary = await GenerateChangeSummaryAsync(run.DisplayTitle, preprocessed, request, cancellationToken);
+            var changeSummary = await GenerateChangeSummaryAsync(run, run.DisplayTitle, preprocessed, request, cancellationToken);
             var description = changeSummary.Description;
             run.UpdateArtifacts(new ReviewArtifacts
             {
@@ -137,12 +197,42 @@ public sealed class ReviewRunExecutor(
             await reviewRunRepository.UpdateAsync(run, cancellationToken);
             await PersistAndPublishAsync(run, "Change description generated", ReviewPipelineStage.ChunkReview, 45, cancellationToken);
 
-            var rawFindings = await ReviewChunksAsync(description, preprocessed.ReviewChunks, diffResult, request, run, cancellationToken);
+            var rawFindings = reviewPipelineOptions.Value.SinglePassFullDiffAndGraphPrimaryReview
+                ? await ReviewSinglePassFullContextAsync(description, preprocessed, diffResult, request, run, cancellationToken)
+                : await ReviewChunksAsync(description, preprocessed.ReviewChunks, diffResult, request, run, cancellationToken);
             await PersistAndPublishAsync(run, "Raw findings collected", ReviewPipelineStage.FindingsNormalization, 75, cancellationToken);
 
-            var normalizedReview = findingsNormalizer.NormalizeChunkReview(rawFindings);
-            var findings = normalizedReview.Findings;
-            var primaryOpportunities = normalizedReview.Opportunities;
+            var findings = new List<ReviewFinding>();
+            var opportunities = new List<ReviewOpportunityItem>();
+            foreach (var raw in rawFindings)
+            {
+                var parsed = chunkReviewResponseParser.ParseChunkResponse(raw);
+                findings.AddRange(parsed.Findings);
+                opportunities.AddRange(parsed.Opportunities);
+            }
+
+            if (reviewPipelineOptions.Value.EnableFinalModelNormalizationPass)
+            {
+                await PersistAndPublishAsync(
+                    run,
+                    "Финальная нормализация findings через модель",
+                    ReviewPipelineStage.FindingsNormalization,
+                    76,
+                    cancellationToken);
+                var normalized = await RunFinalModelNormalizationAsync(
+                    findings,
+                    opportunities,
+                    cancellationToken);
+                findings = normalized.Findings.ToList();
+                opportunities = normalized.Opportunities.ToList();
+                logger.LogInformation(
+                    "Final model normalization for run {RunId}: findings={Findings}, opportunities={Opportunities}",
+                    run.Id,
+                    findings.Count,
+                    opportunities.Count);
+            }
+
+            var primaryOpportunities = opportunities;
             var findingsComparison = previousRun is null
                 ? null
                 : HasNoChangesSincePreviousReview(previousRun, preprocessed)
@@ -156,7 +246,7 @@ public sealed class ReviewRunExecutor(
                         findings);
             run.UpdateFindings(findings);
             await reviewRunRepository.UpdateAsync(run, cancellationToken);
-            await PersistAndPublishAsync(run, $"Normalized {findings.Count} findings", ReviewPipelineStage.FinalSynthesis, 87, cancellationToken);
+            await PersistAndPublishAsync(run, $"Collected {findings.Count} findings from chunk responses", ReviewPipelineStage.FinalSynthesis, 87, cancellationToken);
 
             var inlineComments = markdownReportBuilder.BuildInlineComments(findings, preprocessed.FilteredDiffText);
             var reviewedFiles = await BuildReviewedFilesAsync(diffResult, inlineComments, cancellationToken);
@@ -292,6 +382,19 @@ public sealed class ReviewRunExecutor(
                     logger.LogWarning(cleanupException, "Could not delete temporary review workspace {Directory}", diffResult.CleanupDirectory);
                 }
             }
+
+            if (!string.IsNullOrWhiteSpace(roslynCleanupDirectory) &&
+                Directory.Exists(roslynCleanupDirectory))
+            {
+                try
+                {
+                    Directory.Delete(roslynCleanupDirectory, true);
+                }
+                catch (Exception cleanupException)
+                {
+                    logger.LogWarning(cleanupException, "Could not delete Roslyn workspace {Directory}", roslynCleanupDirectory);
+                }
+            }
         }
     }
 
@@ -365,7 +468,35 @@ public sealed class ReviewRunExecutor(
         };
     }
 
+    private void LogReviewPipelineConfiguration(ReviewRun run, ReviewExecutionRequest request)
+    {
+        var o = reviewPipelineOptions.Value;
+        logger.LogInformation(
+            "Review pipeline configuration for run {RunId}: ProviderProfileId={ProviderProfileId}, ForceRerun={ForceRerun}, " +
+            "MaxChunkCharacters={MaxChunkCharacters}, MaxPrimaryReviewChunkCharacters={MaxPrimaryReviewChunkCharacters}, " +
+            "MergePrimaryReviewChunks={MergePrimaryReviewChunks}, MaxConcurrentChunkReviews={MaxConcurrentChunkReviews}, " +
+            "MaxChangeSummaryCharacters={MaxChangeSummaryCharacters}, RoslynEnabled={RoslynEnabled}, " +
+            "SinglePassFullDiffAndGraphPrimaryReview={SinglePassPrimary}, SinglePassFullContextMaxCharacters={SinglePassMax}, " +
+            "IncludeRoslynGraphInFullContextPayload={IncludeGraph}, FullContextMaxToolIterations={FullContextMaxToolIterations}, " +
+            "EnableFinalModelNormalizationPass={EnableFinalNormalization}",
+            run.Id,
+            string.IsNullOrWhiteSpace(request.ProviderProfileId) ? "(routing default)" : request.ProviderProfileId,
+            request.ForceRerun,
+            o.MaxChunkCharacters,
+            o.MaxPrimaryReviewChunkCharacters,
+            o.MergePrimaryReviewChunks,
+            o.MaxConcurrentChunkReviews,
+            o.MaxChangeSummaryCharacters,
+            o.Roslyn.Enabled,
+            o.SinglePassFullDiffAndGraphPrimaryReview,
+            o.SinglePassFullContextMaxCharacters,
+            o.IncludeRoslynGraphInFullContextPayload,
+            o.FullContextMaxToolIterations,
+            o.EnableFinalModelNormalizationPass);
+    }
+
     private async Task<ChangeSummaryResult> GenerateChangeSummaryAsync(
+        ReviewRun run,
         string reviewTitle,
         PreprocessedDiff preprocessed,
         ReviewExecutionRequest request,
@@ -379,9 +510,19 @@ public sealed class ReviewRunExecutor(
 
         var fileList = string.Join('\n', preprocessed.ChangedFiles.Take(100));
         var maxChangeSummaryCharacters = Math.Max(4000, reviewPipelineOptions.Value.MaxChangeSummaryCharacters);
-        var diffSnippet = preprocessed.ReviewContextDiffText.Length > maxChangeSummaryCharacters
+        var fullDiffLength = preprocessed.ReviewContextDiffText.Length;
+        var diffSnippet = fullDiffLength > maxChangeSummaryCharacters
             ? preprocessed.ReviewContextDiffText[..maxChangeSummaryCharacters]
             : preprocessed.ReviewContextDiffText;
+        if (fullDiffLength > maxChangeSummaryCharacters)
+        {
+            logger.LogInformation(
+                "Change description diff snippet truncated for run {RunId}: fullDiffLength={FullDiffLength}, maxChangeSummaryCharacters={MaxChangeSummaryCharacters}, truncatedCharacterCount={TruncatedCount}",
+                run.Id,
+                fullDiffLength,
+                maxChangeSummaryCharacters,
+                fullDiffLength - maxChangeSummaryCharacters);
+        }
 
         var response = await llmCompletionService.CompleteAsync(
             selection.Profile,
@@ -654,6 +795,446 @@ public sealed class ReviewRunExecutor(
             cancellationToken);
 
         return MermaidDiagramNormalizer.Normalize(response);
+    }
+
+    private async Task<IReadOnlyList<string>> ReviewSinglePassFullContextAsync(
+        string description,
+        PreprocessedDiff preprocessed,
+        DiffAcquisitionResult diffResult,
+        ReviewExecutionRequest request,
+        ReviewRun run,
+        CancellationToken cancellationToken)
+    {
+        var deterministicContext = await LoadDeterministicReviewContextAsync(
+            preprocessed,
+            diffResult,
+            run,
+            cancellationToken);
+        var payload = BuildSinglePassDiffAndGraphPayload(preprocessed, deterministicContext);
+        logger.LogInformation(
+            "Full-context primary review for run {RunId}: payloadChars={PayloadChars}, reviewHints={ReviewHints}, deterministicToolResponses={ToolResponses}",
+            run.Id,
+            payload.Length,
+            preprocessed.ReviewHints.Count,
+            deterministicContext.Count);
+
+        var selection = await llmStageRouter.ResolveAsync(
+            ReviewPipelineStage.ChunkReview,
+            request.ProviderProfileId,
+            request.StageOverrides,
+            cancellationToken);
+
+        await PersistAndPublishAsync(
+            run,
+            "Первичное ревью: полный diff + graph + tool-loop",
+            ReviewPipelineStage.ChunkReview,
+            52,
+            cancellationToken);
+
+        var systemPrompt = reviewPromptFactory.BuildSinglePassPrimaryReviewSystemPrompt(description);
+        var userPrompt = reviewPromptFactory.BuildSinglePassPrimaryReviewUserPrompt(payload);
+        var maxIterations = Math.Clamp(reviewPipelineOptions.Value.FullContextMaxToolIterations, 1, 6);
+
+        var response = await llmCompletionService.CompleteAsync(
+            selection.Profile,
+            new LlmChatRequest
+            {
+                Model = selection.Model,
+                Temperature = selection.Temperature,
+                ExpectJson = true,
+                SystemPrompt = systemPrompt,
+                UserPrompt = userPrompt
+            },
+            cancellationToken);
+
+        var currentPayload = userPrompt;
+        for (var iteration = 1; iteration <= maxIterations; iteration++)
+        {
+            var envelope = ParseChunkReviewAgentEnvelope(response);
+            logger.LogInformation(
+                "Full-context tool decision for run {RunId}, iteration {Iteration}: NeedMoreContext={NeedMoreContext}, ToolRequestsCount={ToolRequestsCount}",
+                run.Id,
+                iteration,
+                envelope.NeedMoreContext,
+                envelope.ToolRequests.Count);
+            if (!envelope.NeedMoreContext || envelope.ToolRequests.Count == 0)
+            {
+                break;
+            }
+
+            var toolResponses = await reviewWorkspaceToolExecutor.ExecuteAsync(
+                diffResult,
+                "(full-diff)",
+                envelope.ToolRequests,
+                cancellationToken);
+            if (toolResponses.Count == 0)
+            {
+                logger.LogInformation(
+                    "Full-context tool loop produced no results for run {RunId}, iteration {Iteration}",
+                    run.Id,
+                    iteration);
+                break;
+            }
+
+            currentPayload = BuildChunkReviewPayload(currentPayload, toolResponses);
+            response = await llmCompletionService.CompleteAsync(
+                selection.Profile,
+                new LlmChatRequest
+                {
+                    Model = selection.Model,
+                    Temperature = selection.Temperature,
+                    ExpectJson = true,
+                    SystemPrompt = reviewPromptFactory.BuildChunkReviewSystemPrompt(
+                        description,
+                        ReviewPromptSpecialRules.PrimaryReviewFinalizationRules),
+                    UserPrompt = reviewPromptFactory.BuildUserPrompt(
+                        ReviewPipelineStage.ChunkReview,
+                        currentPayload)
+                },
+                cancellationToken);
+        }
+
+        var coverageCriticResponse = await RunDeterministicCoverageCriticAsync(
+            description,
+            preprocessed,
+            deterministicContext,
+            response,
+            selection,
+            run,
+            cancellationToken);
+
+        await PersistAndPublishAsync(
+            run,
+            "Первичное ревью (full-context) завершено",
+            ReviewPipelineStage.ChunkReview,
+            70,
+            cancellationToken);
+
+        return string.IsNullOrWhiteSpace(coverageCriticResponse)
+            ? [response]
+            : [response, coverageCriticResponse];
+    }
+
+    private async Task<string?> RunDeterministicCoverageCriticAsync(
+        string description,
+        PreprocessedDiff preprocessed,
+        IReadOnlyList<ReviewWorkspaceToolResponse> deterministicContext,
+        string primaryReviewResponse,
+        StageRouteSelection selection,
+        ReviewRun run,
+        CancellationToken cancellationToken)
+    {
+        if (preprocessed.ReviewHints.Count == 0 || deterministicContext.Count == 0)
+        {
+            return null;
+        }
+
+        await PersistAndPublishAsync(
+            run,
+            "Проверяем покрытие deterministic review-hints",
+            ReviewPipelineStage.ChunkReview,
+            68,
+            cancellationToken);
+
+        var hintsBlock = ReviewHintFormatter.BuildAllHintsBlock(preprocessed.ReviewHints);
+        var contextBlock = BuildDeterministicContextBlock(deterministicContext);
+        var response = await llmCompletionService.CompleteAsync(
+            selection.Profile,
+            new LlmChatRequest
+            {
+                Model = selection.Model,
+                Temperature = 0,
+                ExpectJson = true,
+                SystemPrompt = reviewPromptFactory.BuildDeterministicCoverageCriticSystemPrompt(description),
+                UserPrompt = reviewPromptFactory.BuildDeterministicCoverageCriticUserPrompt(
+                    hintsBlock,
+                    contextBlock,
+                    primaryReviewResponse)
+            },
+            cancellationToken);
+
+        logger.LogInformation(
+            "Deterministic coverage critic completed for run {RunId}: responseChars={ResponseChars}",
+            run.Id,
+            response.Length);
+
+        return response;
+    }
+
+    private async Task<IReadOnlyList<ReviewWorkspaceToolResponse>> LoadDeterministicReviewContextAsync(
+        PreprocessedDiff preprocessed,
+        DiffAcquisitionResult diffResult,
+        ReviewRun run,
+        CancellationToken cancellationToken)
+    {
+        var requests = BuildDeterministicToolRequests(preprocessed);
+        if (requests.Count == 0)
+        {
+            return [];
+        }
+
+        await PersistAndPublishAsync(
+            run,
+            $"Подбираем deterministic context для {requests.Count} review-hints",
+            ReviewPipelineStage.ChunkReview,
+            50,
+            cancellationToken);
+
+        var responses = await reviewWorkspaceToolExecutor.ExecuteAsync(
+            diffResult,
+            "(deterministic-prefetch)",
+            requests,
+            cancellationToken);
+
+        logger.LogInformation(
+            "Deterministic review context for run {RunId}: Requests={RequestCount}, Responses={ResponseCount}",
+            run.Id,
+            requests.Count,
+            responses.Count);
+
+        return responses;
+    }
+
+    private static IReadOnlyList<ReviewWorkspaceToolRequest> BuildDeterministicToolRequests(PreprocessedDiff preprocessed)
+    {
+        if (preprocessed.ReviewHints.Count == 0)
+        {
+            return [];
+        }
+
+        var requests = new List<ReviewWorkspaceToolRequest>();
+
+        foreach (var hint in preprocessed.ReviewHints.OrderBy(GetDeterministicHintPriority))
+        {
+            if (hint.Category.StartsWith("SQL/", StringComparison.OrdinalIgnoreCase))
+            {
+                requests.Add(new ReviewWorkspaceToolRequest(
+                    "read_file",
+                    "Read the complete SQL query to verify join usage, predicates, and cardinality.",
+                    FilePath: hint.FilePath,
+                    StartLine: 1,
+                    MaxLines: 220));
+
+                var useCaseName = Path.GetFileNameWithoutExtension(hint.FilePath);
+                if (!string.IsNullOrWhiteSpace(useCaseName))
+                {
+                    requests.Add(new ReviewWorkspaceToolRequest(
+                        "find_usage",
+                        "Find production consumers of the changed SQL use-case.",
+                        Query: useCaseName,
+                        MaxLines: 120));
+                }
+
+                continue;
+            }
+
+            if (hint.Category.StartsWith("Configuration", StringComparison.OrdinalIgnoreCase))
+            {
+                requests.Add(new ReviewWorkspaceToolRequest(
+                    "grep_code",
+                    "Find options binding and nearby configuration section usage.",
+                    Query: "Configure<",
+                    PathScope: "src",
+                    MaxLines: 120));
+
+                requests.AddRange(preprocessed.ChangedFiles
+                    .Where(file => Path.GetFileName(file).StartsWith("appsettings", StringComparison.OrdinalIgnoreCase) &&
+                                   file.EndsWith(".json", StringComparison.OrdinalIgnoreCase))
+                    .Select(file => new ReviewWorkspaceToolRequest(
+                        "read_file",
+                        "Read changed appsettings file to verify option section shape.",
+                        FilePath: file,
+                        StartLine: 1,
+                        MaxLines: 260)));
+
+                continue;
+            }
+
+            if (hint.Category.StartsWith("Tests/", StringComparison.OrdinalIgnoreCase))
+            {
+                var seedName = ExtractSeedName(hint.Evidence);
+                if (!string.IsNullOrWhiteSpace(seedName))
+                {
+                    requests.Add(new ReviewWorkspaceToolRequest(
+                        "read_file",
+                        "Read seed helper referenced by the changed test.",
+                        Query: seedName,
+                        PathScope: "Test",
+                        StartLine: 1,
+                        MaxLines: 220));
+
+                    requests.Add(new ReviewWorkspaceToolRequest(
+                        "find_usage",
+                        "Find all usages of the seed helper referenced by the changed test.",
+                        Query: seedName,
+                        PathScope: "Test",
+                        MaxLines: 120));
+                }
+
+                continue;
+            }
+
+            if (hint.RuleId is "GROUP_BY_FIRST_WITHOUT_ORDER" or "NON_NULLABLE_CONTRACT_RETURNS_NULL")
+            {
+                requests.Add(new ReviewWorkspaceToolRequest(
+                    "read_file",
+                    "Read the full file around the hinted contract/data-integrity risk.",
+                    FilePath: hint.FilePath,
+                    StartLine: Math.Max(1, hint.StartLine - 40),
+                    MaxLines: 180));
+            }
+        }
+
+        return requests
+            .Where(request =>
+                !string.IsNullOrWhiteSpace(request.Query) ||
+                !string.IsNullOrWhiteSpace(request.FilePath))
+            .DistinctBy(request => $"{request.ToolName}|{request.Query}|{request.FilePath}|{request.PathScope}|{request.StartLine}|{request.MaxLines}")
+            .Take(16)
+            .ToArray();
+    }
+
+    private static int GetDeterministicHintPriority(ReviewHint hint)
+    {
+        if (hint.Category.StartsWith("Tests/", StringComparison.OrdinalIgnoreCase))
+        {
+            return 0;
+        }
+
+        if (hint.Category.StartsWith("Configuration", StringComparison.OrdinalIgnoreCase))
+        {
+            return 1;
+        }
+
+        if (hint.Category.StartsWith("SQL/", StringComparison.OrdinalIgnoreCase))
+        {
+            return 2;
+        }
+
+        return hint.RuleId switch
+        {
+            "GROUP_BY_FIRST_WITHOUT_ORDER" => 3,
+            "NON_NULLABLE_CONTRACT_RETURNS_NULL" => 4,
+            _ => 5
+        };
+    }
+
+    private static string ExtractSeedName(string evidence)
+    {
+        var match = Regex.Match(evidence, @"\b(Seed[A-Za-z0-9_]+)\.", RegexOptions.CultureInvariant);
+        return match.Success ? match.Groups[1].Value : string.Empty;
+    }
+
+    private string BuildSinglePassDiffAndGraphPayload(
+        PreprocessedDiff preprocessed,
+        IReadOnlyList<ReviewWorkspaceToolResponse> deterministicContext)
+    {
+        var sb = new StringBuilder();
+        sb.AppendLine("=== DIFF ===");
+        sb.AppendLine(preprocessed.FilteredDiffText.Trim());
+        sb.AppendLine();
+        var hintsBlock = ReviewHintFormatter.BuildAllHintsBlock(preprocessed.ReviewHints);
+        if (!string.IsNullOrWhiteSpace(hintsBlock))
+        {
+            sb.AppendLine(hintsBlock);
+            sb.AppendLine();
+        }
+
+        var deterministicContextBlock = BuildDeterministicContextBlock(deterministicContext);
+        if (!string.IsNullOrWhiteSpace(deterministicContextBlock))
+        {
+            sb.AppendLine(deterministicContextBlock);
+            sb.AppendLine();
+        }
+
+        if (!reviewPipelineOptions.Value.IncludeRoslynGraphInFullContextPayload)
+        {
+            sb.AppendLine("=== ROSLYN GRAPH ===");
+            sb.AppendLine("(explicitly disabled by IncludeRoslynGraphInFullContextPayload=false)");
+        }
+        else if (preprocessed.Graph is { Nodes.Count: > 0 } graph)
+        {
+            sb.AppendLine("=== ROSLYN GRAPH (JSON; same shape as graph.json) ===");
+            sb.AppendLine(graph.ToJsonString());
+        }
+        else
+        {
+            sb.AppendLine("=== ROSLYN GRAPH ===");
+            sb.AppendLine("(граф недоступен — Roslyn выключен или граф пуст)");
+        }
+
+        var combined = sb.ToString();
+        var max = reviewPipelineOptions.Value.SinglePassFullContextMaxCharacters;
+        if (max > 0 && combined.Length > max)
+        {
+            combined = combined[..max] + "\n… [truncated by SinglePassFullContextMaxCharacters]";
+        }
+
+        return combined;
+    }
+
+    private static string BuildDeterministicContextBlock(IReadOnlyList<ReviewWorkspaceToolResponse> deterministicContext)
+    {
+        if (deterministicContext.Count == 0)
+        {
+            return string.Empty;
+        }
+
+        var builder = new StringBuilder();
+        builder.AppendLine("=== DETERMINISTIC SUPPLEMENTAL CONTEXT (supporting evidence, not changed code) ===");
+        foreach (var response in deterministicContext)
+        {
+            builder.AppendLine($"Tool: {response.ToolName}");
+            builder.AppendLine($"Source: {response.Source}");
+            if (!string.IsNullOrWhiteSpace(response.FilePath))
+            {
+                builder.AppendLine($"File: {response.FilePath}");
+            }
+
+            if (response.StartLine > 0)
+            {
+                builder.AppendLine($"Lines: {response.StartLine}-{response.EndLine}");
+            }
+
+            builder.AppendLine("Content:");
+            builder.AppendLine(TrimForPrompt(response.Content, 12000));
+            builder.AppendLine();
+        }
+
+        return builder.ToString().TrimEnd();
+    }
+
+    private async Task<(IReadOnlyList<ReviewFinding> Findings, IReadOnlyList<ReviewOpportunityItem> Opportunities)>
+        RunFinalModelNormalizationAsync(
+            IReadOnlyList<ReviewFinding> findings,
+            IReadOnlyList<ReviewOpportunityItem> opportunities,
+            CancellationToken cancellationToken)
+    {
+        if (findings.Count == 0 && opportunities.Count == 0)
+        {
+            return (findings, opportunities);
+        }
+
+        var selection = await llmStageRouter.ResolveAsync(
+            ReviewPipelineStage.ChunkReview,
+            null,
+            [],
+            cancellationToken);
+
+        var response = await llmCompletionService.CompleteAsync(
+            selection.Profile,
+            new LlmChatRequest
+            {
+                Model = selection.Model,
+                Temperature = 0,
+                ExpectJson = true,
+                SystemPrompt = reviewPromptFactory.BuildFinalNormalizationSystemPrompt(),
+                UserPrompt = reviewPromptFactory.BuildFinalNormalizationUserPrompt(findings, opportunities)
+            },
+            cancellationToken);
+
+        var parsed = chunkReviewResponseParser.ParseChunkResponse(response);
+        return (parsed.Findings, parsed.Opportunities);
     }
 
     private async Task<IReadOnlyList<string>> ReviewChunksAsync(

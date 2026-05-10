@@ -67,11 +67,13 @@ internal sealed class GitHubPullRequestDiffProvider(
         await gitCommandRunner.RunAsync(tempDirectory, ["init"], cancellationToken);
         await gitCommandRunner.RunAsync(tempDirectory, ["remote", "add", "origin", remoteUrl], cancellationToken);
 
+        string? httpExtraHeader = null;
         if (!string.IsNullOrWhiteSpace(accessToken))
         {
+            httpExtraHeader = $"Authorization: Basic {EncodeGitHubToken(accessToken)}";
             await gitCommandRunner.RunAsync(
                 tempDirectory,
-                ["config", "http.extraHeader", $"Authorization: Basic {EncodeGitHubToken(accessToken)}"],
+                ["config", "http.extraHeader", httpExtraHeader],
                 cancellationToken);
         }
 
@@ -105,7 +107,11 @@ internal sealed class GitHubPullRequestDiffProvider(
             PullRequestUrl = pullRequestUrl,
             SourceRef = "origin/__source__",
             TargetRef = "origin/__target__",
-            CleanupDirectory = tempDirectory
+            CleanupDirectory = tempDirectory,
+            RepositoryRemoteUrl = remoteUrl,
+            GitFetchSourceRef = reference.BuildPullHeadRef(),
+            GitFetchTargetRef = targetRef,
+            GitHttpExtraHeader = httpExtraHeader
         };
     }
 

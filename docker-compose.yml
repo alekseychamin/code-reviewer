@@ -3,6 +3,10 @@ services:
     build:
       context: .
       dockerfile: src/TfsReviewPlatform.Api/Dockerfile
+      args:
+        NUGET_INTERNAL_FEED_URL: ${NUGET_INTERNAL_FEED_URL:-}
+        NUGET_INTERNAL_FEED_USERNAME: ${NUGET_INTERNAL_FEED_USERNAME:-}
+        NUGET_INTERNAL_FEED_PASSWORD: ${NUGET_INTERNAL_FEED_PASSWORD:-}
     restart: unless-stopped
     env_file:
       - .env
@@ -18,8 +22,16 @@ services:
       - Qdrant__VectorSize=${QDRANT_VECTOR_SIZE:-1024}
       - Qdrant__TargetedTopK=${QDRANT_TARGETED_TOP_K:-4}
       - Qdrant__GeneralTopK=${QDRANT_GENERAL_TOP_K:-8}
+      - Qdrant__HistoricalFindingHalfLifeDays=${QDRANT_HISTORICAL_FINDING_HALF_LIFE_DAYS:-45}
       - Qdrant__EmbeddingBaseUrl=${QDRANT_EMBEDDING_BASE_URL:-http://host.docker.internal:11434}
       - Qdrant__EmbeddingModel=${QDRANT_EMBEDDING_MODEL:-bge-m3:latest}
+      - ReviewPipeline__Roslyn__RestoreTimeoutSeconds=${REVIEW_ROSLYN_RESTORE_TIMEOUT_SECONDS:-900}
+      - ReviewPipeline__Roslyn__IncludeReferenceEdges=${REVIEW_ROSLYN_INCLUDE_REFERENCE_EDGES:-false}
+      - ReviewPipeline__SinglePassFullDiffAndGraphPrimaryReview=${REVIEW_SINGLE_PASS_FULL_CONTEXT:-false}
+      - ReviewPipeline__SinglePassFullContextMaxCharacters=${REVIEW_SINGLE_PASS_MAX_CHARS:-0}
+      - ReviewPipeline__IncludeRoslynGraphInFullContextPayload=${REVIEW_INCLUDE_ROSLYN_GRAPH_IN_FULL_CONTEXT:-true}
+      - ReviewPipeline__FullContextMaxToolIterations=${REVIEW_FULL_CONTEXT_MAX_TOOL_ITERATIONS:-2}
+      - ReviewPipeline__EnableFinalModelNormalizationPass=${REVIEW_FINAL_MODEL_NORMALIZATION:-true}
     extra_hosts:
       - "host.docker.internal:host-gateway"
     ports:

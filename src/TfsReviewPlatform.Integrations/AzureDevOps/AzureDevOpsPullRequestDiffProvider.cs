@@ -65,9 +65,10 @@ internal sealed class AzureDevOpsPullRequestDiffProvider(
 
         await gitCommandRunner.RunAsync(tempDirectory, ["init"], cancellationToken);
         await gitCommandRunner.RunAsync(tempDirectory, ["remote", "add", "origin", remoteUrl], cancellationToken);
+        var httpExtraHeader = $"Authorization: Basic {EncodePat(accessToken)}";
         await gitCommandRunner.RunAsync(
             tempDirectory,
-            ["config", "http.extraHeader", $"Authorization: Basic {EncodePat(accessToken)}"],
+            ["config", "http.extraHeader", httpExtraHeader],
             cancellationToken);
 
         if (azureDevOpsOptions.Value.SkipCertificateValidation)
@@ -100,7 +101,11 @@ internal sealed class AzureDevOpsPullRequestDiffProvider(
             PullRequestUrl = pullRequestUrl,
             SourceRef = "origin/__source__",
             TargetRef = "origin/__target__",
-            CleanupDirectory = tempDirectory
+            CleanupDirectory = tempDirectory,
+            RepositoryRemoteUrl = remoteUrl,
+            GitFetchSourceRef = sourceRef,
+            GitFetchTargetRef = targetRef,
+            GitHttpExtraHeader = httpExtraHeader
         };
     }
 

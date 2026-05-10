@@ -326,7 +326,8 @@ function InlineThreadCard({
   const severityClass = getSeverityClass(thread.severity);
   const highlightedContext = buildHighlightedContext(thread);
   const sourceLabel = getFindingSourceLabel(thread.source);
-  const sourceClass = thread.source === 'FollowUpDiscussion' ? 'source-followup' : 'source-initial';
+  const sourceClass =
+    thread.source === 'FollowUpDiscussion' ? 'source-followup' : 'source-initial';
 
   return (
     <article
@@ -457,7 +458,10 @@ function InlineThreadCard({
 }
 
 function getFindingSourceLabel(source: string): string {
-  return source === 'FollowUpDiscussion' ? 'После уточнения' : 'Первичное ревью';
+  if (source === 'FollowUpDiscussion') {
+    return 'После уточнения';
+  }
+  return 'Первичное ревью';
 }
 
 export function ThreadMessageBody({ message }: { message: ReviewCommentMessage }) {

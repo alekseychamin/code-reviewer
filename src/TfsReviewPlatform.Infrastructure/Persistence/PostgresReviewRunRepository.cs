@@ -14,7 +14,11 @@ public sealed class PostgresReviewRunRepository(string connectionString) : IRevi
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
         PropertyNameCaseInsensitive = true,
-        Converters = { new JsonStringEnumConverter() }
+        Converters =
+        {
+            new FlexibleReviewFindingSourceConverter(),
+            new JsonStringEnumConverter()
+        }
     };
 
     private readonly SemaphoreSlim _initializationLock = new(1, 1);

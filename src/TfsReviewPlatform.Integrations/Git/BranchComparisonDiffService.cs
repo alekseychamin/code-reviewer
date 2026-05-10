@@ -29,7 +29,9 @@ public sealed class BranchComparisonDiffService(ShellGitCommandRunner gitCommand
             ServiceName = resolvedRepositoryName,
             AuthorName = authorName,
             SourceRef = sourceBranch,
-            TargetRef = targetBranch
+            TargetRef = targetBranch,
+            GitFetchSourceRef = sourceBranch,
+            GitFetchTargetRef = targetBranch
         };
     }
 

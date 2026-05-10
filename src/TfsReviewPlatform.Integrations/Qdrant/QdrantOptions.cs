@@ -16,6 +16,8 @@ public sealed class QdrantOptions
 
     public int GeneralTopK { get; init; } = 8;
 
+    public double HistoricalFindingHalfLifeDays { get; init; } = 45;
+
     public string EmbeddingBaseUrl { get; init; } = string.Empty;
 
     public string EmbeddingModel { get; init; } = "bge-m3:latest";

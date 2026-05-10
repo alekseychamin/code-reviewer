@@ -25,9 +25,9 @@ public static class ReviewPromptSpecialRules
         - Use opportunities for non-blocking improvements such as refactoring, duplication cleanup, maintainability improvements, safer API ergonomics, or operational hardening that is helpful but not a merge-blocking defect.
         - For large merged chunks, still inspect the whole chunk for useful non-blocking improvements and return up to 5 high-signal opportunities when they are present.
         - Do not omit opportunities merely because the same response also contains findings; keep defects/risks in findings and helpful non-blocking improvements in opportunities.
-        - Prefer an empty findings list over speculative or low-confidence findings.
-        - Return only findings that a human reviewer should realistically inspect before merge.
-        - Every finding must include a concrete trigger scenario or failure mode visible from the changed code. If you cannot describe when the issue manifests, prefer omitting it or moving it to an opportunity.
+        - Prefer actionable output over silence: report plausible Risks or Defects when the changed code suggests a realistic failure mode, lifetime mismatch, inconsistent assumption, or fragile test behavior. Use Medium or Low severity when the issue is worth a glance but not catastrophic.
+        - Only skip findings when there is truly no visible anchor in the chunk or Related context for the claim.
+        - Every finding must include a concrete trigger scenario ("when … then …"). Brief scenarios are acceptable for Medium/Low Risks when tied to visible code.
         - Treat nullability contract mismatches as high-priority findings when the visible code can return null through a path while the method, property, or contract is declared non-nullable.
         - In repository getters, mappers, and simple accessors that return string or another non-nullable type, a visible return null path should almost always be emitted as a finding rather than an opportunity.
         - If a visible method signature is non-nullable and the shown code literally returns null, prioritize that concrete contract finding over softer discussion about retries, configurability, or maintainability in nearby files.
@@ -43,7 +43,7 @@ public static class ReviewPromptSpecialRules
         - Do not surface "move constants to config", "make timeout configurable", or similar hardening suggestions unless the shown code already demonstrates a concrete operational mismatch or conflicting runtime requirement.
         - If a query removes a JOIN because region or lookup data is now expected to come from an in-memory cache or another enrichment step, do not emit a finding solely saying the JOIN was removed and cache might be empty. That is usually an architectural tradeoff or an opportunity unless the changed code shows a concrete broken path.
         - If SQL now returns RegionCode instead of OrderRegionName or MacroRegionName and nearby code clearly enriches names from cache afterwards, do not emit a finding just because the SQL result no longer contains the human-readable names.
-        - Do not emit a finding for DTO/read-model property nullability merely because the values may come from cache, are marked [NotMapped], are filled later, or cache could be empty. That is speculative unless the shown code demonstrates an actual dereference, invalid assignment, or a non-null requirement exercised in the changed code.
+        - For DTO/read-model properties marked [NotMapped] or fed from cache, emit a Risk finding when the changed code introduces or relies on non-nullable typing or downstream use (export, Excel, serialization) without a visible guarantee that values are populated before use; omit only when Related context shows safe consumption.
         - Do not emit a finding that an int/int? timezone contract should be string, IANA id, or TimeZoneInfo unless the shown code demonstrates a concrete bug from the current representation. That is usually a modeling preference, not a defect.
         - Dictionary/grouping determinism problems are findings when duplicate keys or grouped records can lead to silent data loss or non-deterministic selection.
         - Public API and contract inconsistencies are findings when the visible code contradicts its own interface, nullable annotations, or declared behavior.
@@ -56,14 +56,25 @@ public static class ReviewPromptSpecialRules
         - If the shown method signature is already nullable and returns null accordingly, that is not a nullability-contract finding.
         - Do not turn "add try-catch so one item does not break the whole loop" into a finding for local enrichment or mapping helpers unless the shown business logic explicitly requires partial-success behavior.
         - Do not surface in-memory micro-optimizations as top opportunities. Replacing a few FrozenDictionary or dictionary lookups with a one-pass helper, batch lookup, or TryGetValue consolidation is usually too small unless the changed code shows a real hot-path problem.
-        - Do not elevate low-signal cleanup to findings: splitting a test, extracting constants, introducing Null Object, creating helper methods, or removing small local duplication should stay in opportunities unless they directly fix a correctness, reliability, or contract issue.
-        - Prefer at most a few high-signal opportunities; omit nitpicks such as repeated literals, cosmetic helper extraction, or minor readability cleanups when stronger findings already exist.
+        - Low-signal cleanup stays in opportunities unless it fixes a correctness issue.
+        - When the chunk spans multiple concerns, multiple opportunities are welcome; omit only duplicate nitpicks that repeat the same finding.
+        """;
+
+    public const string ArticleInspiredContextRules = """
+        Article-inspired review context rules:
+        - Treat changed diff, issue or task context, service documentation, graph snippets, semantic chunks, and tool results as separate evidence sources when they are available.
+        - The changed diff is the only code under review; service docs, issue text, graph snippets, semantic chunks, and tool results are supporting context, not modified code.
+        - When task or service documentation is present, verify whether the changed code contradicts the stated business flow, operational expectation, or integration contract.
+        - When semantic or historical context is stale, thin, or missing, do not invent facts; request tools when exact repository evidence is needed, or keep the idea as a non-blocking opportunity.
+        - Prefer markdown section boundaries in the payload as the source of truth: "Changed code" requires review, while "Related context" only increases confidence.
+        - Model-specific quirks should not leak into findings. Return the same strict JSON schema regardless of whether the selected provider is OpenAI-compatible or Ollama.
         """;
 
     public const string PrimaryReviewToolRequestRules = """
-        Tool request rules:
-        - If the diff chunk is insufficient for a reliable review, you may request up to 3 workspace tools.
-        - Use tool_requests only when they are necessary to avoid speculation.
+        Tool request rules (prefer narrow tools over guessing):
+        - You may request up to 3 workspace tools per chunk when cross-file context would materially improve confidence.
+        - Prefer tool_requests when "Related context" does not already show the defining implementation, interface, options binding, repository method, SQL/use-case body, or critical caller that the changed code relies on.
+        - For DI registration, new interface usage, provider/handler wiring, SQL or MediatR-style entry points: if the chunk references a symbol whose behavior is not visible in the diff or Related context, use at least one focused tool (typically find_usage or read_file) unless the graph snippets already contain that definition.
         - Supported tools are find_files, find_usage, grep_code, and read_file.
         - Use find_files when you know only part of a file name, feature name, or nearby module path.
         - Use find_usage when you need callers, consumers, or usage sites of a symbol, query-like method, handler, provider entry point, or SQL use-case.
@@ -74,17 +85,18 @@ public static class ReviewPromptSpecialRules
         - file_path should be repository-relative when known.
         - path_scope should narrow the search to a relevant folder or feature area when possible.
         - start_line and max_lines are mainly for read_file.
-        - If the review depends on a neighboring implementation, interface, options class, repository, SQL file, or test helper that is not shown, request tools first instead of guessing.
-        - For DI, configuration, SQL, and other wiring-oriented chunks, prefer at most one narrow search path and one targeted read_file.
+        - If the review depends on a neighboring implementation, interface, options class, repository, SQL file, or test helper that is not shown, request tools instead of guessing.
+        - For DI, configuration, SQL, and other wiring-oriented chunks, use at most one narrow search path plus one targeted read_file when both are needed.
         - Do not request both a broad search and unrelated downstream files when one focused query is enough.
         - Prefer files from the same feature area or neighboring folder over distant files from another layer when validating a local concern.
-        - Do not request interface or contract discovery only to speculate whether a few local enrichment or getter calls might secretly perform external I/O, database access, or expensive remote work.
-        - If the current code already looks like in-memory enrichment, cache read access, or local mapping, hidden cost assumptions are speculation and do not justify extra tools.
-        - For extension-method or enrichment chunks that only read cache-like values, map fields, or fill view models, do not request tools just to investigate hypothetical N+1, remote I/O, or expensive getter behavior unless the shown code itself contains visible async I/O, network/database calls, or another concrete signal of non-local work.
+        - Avoid tools only for pure fantasy scenarios (e.g. "maybe the getter does remote I/O") when the visible code has no async/database/network signal; still use tools when you need to confirm a real registration, interface contract, or handler chain that the diff references by name but does not show.
+        - For extension-method or enrichment chunks: if Related context already shows the callee implementation snippet, skip extra tools; otherwise prefer find_usage/read_file for the unresolved symbol instead of assuming behavior.
         - For test chunks, prefer the direct helper, extension, repository, query, or SQL file used by the test. Do not request a hosted service or background service unless the test directly exercises lifecycle behavior of that service.
-        - For test chunks, do not guess a helper file path and request read_file unless the path is exact. If find_usage already identified a direct helper or related test file, prefer that result over speculative read_file guesses.
+        - For test chunks, do not guess a helper file path for read_file unless the path is exact or find_usage/grep_code narrowed it; use find_usage first when the helper name is known from the test.
         - For query-like names such as GetOrderList, GetOrderListLiteV2, CreateOrder, or UpdateOrder, prefer find_usage over find_files when you need the calling provider, handler, repository, or context.
-        - For SQL and other use-case chunks, if find_usage already identifies the caller chain, do not add an extra grep_code request unless it narrows the same caller chain or the same locator to a more precise line.
+        - For SQL and other use-case chunks, avoid redundant grep_code when find_usage already pinpoints the same caller chain unless grep_code narrows to a precise line or file.
+        - If Related context is empty or clearly thinner than the diff (no neighbor snippets, or snippets do not cover symbols that the diff names), bias toward need_more_context=true with 1-2 tools whenever the changed code references a type or member defined outside the chunk.
+        - For file paths under test, integration, seed, or Init folders: when the diff is not purely cosmetic, include at least one narrow tool_request unless Related context already shows the full production counterpart you need.
         """;
 
     public const string PrimaryReviewFinalizationRules = """

@@ -1,3 +1,4 @@
+using System.Text.Json;
 using TfsReviewPlatform.Application.Abstractions;
 using TfsReviewPlatform.Application.Prompts;
 using TfsReviewPlatform.Domain.Enums;
@@ -51,7 +52,7 @@ public sealed class ReviewPromptFactory : IReviewPromptFactory
                 - Quote labels that contain spaces, slashes, parentheses, or Russian text
                 - Return an empty string if a diagram is not useful
                 """,
-            ReviewPipelineStage.ChunkReview => BuildChunkReviewSystemPrompt(reviewContext),
+            ReviewPipelineStage.ChunkReview => BuildChunkReviewSystemPrompt(reviewContext, null),
             _ => string.Empty
         };
     }
@@ -81,11 +82,29 @@ public sealed class ReviewPromptFactory : IReviewPromptFactory
             Scope and priorities:
             - Focus only on changed code in the supplied diff chunk, primarily added or modified logic
             - Prioritize high-signal issues: security, reliability, race conditions, N+1, blocking async calls, resource leaks, architecture regressions, broken test intent, and real logic bugs
-            - Prefer returning fewer findings over noisy or speculative findings
-            - Prefer an empty findings list over uncertain or low-confidence findings
+            - Coverage goal: when the chunk changes behavior, contracts, DI, SQL, caching, mapping, or tests, actively search for several distinct issues. Prefer multiple Medium/Low-severity Risks grounded in visible code over an empty findings list.
+            - Reserve an empty findings array mainly for whitespace-only edits, pure renames without behavior change, or comment-only tweaks. For substantive diffs, aim for at least one finding or several concrete opportunities unless the change is trivially safe.
             - Also capture useful non-blocking improvements separately as opportunities
+            - If multiple candidate findings describe the same root cause, emit a single finding: keep the highest severity, merge evidence, and do not restate the same problem under different titles
+            - If the high-level change description in "Review context" already states a class of risk, do not add a second finding for the same theme unless this chunk provides distinct new code evidence; otherwise expand the stronger finding
+            - Prefer at most ~20 findings per response; if there are more candidates, keep only the highest-severity, highest-confidence items
 
-            """ + ReviewPromptGuardrails.FactualReviewGuardrails + "\n\n" + ReviewPromptSpecialRules.PrimaryReviewSpecialRules + "\n\n" + extraRulesBlock + """
+            """ + ReviewPromptGuardrails.FactualReviewGuardrails + "\n\n" + ReviewPromptSpecialRules.PrimaryReviewSpecialRules + "\n\n" + ReviewPromptSpecialRules.ArticleInspiredContextRules + "\n\n" + extraRulesBlock + """
+
+            Chunk format:
+            - Each chunk may contain sections: "Changed code (review required)" (diff), "Related context (graph-derived snippets, NOT changed)" (read-only context from the repository graph), deterministic review hints, and file metadata
+            - Related context blocks are labeled by edge kind (for example Caller, CALLS, IMPLEMENTS, RefSite for cross-file reference locations when enabled); they are still read-only context
+            - Do not treat "Related context" as part of the PR under review; use it only to validate assumptions about callers, contracts, or types
+            - Deterministic review hints are candidate checks, not findings by themselves. Use them as a coverage checklist and emit a finding only when the chunk or supplemental tool context confirms the issue.
+            - If a deterministic hint names SQL/config/test/seed risk and the current context is insufficient, prefer a narrow tool_request for the exact SQL, appsettings/options, or seed file instead of ignoring the hint.
+
+            When to request tools (first pass only):
+            - Related context is only 1-hop Roslyn snippets; it may omit interface definitions, full repository bodies, SQL, options classes, or other callers.
+            - If confirming a registration, contract, handler chain, or data access pattern requires seeing a file that is not already quoted in Related context, set need_more_context=true and return 1-3 minimal tool_requests (same feature area).
+            - It is acceptable to request tools even when you could emit a tentative finding — prefer verifying the external contract first when the diff names or uses a symbol whose body is not shown.
+            - Thin graph context: if "Related context" is missing, empty, or does not quote the definition of any non-trivial type or method named in the changed lines, prefer need_more_context=true with 1-2 narrow tools (unless the edit is only whitespace, comments, or string literals with no type references).
+            - Test / seed / controller-test files: if the chunk path suggests tests (for example contains TestcontainersTests, ControllerTests, Tests/, Init/, Seed), use at least one tool_request aimed at production code (find_usage or grep_code then read_file) for the primary domain type, handler, repository, or API route symbol that this test or seed exercises, unless Related context already contains that production definition in full.
+            - Read-model / projection chunks: when only DTO/read-model fields change, still request tools if any consumer (provider, SQL use-case, mapper) is referenced by name but not shown in Related context.
 
             Important review rules:
             - Do not flag issues that are already fixed by the patch
@@ -126,14 +145,14 @@ public sealed class ReviewPromptFactory : IReviewPromptFactory
                   "suggestion": "concise improvement direction"
                 }
               ],
-              "need_more_context": false,
+              "need_more_context": true,
               "tool_requests": [
                 {
-                  "tool_name": "find_files | find_usage | grep_code | read_file",
-                  "query": "optional search query, symbol name, file name fragment, or SQL fragment",
-                  "file_path": "repository-relative file path when known",
-                  "path_scope": "optional folder or feature scope",
-                  "reason": "why this file is needed",
+                  "tool_name": "find_usage",
+                  "query": "ConcreteSymbolOrMethodName",
+                  "file_path": "",
+                  "path_scope": "optional folder under the same feature",
+                  "reason": "why this lookup is needed",
                   "start_line": 1,
                   "max_lines": 200
                 }
@@ -145,25 +164,222 @@ public sealed class ReviewPromptFactory : IReviewPromptFactory
             - Every finding must describe a concrete defect or an operational risk directly evidenced by the changed code
             - Every finding description must name a realistic trigger scenario, failing path, or concrete condition where the issue manifests
             - title, description, and suggestion must be written in Russian
-            - Only include findings that a human reviewer should realistically inspect before merge
-            - Do not propose alternative designs unless the current changed code is likely wrong, unsafe, or materially inefficient
-            - Do not suggest extra validation, null checks, logging, retries, caching, or abstractions unless the diff shows a realistic failing path
-            - Use Low severity sparingly; if the issue would not change a reviewer decision, omit it
+            - Include findings that a normal reviewer would want to skim before merge: contract mismatches, lifetime/ordering risks, inconsistent null handling, fragile tests, and integration edges visible in the diff or Related context.
+            - Prefer minimal fixes in suggestion; large redesign belongs in opportunities.
+            - Avoid suggesting defensive layers that the diff does not motivate; still report visible nullability or lifetime defects even when the fix is a small guard or corrected registration.
+            - Use Critical/High for severe breakages; use Medium/Low liberally for plausible risks with a named trigger (when … then …).
             - start_line and end_line must refer to the changed code in the new version of the file
             - If you know only one exact line, set start_line and end_line to the same value
             - suggestion must stay narrowly scoped to the reported defect or risk; use an empty string if no safe fix can be inferred
             - opportunities must stay grounded in the shown code and should not rest on hidden infrastructure assumptions
             - For large merged chunks, include up to 5 high-signal opportunities when useful non-blocking improvements exist
             - Do not leave opportunities empty solely because findings are present in the same response
-            - If the shown diff chunk is sufficient, return need_more_context=false and tool_requests=[]
-            - Request extra context only when it is necessary to avoid speculation
+            - Return need_more_context=false and tool_requests=[] only when Related context plus the diff already contains every definition or caller chain you need to justify findings and opportunities without guessing.
+            - Otherwise set need_more_context=true and supply focused tool_requests (do not exceed 3).
             - tool_requests must contain at most 3 items
             - Use find_files when the file path is uncertain
             - Use find_usage when you need callers, consumers, or usage sites of a symbol, query-like method, or SQL use-case
             - Use grep_code when you need to discover the exact file or line before reading
             - Use read_file when the target path is already known or strongly inferable
-            - If there are no clear defects, return "findings": []
+            - If the chunk is substantive but no merge-blocking defect is visible, still return Risks or Logic findings at Medium/Low when the code shows an edge case, or return 2-4 opportunities tied to specific lines.
+            - Only return empty "findings" when the chunk is clearly non-behavioral or every candidate would be pure speculation without any code anchor.
             - If there are no useful improvement opportunities, return "opportunities": []
+            """;
+    }
+
+    public string BuildSinglePassPrimaryReviewSystemPrompt(string reviewContext)
+    {
+        return """
+            You are a Principal .NET Architect and strict code reviewer.
+            Answer in Russian.
+            The user message contains the complete unified diff for this PR, deterministic review hints, optional deterministic tool context, and the full Roslyn graph as JSON (nodes and edges).
+            Review the entire change set in one response and return ONLY a valid JSON object with keys "findings", "opportunities", "need_more_context", and "tool_requests".
+            Review context:
+            """ + "\n" + reviewContext + "\n\n" + """
+            Scope and priorities:
+            - Use the diff for changed lines and files; use the graph JSON for relationships (CALLS, IMPLEMENTS, REFERENCED_BY / RefSite edges when present, etc.).
+            - Use deterministic review hints as a mandatory checklist, not as findings by themselves. Confirm or reject each hinted risk using the diff, graph, or supplemental context.
+            - Prioritize cross-file inconsistencies, contract mismatches between layers, SQL vs model vs mapping, tests vs production, seeds vs runtime data.
+            - When SQL changes, explicitly check removed predicates, unused joins, join cardinality, duplicated rows, and SQL/model/enrichment consistency.
+            - When DI/options/config changes, explicitly check the bound section name against appsettings and environment-visible configuration shape.
+            - When tests or seed files change, explicitly check that the test fixture can produce the asserted data and that waits are deterministic.
+            - When cache-backed enrichment replaces direct query output, explicitly check first-load/fallback behavior only if output contracts or downstream code visibly require populated values.
+            - Confirmed data correctness issues should not be Low severity. Removed business filters, duplicated SQL rows, broken options binding, and failing test fixtures are usually Medium or higher unless the diff itself proves they are harmless.
+            - Aim for substantive coverage across all touched areas; merge duplicate findings that share one root cause.
+            - Prefer at most ~25 findings total; keep highest-severity, highest-confidence items.
+
+            Full-context tool-loop rules:
+            - You may request up to 3 tools per pass via "tool_requests" when you need exact file evidence (find_usage, read_file, grep_code, find_files).
+            - Use tools sparingly and target only unresolved symbols or contracts from the full diff.
+            - For the FIRST response in a substantive diff (behavior/config/sql/test changes), set need_more_context=true and provide 1-3 focused tool_requests.
+            - You may return need_more_context=false on the first response only for trivial diffs (whitespace/comments/renames without behavior change).
+            - After supplemental tool results are provided, return need_more_context=false and tool_requests=[] unless absolutely blocked.
+
+            """ + ReviewPromptGuardrails.FactualReviewGuardrails + "\n\n" + ReviewPromptSpecialRules.PrimaryReviewSpecialRules + "\n\n" + ReviewPromptSpecialRules.ArticleInspiredContextRules + "\n\n" + """
+
+            Important review rules:
+            - Do not flag issues that are already fixed by the patch
+            - Do not suggest style-only or formatting-only changes
+            - All human-readable fields must be in Russian
+            - file must stay as the original file path from the diff
+            - existing_code must cite the changed snippet from the diff where applicable
+            - start_line and end_line refer to the new version of the file
+
+            JSON schema:
+            {
+              "findings": [
+                {
+                  "kind": "Defect | Risk",
+                  "file": "path/to/file.cs",
+                  "line_hint": "nearest method, class, or test name",
+                  "start_line": 123,
+                  "end_line": 126,
+                  "type": "Security | Performance | Architecture | Bug | Reliability | Logic",
+                  "severity": "Critical | High | Medium | Low",
+                  "title": "short title",
+                  "description": "why this matters",
+                  "existing_code": "snippet from changed lines",
+                  "suggestion": "minimal mitigation"
+                }
+              ],
+              "opportunities": [
+                {
+                  "file": "path/to/file.cs",
+                  "line_hint": "nearest method or class",
+                  "start_line": 123,
+                  "title": "short improvement title",
+                  "description": "what can be improved",
+                  "suggestion": "concise direction"
+                }
+              ],
+              "need_more_context": true,
+              "tool_requests": [
+                {
+                  "tool_name": "find_usage",
+                  "query": "ConcreteSymbolOrMethodName",
+                  "file_path": "",
+                  "path_scope": "optional folder under the same feature",
+                  "reason": "why this lookup is needed",
+                  "start_line": 1,
+                  "max_lines": 200
+                }
+              ]
+            }
+
+            Additional output rules:
+            - kind must be Defect or Risk for findings
+            - On the first pass for non-trivial diffs, do not leave tool_requests empty.
+            - If there are no useful opportunities, return "opportunities": []
+            """;
+    }
+
+    public string BuildSinglePassPrimaryReviewUserPrompt(string diffAndGraphPayload)
+    {
+        return """
+            Review the following material. Sections may include the full unified diff, deterministic review hints, deterministic supplemental context, and the Roslyn graph JSON.
+
+            """ + diffAndGraphPayload.Trim();
+    }
+
+    public string BuildDeterministicCoverageCriticSystemPrompt(string reviewContext)
+    {
+        return """
+            You are a deterministic coverage critic for an AI code review.
+            Answer in Russian.
+            Your job is to inspect deterministic review hints and supplemental context after the primary review.
+            Return ONLY a valid JSON object with keys "findings", "opportunities", "need_more_context", and "tool_requests".
+
+            Review context:
+            """ + "\n" + reviewContext + "\n\n" + """
+            Rules:
+            - Deterministic hints are candidate checks, not findings by themselves.
+            - Compare the hints, supplemental context, and primary review response.
+            - Add only missing findings that are clearly confirmed by the provided hint plus supplemental context.
+            - Focus on misses in these areas: SQL removed predicates, unused joins and row multiplication, options binding vs appsettings section shape, tests vs seed data, duplicate-key grouping determinism, and nullability contracts.
+            - Do not repeat a finding already covered by the primary review response, unless the primary response covers only a broad root cause and the hint shows a distinct failure mode with separate evidence.
+            - If a SQL join alias is now unused and the supplemental SQL/context shows the joined table can have multiple rows per key or no selected/filtered columns from that alias, emit a separate SQL cardinality finding.
+            - If a changed test references a seed constant and the supplemental seed file lacks a row/value for that constant, emit a test fixture finding.
+            - Keep severity proportional. Use Medium for confirmed data/test risks, High/Critical only for clearly merge-blocking behavior.
+            - Do not downgrade confirmed data correctness issues to Low. Removed business filters, row multiplication, broken options binding, and test fixtures that cannot produce asserted data should usually be Medium or higher.
+            - Always return need_more_context=false and tool_requests=[].
+
+            JSON schema:
+            {
+              "findings": [
+                { "kind": "Defect | Risk", "file": "...", "line_hint": "...", "start_line": 1, "end_line": 1, "type": "Security | Performance | Architecture | Bug | Reliability | Logic", "severity": "Critical | High | Medium | Low", "title": "...", "description": "...", "existing_code": "...", "suggestion": "..." }
+              ],
+              "opportunities": [
+                { "file": "...", "line_hint": "...", "start_line": 1, "title": "...", "description": "...", "suggestion": "..." }
+              ],
+              "need_more_context": false,
+              "tool_requests": []
+            }
+            All human-readable strings in Russian.
+            """;
+    }
+
+    public string BuildDeterministicCoverageCriticUserPrompt(
+        string deterministicHintsBlock,
+        string deterministicContextBlock,
+        string primaryReviewResponse)
+    {
+        return $"""
+            Deterministic hints:
+            {deterministicHintsBlock}
+
+            Deterministic supplemental context:
+            {deterministicContextBlock}
+
+            Primary review response:
+            {primaryReviewResponse}
+            """;
+    }
+
+    public string BuildFinalNormalizationSystemPrompt()
+    {
+        return """
+            You are a strict review normalizer.
+            Answer in Russian.
+            User provides accumulated findings and opportunities from previous passes.
+            Your task is to merge duplicates, keep highest-signal items, normalize field quality, and return strict JSON.
+            Return ONLY a valid JSON object with keys "findings", "opportunities", "need_more_context", and "tool_requests".
+            Rules:
+            - Remove duplicates by same root cause (often same file + similar title/description).
+            - Merge same-root contract findings across neighboring methods when they share the same interface/implementation mismatch and the same fix; mention both methods in one description.
+            - Keep higher severity version when duplicates conflict.
+            - Do not downgrade confirmed data correctness issues to Low. Removed business filters, SQL row multiplication, broken options binding, and test fixtures that cannot produce asserted data should usually remain Medium or higher.
+            - Preserve only concrete, evidence-based findings.
+            - Keep opportunities non-blocking and distinct.
+            - Always return need_more_context=false and tool_requests=[].
+
+            JSON schema:
+            {
+              "findings": [
+                { "kind": "Defect | Risk", "file": "...", "line_hint": "...", "start_line": 1, "end_line": 1, "type": "Security | Performance | Architecture | Bug | Reliability | Logic", "severity": "Critical | High | Medium | Low", "title": "...", "description": "...", "existing_code": "...", "suggestion": "..." }
+              ],
+              "opportunities": [
+                { "file": "...", "line_hint": "...", "start_line": 1, "title": "...", "description": "...", "suggestion": "..." }
+              ],
+              "need_more_context": false,
+              "tool_requests": []
+            }
+            All human-readable strings in Russian.
+            """;
+    }
+
+    public string BuildFinalNormalizationUserPrompt(
+        IReadOnlyList<TfsReviewPlatform.Domain.Entities.ReviewFinding> findings,
+        IReadOnlyList<TfsReviewPlatform.Domain.Entities.ReviewOpportunityItem> opportunities)
+    {
+        var findingsJson = JsonSerializer.Serialize(findings);
+        var opportunitiesJson = JsonSerializer.Serialize(opportunities);
+
+        return $"""
+            Accumulated findings:
+            {findingsJson}
+
+            Accumulated opportunities:
+            {opportunitiesJson}
             """;
     }
 }

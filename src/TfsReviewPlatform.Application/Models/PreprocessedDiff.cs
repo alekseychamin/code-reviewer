@@ -1,6 +1,8 @@
+using TfsReviewPlatform.Application.Models.Graph;
+
 namespace TfsReviewPlatform.Application.Models;
 
-public sealed class PreprocessedDiff
+public sealed record PreprocessedDiff
 {
     public required string FilteredDiffText { get; init; }
 
@@ -11,4 +13,8 @@ public sealed class PreprocessedDiff
     public IReadOnlyList<string> ReviewChunks { get; init; } = [];
 
     public IReadOnlyList<string> Chunks { get; init; } = [];
+
+    public IReadOnlyList<ReviewHint> ReviewHints { get; init; } = [];
+
+    public CodeGraph? Graph { get; init; }
 }

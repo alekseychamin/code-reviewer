@@ -293,4 +293,119 @@ public sealed class DiffPreprocessorTests
                      chunk.Contains("beta 01 1234567890", StringComparison.Ordinal));
     }
 
+    [Fact]
+    public void Process_GeneratesSqlHints_ForRemovedBusinessFiltersAndUnusedJoin()
+    {
+        var sut = new DiffPreprocessor(Microsoft.Extensions.Options.Options.Create(new ReviewPipelineOptions
+        {
+            MaxChunkCharacters = 4000
+        }));
+
+        var diff = """
+            diff --git a/Infrastructure/Db/GetOrderListForExcelFile.sql b/Infrastructure/Db/GetOrderListForExcelFile.sql
+            --- a/Infrastructure/Db/GetOrderListForExcelFile.sql
+            +++ b/Infrastructure/Db/GetOrderListForExcelFile.sql
+            @@ -38,12 +38,10 @@
+                     left join "System" sys
+                               on o."SystemId" = sys."SystemId"
+                     left join "ReplicBranch" rb
+                               on o."RegionCode" = rb."RegionIsoCode"
+                     left join "OperationReason" opr
+                               on o."ReasonId" = opr."ReasonId"
+            -where rb."IsBasic" is true
+            -  and rb."IsBcAllowed" is true
+            -  and (@orderId is null or o."OrderId" = @orderId)
+            +where (@orderId is null or o."OrderId" = @orderId)
+               and (@msisdn is null or o."Msisdn" = @msisdn)
+            """;
+
+        var result = sut.Process(diff);
+
+        Assert.Contains(result.ReviewHints, hint => hint.RuleId == "SQL_REMOVED_BUSINESS_FILTER");
+        Assert.Contains(result.ReviewHints, hint => hint.RuleId == "SQL_JOIN_ALIAS_ONLY_USED_IN_JOIN");
+        Assert.Contains("Deterministic review hints", result.ReviewChunks[0], StringComparison.Ordinal);
+        Assert.Contains("duplicate result rows", result.ReviewChunks[0], StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Process_GeneratesConfigurationHint_WhenOptionsSectionIsNotVisibleInChangedConfig()
+    {
+        var sut = new DiffPreprocessor(Microsoft.Extensions.Options.Options.Create(new ReviewPipelineOptions
+        {
+            MaxChunkCharacters = 4000
+        }));
+
+        var diff = """
+            diff --git a/src/App/DI/AddDependencies.cs b/src/App/DI/AddDependencies.cs
+            --- a/src/App/DI/AddDependencies.cs
+            +++ b/src/App/DI/AddDependencies.cs
+            @@ -100,1 +100,2 @@
+            +services.Configure<CacheOptions>(configuration.GetSection("CacheOptions"));
+            +services.AddHostedService<RegionCacheBackgroundService>();
+            diff --git a/src/App/appsettings.json b/src/App/appsettings.json
+            --- a/src/App/appsettings.json
+            +++ b/src/App/appsettings.json
+            @@ -430,1 +430,5 @@
+            +  "_Options": {
+            +    "RegionCacheTtlMinutes": 1440
+            +  }
+            """;
+
+        var result = sut.Process(diff);
+
+        var hint = Assert.Single(result.ReviewHints, hint => hint.RuleId == "OPTIONS_SECTION_NOT_VISIBLE_IN_CHANGED_CONFIG");
+        Assert.Equal("src/App/DI/AddDependencies.cs", hint.FilePath);
+        Assert.Contains("CacheOptions", hint.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Process_GeneratesTestSeedHint_WhenChangedTestUsesSeedConstant()
+    {
+        var sut = new DiffPreprocessor(Microsoft.Extensions.Options.Options.Create(new ReviewPipelineOptions
+        {
+            MaxChunkCharacters = 4000
+        }));
+
+        var diff = """
+            diff --git a/tests/App/GetOrdersFileTests.cs b/tests/App/GetOrdersFileTests.cs
+            --- a/tests/App/GetOrdersFileTests.cs
+            +++ b/tests/App/GetOrdersFileTests.cs
+            @@ -60,2 +60,3 @@
+            +query.RegionCode = new List<string> { SeedReplicBranchTable.RustRegionCode };
+            +order.OrderRegionName.Should().Be(SeedReplicBranchTable.RustRegionName);
+            """;
+
+        var result = sut.Process(diff);
+
+        Assert.Contains(result.ReviewHints, hint =>
+            hint.RuleId == "TEST_ASSERTION_USES_SEED_MEMBER" &&
+            hint.Message.Contains("SeedReplicBranchTable.RustRegionCode", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void Process_GeneratesDataIntegrityHint_ForGroupByFirstWithoutOrder()
+    {
+        var sut = new DiffPreprocessor(Microsoft.Extensions.Options.Options.Create(new ReviewPipelineOptions
+        {
+            MaxChunkCharacters = 4000
+        }));
+
+        var diff = """
+            diff --git a/src/App/RegionCacheRepository.cs b/src/App/RegionCacheRepository.cs
+            --- a/src/App/RegionCacheRepository.cs
+            +++ b/src/App/RegionCacheRepository.cs
+            @@ -100,1 +100,8 @@
+            +var newCache = regions
+            +    .GroupBy(r => r.RegionCode, StringComparer.OrdinalIgnoreCase)
+            +    .ToFrozenDictionary(
+            +        g => g.Key,
+            +        g => g.First(),
+            +        StringComparer.OrdinalIgnoreCase);
+            """;
+
+        var result = sut.Process(diff);
+
+        Assert.Contains(result.ReviewHints, hint => hint.RuleId == "GROUP_BY_FIRST_WITHOUT_ORDER");
+    }
+
 }

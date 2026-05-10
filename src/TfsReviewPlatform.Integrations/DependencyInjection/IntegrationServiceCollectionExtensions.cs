@@ -11,6 +11,7 @@ using TfsReviewPlatform.Integrations.Publishing;
 using TfsReviewPlatform.Integrations.PullRequests;
 using TfsReviewPlatform.Integrations.Prompts;
 using TfsReviewPlatform.Integrations.Qdrant;
+using TfsReviewPlatform.Integrations.Roslyn;
 
 namespace TfsReviewPlatform.Integrations.DependencyInjection;
 
@@ -76,6 +77,10 @@ public static class IntegrationServiceCollectionExtensions
         services.AddSingleton<IPullRequestReviewPublisherProvider, GitHubReviewPublisherProvider>();
         services.AddSingleton<IPullRequestReviewPublisherProvider, GitLabReviewPublisherProvider>();
         services.AddSingleton<IReviewPublisher, ReviewPublisher>();
+        services.AddSingleton<IRoslynWorkspaceBootstrapper, RoslynWorkspaceBootstrapper>();
+        services.AddSingleton<IRoslynGraphBuilder, ProcessRoslynGraphBuilder>();
+        services.AddSingleton<IGraphChunkContextLoader, WorkspaceFileSnippetLoader>();
+        services.AddSingleton<IGraphAwareChunker, GraphAwareChunker>();
 
         return services;
     }

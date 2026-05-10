@@ -9,6 +9,7 @@ public sealed class GitReviewWorkspaceToolExecutor(
     IRepositoryFileContentService repositoryFileContentService) : IReviewWorkspaceToolExecutor
 {
     private const int MaxRequestsPerChunk = 3;
+    private const int MaxDeterministicRequests = 16;
 
     public async Task<IReadOnlyList<ReviewWorkspaceToolResponse>> ExecuteAsync(
         DiffAcquisitionResult diffResult,
@@ -36,12 +37,16 @@ public sealed class GitReviewWorkspaceToolExecutor(
             diffResult.SourceRef,
             cancellationToken);
 
+        var maxRequests = string.Equals(currentChunkFilePath, "(deterministic-prefetch)", StringComparison.Ordinal)
+            ? MaxDeterministicRequests
+            : MaxRequestsPerChunk;
+
         var normalizedRequests = supportedRequests
             .Let(filtered => SuppressRedundantUseCaseRequests(currentChunkFilePath, filtered))
             .Let(filtered => SuppressSpeculativeInMemoryEnrichmentRequests(currentChunkFilePath, filtered))
             .Let(filtered => SuppressGuessedReadRequestsForTestChunks(currentChunkFilePath, branchFiles, filtered))
             .DistinctBy(request => $"{request.ToolName}|{request.Query}|{request.FilePath}|{request.PathScope}|{request.StartLine}|{request.MaxLines}")
-            .Take(MaxRequestsPerChunk)
+            .Take(maxRequests)
             .ToArray();
 
         if (normalizedRequests.Length == 0)

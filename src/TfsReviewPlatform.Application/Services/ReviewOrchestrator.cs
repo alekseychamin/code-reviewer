@@ -26,7 +26,7 @@ public sealed class ReviewOrchestrator(
     ILlmCompletionService llmCompletionService,
     IDiffPreprocessor diffPreprocessor,
     IReviewPromptFactory reviewPromptFactory,
-    IFindingsNormalizer findingsNormalizer,
+    IChunkReviewResponseParser chunkReviewResponseParser,
     IFindingsComparisonService findingsComparisonService,
     IReviewPublisher reviewPublisher,
     IMarkdownReportBuilder markdownReportBuilder,
@@ -717,7 +717,7 @@ public sealed class ReviewOrchestrator(
                 cancellationToken);
 
             rawChunkReplies.Add(assistantReply);
-            chunkReplies.Add(ParseReviewDiscussionResult(assistantReply, findingsNormalizer));
+            chunkReplies.Add(ParseReviewDiscussionResult(assistantReply, chunkReviewResponseParser));
         }
 
         var parsedResult = MergeReviewDiscussionResults(chunkReplies);
@@ -1029,7 +1029,7 @@ public sealed class ReviewOrchestrator(
 
     private static ParsedReviewDiscussionResult ParseReviewDiscussionResult(
         string rawResponse,
-        IFindingsNormalizer findingsNormalizer)
+        IChunkReviewResponseParser chunkReviewResponseParser)
     {
         if (string.IsNullOrWhiteSpace(rawResponse))
         {
@@ -1044,7 +1044,7 @@ public sealed class ReviewOrchestrator(
 
             var newFindings = root.TryGetProperty("new_findings", out var newFindingsNode) &&
                               newFindingsNode.ValueKind == JsonValueKind.Array
-                ? findingsNormalizer.Normalize([newFindingsNode.GetRawText()])
+                ? chunkReviewResponseParser.ParseFindingsJsonArray(newFindingsNode)
                     .Select(finding => finding with { Source = ReviewFindingSource.FollowUpDiscussion })
                     .ToArray()
                 : [];
