@@ -116,6 +116,16 @@ export interface SemanticCodeContext {
   targetFilesIndexed: number;
   sourceChunksIndexed: number;
   targetChunksIndexed: number;
+  sourceFilesMissing: number;
+  targetFilesMissing: number;
+  sourceFilesTooLarge: number;
+  targetFilesTooLarge: number;
+  sourceFilesEmpty: number;
+  targetFilesEmpty: number;
+  sourceFilesWithoutChunks: number;
+  targetFilesWithoutChunks: number;
+  sourceFilesReadFailed: number;
+  targetFilesReadFailed: number;
   queryCount: number;
   candidateCount: number;
   snippetCount: number;

@@ -30,6 +30,26 @@ public sealed class SemanticCodeContextArtifact
 
     public int TargetChunksIndexed { get; init; }
 
+    public int SourceFilesMissing { get; init; }
+
+    public int TargetFilesMissing { get; init; }
+
+    public int SourceFilesTooLarge { get; init; }
+
+    public int TargetFilesTooLarge { get; init; }
+
+    public int SourceFilesEmpty { get; init; }
+
+    public int TargetFilesEmpty { get; init; }
+
+    public int SourceFilesWithoutChunks { get; init; }
+
+    public int TargetFilesWithoutChunks { get; init; }
+
+    public int SourceFilesReadFailed { get; init; }
+
+    public int TargetFilesReadFailed { get; init; }
+
     public int QueryCount { get; init; }
 
     public int CandidateCount { get; init; }

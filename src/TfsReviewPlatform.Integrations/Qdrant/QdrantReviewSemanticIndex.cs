@@ -430,12 +430,21 @@ public sealed class QdrantReviewSemanticIndex(
                 .ToArray();
 
             logger.LogInformation(
-                "Semantic code context for run {RunId}: sourceFiles={SourceFiles}, targetFiles={TargetFiles}, sourceCacheHit={SourceCacheHit}, targetCacheHit={TargetCacheHit}, queries={Queries}, candidates={Candidates}, snippets={Snippets}, elapsedMs={ElapsedMilliseconds}",
+                "Semantic code context for run {RunId}: sourceFiles={SourceFiles}, targetFiles={TargetFiles}, sourceCacheHit={SourceCacheHit}, targetCacheHit={TargetCacheHit}, sourceIndexed={SourceIndexedFiles}/{SourceChunks}, targetIndexed={TargetIndexedFiles}/{TargetChunks}, targetMissing={TargetMissing}, targetTooLarge={TargetTooLarge}, targetEmpty={TargetEmpty}, targetWithoutChunks={TargetWithoutChunks}, targetReadFailed={TargetReadFailed}, queries={Queries}, candidates={Candidates}, snippets={Snippets}, elapsedMs={ElapsedMilliseconds}",
                 runId,
                 sourceFiles.Count,
                 targetFiles.Count,
                 sourceIndex.CacheHit,
                 targetIndex.CacheHit,
+                sourceIndex.FilesIndexed,
+                sourceIndex.ChunksIndexed,
+                targetIndex.FilesIndexed,
+                targetIndex.ChunksIndexed,
+                targetIndex.FilesMissing,
+                targetIndex.FilesTooLarge,
+                targetIndex.FilesEmpty,
+                targetIndex.FilesWithoutChunks,
+                targetIndex.FilesReadFailed,
                 queries.Count,
                 candidates.Count,
                 responses.Length,
@@ -449,9 +458,10 @@ public sealed class QdrantReviewSemanticIndex(
                     succeeded: responses.Length > 0,
                     timedOut: false,
                     status: responses.Length > 0 ? "ready" : "empty",
-                    message: responses.Length > 0
-                        ? "Semantic code context was added to the review prompt."
-                        : "Semantic search completed but returned no snippets.",
+                    message: BuildCodeContextMessage(
+                        responses.Length,
+                        targetFiles.Count,
+                        targetIndex),
                     elapsedMilliseconds: GetElapsedMilliseconds(startedAt),
                     sourceCommitSha: sourceCommit,
                     targetCommitSha: targetCommit,
@@ -598,7 +608,15 @@ public sealed class QdrantReviewSemanticIndex(
                 repositoryName,
                 revisionKind,
                 ShortSha(commitSha));
-            return new CodeSnapshotIndexResult(CacheHit: true, FilesIndexed: 0, ChunksIndexed: 0);
+            return new CodeSnapshotIndexResult(
+                CacheHit: true,
+                FilesIndexed: 0,
+                ChunksIndexed: 0,
+                FilesMissing: 0,
+                FilesTooLarge: 0,
+                FilesEmpty: 0,
+                FilesWithoutChunks: 0,
+                FilesReadFailed: 0);
         }
 
         if (files.Count == 0)
@@ -607,20 +625,51 @@ public sealed class QdrantReviewSemanticIndex(
         }
 
         var chunks = new List<CodeContextChunk>();
+        var filesMissing = 0;
+        var filesTooLarge = 0;
+        var filesEmpty = 0;
+        var filesWithoutChunks = 0;
+        var filesReadFailed = 0;
         foreach (var file in files)
         {
-            var content = await TryReadGitFileAsync(repositoryPath, revision, file, cancellationToken);
-            if (string.IsNullOrWhiteSpace(content))
+            var readResult = await TryReadGitFileAsync(repositoryPath, revision, file, cancellationToken);
+            switch (readResult.Status)
             {
+                case CodeContextFileReadStatus.Missing:
+                    filesMissing++;
+                    continue;
+                case CodeContextFileReadStatus.TooLarge:
+                    filesTooLarge++;
+                    continue;
+                case CodeContextFileReadStatus.Empty:
+                    filesEmpty++;
+                    continue;
+                case CodeContextFileReadStatus.ReadFailed:
+                    filesReadFailed++;
+                    continue;
+            }
+
+            var fileChunks = BuildCodeContextChunks(file, readResult.Content);
+            if (fileChunks.Count == 0)
+            {
+                filesWithoutChunks++;
                 continue;
             }
 
-            chunks.AddRange(BuildCodeContextChunks(file, content));
+            chunks.AddRange(fileChunks);
         }
 
         if (chunks.Count == 0)
         {
-            return CodeSnapshotIndexResult.Empty;
+            return new CodeSnapshotIndexResult(
+                CacheHit: false,
+                FilesIndexed: 0,
+                ChunksIndexed: 0,
+                FilesMissing: filesMissing,
+                FilesTooLarge: filesTooLarge,
+                FilesEmpty: filesEmpty,
+                FilesWithoutChunks: filesWithoutChunks,
+                FilesReadFailed: filesReadFailed);
         }
 
         var indexedFileCount = chunks
@@ -684,7 +733,15 @@ public sealed class QdrantReviewSemanticIndex(
             indexedFileCount,
             chunks.Count);
 
-        return new CodeSnapshotIndexResult(CacheHit: false, FilesIndexed: indexedFileCount, ChunksIndexed: chunks.Count);
+        return new CodeSnapshotIndexResult(
+            CacheHit: false,
+            FilesIndexed: indexedFileCount,
+            ChunksIndexed: chunks.Count,
+            FilesMissing: filesMissing,
+            FilesTooLarge: filesTooLarge,
+            FilesEmpty: filesEmpty,
+            FilesWithoutChunks: filesWithoutChunks,
+            FilesReadFailed: filesReadFailed);
     }
 
     private async Task<IReadOnlyList<CodeContextSnippetCandidate>> SearchCodeSnapshotAsync(
@@ -826,32 +883,63 @@ public sealed class QdrantReviewSemanticIndex(
         }
     }
 
-    private async Task<string> TryReadGitFileAsync(
+    private async Task<CodeContextFileReadResult> TryReadGitFileAsync(
         string repositoryPath,
         string revision,
         string filePath,
         CancellationToken cancellationToken)
     {
+        string sizeText;
         try
         {
-            var sizeText = await gitCommandRunner.RunAsync(
+            sizeText = await gitCommandRunner.RunAsync(
                 repositoryPath,
                 ["cat-file", "-s", $"{revision}:{filePath}"],
                 cancellationToken);
-            if (long.TryParse(sizeText.Trim(), out var size) &&
-                size > Math.Max(1, options.Value.CodeContextMaxFileBytes))
-            {
-                return string.Empty;
-            }
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception exception)
+        {
+            logger.LogDebug(
+                exception,
+                "Semantic code context file is unavailable at {Revision}: {FilePath}",
+                revision,
+                filePath);
+            return CodeContextFileReadResult.Missing;
+        }
 
-            return await gitCommandRunner.RunAsync(
+        if (long.TryParse(sizeText.Trim(), out var size) &&
+            size > Math.Max(1, options.Value.CodeContextMaxFileBytes))
+        {
+            return CodeContextFileReadResult.TooLarge;
+        }
+
+        try
+        {
+            var content = await gitCommandRunner.RunAsync(
                 repositoryPath,
                 ["show", $"{revision}:{filePath}"],
                 cancellationToken);
+
+            return string.IsNullOrWhiteSpace(content)
+                ? CodeContextFileReadResult.Empty
+                : new CodeContextFileReadResult(CodeContextFileReadStatus.Read, content);
         }
-        catch
+        catch (OperationCanceledException)
         {
-            return string.Empty;
+            throw;
+        }
+        catch (Exception exception)
+        {
+            logger.LogDebug(
+                exception,
+                "Semantic code context file failed to read at {Revision}: {FilePath}",
+                revision,
+                filePath);
+            return CodeContextFileReadResult.ReadFailed;
         }
     }
 
@@ -935,6 +1023,58 @@ public sealed class QdrantReviewSemanticIndex(
             ]);
     }
 
+    private static string BuildCodeContextMessage(
+        int snippetCount,
+        int targetFilesSelected,
+        CodeSnapshotIndexResult targetIndex)
+    {
+        var messages = new List<string>
+        {
+            snippetCount > 0
+                ? "Semantic code context was added to the review prompt."
+                : "Semantic search completed but returned no snippets."
+        };
+
+        if (!targetIndex.CacheHit &&
+            targetFilesSelected > 0 &&
+            targetIndex.ChunksIndexed == 0)
+        {
+            messages.Add(BuildSnapshotSkipMessage("Target", targetFilesSelected, targetIndex));
+        }
+
+        return string.Join(' ', messages.Where(message => !string.IsNullOrWhiteSpace(message)));
+    }
+
+    private static string BuildSnapshotSkipMessage(
+        string snapshotName,
+        int filesSelected,
+        CodeSnapshotIndexResult index)
+    {
+        if (index.FilesMissing == filesSelected)
+        {
+            return $"{snapshotName} snapshot produced no chunks because all selected files are absent at that revision; this usually means the PR added new files.";
+        }
+
+        var reasons = new List<string>();
+        AddReason(reasons, index.FilesMissing, "missing");
+        AddReason(reasons, index.FilesTooLarge, "too large");
+        AddReason(reasons, index.FilesEmpty, "empty");
+        AddReason(reasons, index.FilesWithoutChunks, "without indexable chunks");
+        AddReason(reasons, index.FilesReadFailed, "read failed");
+
+        return reasons.Count == 0
+            ? $"{snapshotName} snapshot produced no chunks."
+            : $"{snapshotName} snapshot produced no chunks: {string.Join(", ", reasons)}.";
+    }
+
+    private static void AddReason(List<string> reasons, int count, string label)
+    {
+        if (count > 0)
+        {
+            reasons.Add($"{count} {label}");
+        }
+    }
+
     private static SemanticCodeContextSnippetArtifact BuildCodeContextSnippetArtifact(
         CodeContextSnippetCandidate candidate)
     {
@@ -983,6 +1123,16 @@ public sealed class QdrantReviewSemanticIndex(
             TargetFilesIndexed = targetIndex.FilesIndexed,
             SourceChunksIndexed = sourceIndex.ChunksIndexed,
             TargetChunksIndexed = targetIndex.ChunksIndexed,
+            SourceFilesMissing = sourceIndex.FilesMissing,
+            TargetFilesMissing = targetIndex.FilesMissing,
+            SourceFilesTooLarge = sourceIndex.FilesTooLarge,
+            TargetFilesTooLarge = targetIndex.FilesTooLarge,
+            SourceFilesEmpty = sourceIndex.FilesEmpty,
+            TargetFilesEmpty = targetIndex.FilesEmpty,
+            SourceFilesWithoutChunks = sourceIndex.FilesWithoutChunks,
+            TargetFilesWithoutChunks = targetIndex.FilesWithoutChunks,
+            SourceFilesReadFailed = sourceIndex.FilesReadFailed,
+            TargetFilesReadFailed = targetIndex.FilesReadFailed,
             QueryCount = queryCount,
             CandidateCount = candidateCount,
             SnippetCount = snippets.Count,
@@ -1512,9 +1662,36 @@ public sealed class QdrantReviewSemanticIndex(
     private sealed record CodeSnapshotIndexResult(
         bool CacheHit,
         int FilesIndexed,
-        int ChunksIndexed)
+        int ChunksIndexed,
+        int FilesMissing,
+        int FilesTooLarge,
+        int FilesEmpty,
+        int FilesWithoutChunks,
+        int FilesReadFailed)
     {
-        public static CodeSnapshotIndexResult Empty { get; } = new(false, 0, 0);
+        public static CodeSnapshotIndexResult Empty { get; } = new(false, 0, 0, 0, 0, 0, 0, 0);
+    }
+
+    private sealed record CodeContextFileReadResult(
+        CodeContextFileReadStatus Status,
+        string Content = "")
+    {
+        public static CodeContextFileReadResult Missing { get; } = new(CodeContextFileReadStatus.Missing);
+
+        public static CodeContextFileReadResult TooLarge { get; } = new(CodeContextFileReadStatus.TooLarge);
+
+        public static CodeContextFileReadResult Empty { get; } = new(CodeContextFileReadStatus.Empty);
+
+        public static CodeContextFileReadResult ReadFailed { get; } = new(CodeContextFileReadStatus.ReadFailed);
+    }
+
+    private enum CodeContextFileReadStatus
+    {
+        Read,
+        Missing,
+        TooLarge,
+        Empty,
+        ReadFailed
     }
 
     private sealed class QdrantPayload

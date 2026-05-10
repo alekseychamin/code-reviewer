@@ -493,8 +493,13 @@ function SemanticCodeContextBlock({ run }: { run: ReviewRun }) {
     { label: 'Target files', value: context.targetFilesSelected },
     { label: 'Source chunks indexed', value: context.sourceChunksIndexed },
     { label: 'Target chunks indexed', value: context.targetChunksIndexed },
+    { label: 'Target missing', value: context.targetFilesMissing, optional: true },
+    { label: 'Target too large', value: context.targetFilesTooLarge, optional: true },
+    { label: 'Target empty', value: context.targetFilesEmpty, optional: true },
+    { label: 'Target without chunks', value: context.targetFilesWithoutChunks, optional: true },
+    { label: 'Target read failed', value: context.targetFilesReadFailed, optional: true },
     { label: 'Время', value: formatDuration(context.elapsedMilliseconds) }
-  ];
+  ].filter((metric) => !metric.optional || metric.value !== 0);
 
   return (
     <div className="semantic-context">
