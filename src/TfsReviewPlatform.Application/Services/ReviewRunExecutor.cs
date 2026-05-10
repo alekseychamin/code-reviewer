@@ -161,7 +161,8 @@ public sealed class ReviewRunExecutor(
                     InlineComments = previousRun.Artifacts.InlineComments,
                     ReviewedFiles = previousRun.Artifacts.ReviewedFiles,
                     PrimaryOpportunities = previousRun.Artifacts.PrimaryOpportunities,
-                    FindingsComparison = reusedComparison
+                    FindingsComparison = reusedComparison,
+                    SemanticCodeContext = previousRun.Artifacts.SemanticCodeContext
                 };
 
                 run.UpdateArtifacts(reusedArtifacts);
@@ -442,6 +443,30 @@ public sealed class ReviewRunExecutor(
         {
             logger.LogWarning(exception, "Failed to index semantic review artifacts for run {RunId}", run.Id);
         }
+    }
+
+    private static ReviewArtifacts CopyArtifactsWithSemanticCodeContext(
+        ReviewArtifacts artifacts,
+        SemanticCodeContextArtifact semanticCodeContext)
+    {
+        return new ReviewArtifacts
+        {
+            DiffText = artifacts.DiffText,
+            PreparedChunks = artifacts.PreparedChunks,
+            ChangedFiles = artifacts.ChangedFiles,
+            ChangeDescription = artifacts.ChangeDescription,
+            ChangeDescriptionStructured = artifacts.ChangeDescriptionStructured,
+            ChangeDiagramMermaid = artifacts.ChangeDiagramMermaid,
+            MarkdownReport = artifacts.MarkdownReport,
+            SummaryComment = artifacts.SummaryComment,
+            ReviewDiscussionMessages = artifacts.ReviewDiscussionMessages,
+            InlineComments = artifacts.InlineComments,
+            ReviewedFiles = artifacts.ReviewedFiles,
+            PrimaryOpportunities = artifacts.PrimaryOpportunities,
+            FindingsComparison = artifacts.FindingsComparison,
+            SemanticCodeContext = semanticCodeContext,
+            ProgressUpdates = artifacts.ProgressUpdates
+        };
     }
 
     private async Task<ReviewRun?> ResolveBaselineRunAsync(
@@ -843,22 +868,31 @@ public sealed class ReviewRunExecutor(
             diffResult,
             run,
             cancellationToken);
-        var semanticCodeContext = await reviewCodeSemanticContextService.BuildContextAsync(
+        var semanticCodeContextResult = await reviewCodeSemanticContextService.BuildContextAsync(
             run.Id,
             diffResult,
             preprocessed,
             cancellationToken);
+        run.UpdateArtifacts(CopyArtifactsWithSemanticCodeContext(
+            run.Artifacts,
+            semanticCodeContextResult.Diagnostics));
+        await reviewRunRepository.UpdateAsync(run, cancellationToken);
+
+        var semanticCodeContext = semanticCodeContextResult.Snippets;
         var payload = BuildSinglePassDiffAndGraphPayload(
             preprocessed,
             deterministicContext,
             semanticCodeContext);
         logger.LogInformation(
-            "Full-context primary review for run {RunId}: payloadChars={PayloadChars}, reviewHints={ReviewHints}, deterministicToolResponses={ToolResponses}, semanticCodeSnippets={SemanticCodeSnippets}",
+            "Full-context primary review for run {RunId}: payloadChars={PayloadChars}, reviewHints={ReviewHints}, deterministicToolResponses={ToolResponses}, semanticCodeSnippets={SemanticCodeSnippets}, semanticCodeStatus={SemanticCodeStatus}, semanticCodeCache={SourceCacheHit}/{TargetCacheHit}",
             run.Id,
             payload.Length,
             preprocessed.ReviewHints.Count,
             deterministicContext.Count,
-            semanticCodeContext.Count);
+            semanticCodeContext.Count,
+            semanticCodeContextResult.Diagnostics.Status,
+            semanticCodeContextResult.Diagnostics.SourceCacheHit,
+            semanticCodeContextResult.Diagnostics.TargetCacheHit);
 
         var selection = await llmStageRouter.ResolveAsync(
             ReviewPipelineStage.ChunkReview,

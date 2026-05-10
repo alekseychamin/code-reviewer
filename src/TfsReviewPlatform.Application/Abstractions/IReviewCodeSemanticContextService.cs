@@ -4,7 +4,7 @@ namespace TfsReviewPlatform.Application.Abstractions;
 
 public interface IReviewCodeSemanticContextService
 {
-    Task<IReadOnlyList<ReviewWorkspaceToolResponse>> BuildContextAsync(
+    Task<ReviewCodeSemanticContextResult> BuildContextAsync(
         Guid runId,
         DiffAcquisitionResult diffResult,
         PreprocessedDiff preprocessed,

@@ -216,14 +216,23 @@ public sealed class ReviewRun
 
     private ReviewArtifacts PreserveProgressUpdates(ReviewArtifacts artifacts)
     {
-        return artifacts.ProgressUpdates.Count > 0
+        var progressUpdates = artifacts.ProgressUpdates.Count > 0
+            ? artifacts.ProgressUpdates
+            : Artifacts.ProgressUpdates;
+        var semanticCodeContext = artifacts.SemanticCodeContext.Attempted || !Artifacts.SemanticCodeContext.Attempted
+            ? artifacts.SemanticCodeContext
+            : Artifacts.SemanticCodeContext;
+
+        return ReferenceEquals(progressUpdates, artifacts.ProgressUpdates) &&
+               ReferenceEquals(semanticCodeContext, artifacts.SemanticCodeContext)
             ? artifacts
-            : CopyArtifacts(artifacts, Artifacts.ProgressUpdates);
+            : CopyArtifacts(artifacts, progressUpdates, semanticCodeContext);
     }
 
     private static ReviewArtifacts CopyArtifacts(
         ReviewArtifacts artifacts,
-        IReadOnlyList<ReviewProgressUpdate> progressUpdates)
+        IReadOnlyList<ReviewProgressUpdate> progressUpdates,
+        SemanticCodeContextArtifact? semanticCodeContext = null)
     {
         return new ReviewArtifacts
         {
@@ -240,6 +249,7 @@ public sealed class ReviewRun
             ReviewedFiles = artifacts.ReviewedFiles,
             PrimaryOpportunities = artifacts.PrimaryOpportunities,
             FindingsComparison = artifacts.FindingsComparison,
+            SemanticCodeContext = semanticCodeContext ?? artifacts.SemanticCodeContext,
             ProgressUpdates = progressUpdates
         };
     }

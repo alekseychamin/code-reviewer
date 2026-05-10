@@ -531,6 +531,74 @@ button.primary {
   border: 1px solid rgba(29, 36, 51, 0.06);
 }
 
+.semantic-context {
+  display: grid;
+  gap: 10px;
+}
+
+.semantic-context-grid {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+}
+
+.semantic-context-metric {
+  display: grid;
+  gap: 4px;
+  padding: 10px;
+  border-radius: 12px;
+  background: rgba(29, 36, 51, 0.04);
+  border: 1px solid rgba(29, 36, 51, 0.06);
+}
+
+.semantic-context-metric span,
+.semantic-context-message,
+.semantic-snippet p {
+  color: var(--muted);
+}
+
+.semantic-context-metric strong {
+  color: var(--ink);
+}
+
+.semantic-context-flags,
+.semantic-context-snippets {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.semantic-context-message {
+  margin: 0;
+}
+
+.semantic-snippet {
+  display: grid;
+  gap: 6px;
+  min-width: min(100%, 320px);
+  flex: 1 1 320px;
+  padding: 10px;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.72);
+  border: 1px solid rgba(29, 36, 51, 0.06);
+}
+
+.semantic-snippet-header {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  align-items: flex-start;
+}
+
+.semantic-snippet-header strong {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.semantic-snippet p {
+  margin: 0;
+}
+
 .span-2 {
   grid-column: span 2;
 }

@@ -64,6 +64,7 @@ public static class ReviewRunMappingExtensions
                     StillRelevantFindings = run.Artifacts.FindingsComparison.StillRelevantFindings.Select(MapFinding).ToArray(),
                     ResolvedFindings = run.Artifacts.FindingsComparison.ResolvedFindings.Select(MapFinding).ToArray()
                 },
+            SemanticCodeContext = MapSemanticCodeContext(run.Artifacts.SemanticCodeContext),
             ReviewDiscussionMessages = run.Artifacts.ReviewDiscussionMessages.Select(message => new ReviewCommentMessageDto
             {
                 Role = message.Role,
@@ -151,6 +152,44 @@ public static class ReviewRunMappingExtensions
                 Message = update.Message,
                 Timestamp = update.Timestamp,
                 IsTerminal = update.IsTerminal
+            }).ToArray()
+        };
+    }
+
+    private static SemanticCodeContextDto MapSemanticCodeContext(SemanticCodeContextArtifact artifact)
+    {
+        return new SemanticCodeContextDto
+        {
+            Enabled = artifact.Enabled,
+            Attempted = artifact.Attempted,
+            Succeeded = artifact.Succeeded,
+            TimedOut = artifact.TimedOut,
+            CacheReuseEnabled = artifact.CacheReuseEnabled,
+            SourceCacheHit = artifact.SourceCacheHit,
+            TargetCacheHit = artifact.TargetCacheHit,
+            SourceFilesSelected = artifact.SourceFilesSelected,
+            TargetFilesSelected = artifact.TargetFilesSelected,
+            SourceFilesIndexed = artifact.SourceFilesIndexed,
+            TargetFilesIndexed = artifact.TargetFilesIndexed,
+            SourceChunksIndexed = artifact.SourceChunksIndexed,
+            TargetChunksIndexed = artifact.TargetChunksIndexed,
+            QueryCount = artifact.QueryCount,
+            CandidateCount = artifact.CandidateCount,
+            SnippetCount = artifact.SnippetCount,
+            ElapsedMilliseconds = artifact.ElapsedMilliseconds,
+            Status = artifact.Status,
+            Message = artifact.Message,
+            SourceCommitSha = artifact.SourceCommitSha,
+            TargetCommitSha = artifact.TargetCommitSha,
+            Snippets = artifact.Snippets.Select(snippet => new SemanticCodeContextSnippetDto
+            {
+                RevisionKind = snippet.RevisionKind,
+                CommitSha = snippet.CommitSha,
+                FilePath = snippet.FilePath,
+                StartLine = snippet.StartLine,
+                EndLine = snippet.EndLine,
+                Score = snippet.Score,
+                Query = snippet.Query
             }).ToArray()
         };
     }

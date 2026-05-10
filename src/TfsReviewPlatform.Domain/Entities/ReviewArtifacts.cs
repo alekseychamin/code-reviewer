@@ -28,5 +28,7 @@ public sealed class ReviewArtifacts
 
     public FindingsComparisonSnapshot? FindingsComparison { get; init; }
 
+    public SemanticCodeContextArtifact SemanticCodeContext { get; init; } = SemanticCodeContextArtifact.Empty;
+
     public IReadOnlyList<ReviewProgressUpdate> ProgressUpdates { get; init; } = [];
 }

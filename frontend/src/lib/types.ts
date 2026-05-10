@@ -102,6 +102,41 @@ export interface ReviewedFile {
   inlineThreads: InlineComment[];
 }
 
+export interface SemanticCodeContext {
+  enabled: boolean;
+  attempted: boolean;
+  succeeded: boolean;
+  timedOut: boolean;
+  cacheReuseEnabled: boolean;
+  sourceCacheHit: boolean;
+  targetCacheHit: boolean;
+  sourceFilesSelected: number;
+  targetFilesSelected: number;
+  sourceFilesIndexed: number;
+  targetFilesIndexed: number;
+  sourceChunksIndexed: number;
+  targetChunksIndexed: number;
+  queryCount: number;
+  candidateCount: number;
+  snippetCount: number;
+  elapsedMilliseconds: number;
+  status: string;
+  message: string;
+  sourceCommitSha?: string;
+  targetCommitSha?: string;
+  snippets: SemanticCodeContextSnippet[];
+}
+
+export interface SemanticCodeContextSnippet {
+  revisionKind: string;
+  commitSha: string;
+  filePath: string;
+  startLine: number;
+  endLine: number;
+  score: number;
+  query: string;
+}
+
 export interface ReviewRun {
   id: string;
   status: ReviewRunStatus;
@@ -131,6 +166,7 @@ export interface ReviewRun {
   changedFiles: string[];
   findings: ReviewFinding[];
   primaryOpportunities: ReviewOpportunityItem[];
+  semanticCodeContext: SemanticCodeContext;
   reviewDiscussionMessages: ReviewCommentMessage[];
   inlineComments: InlineComment[];
   reviewedFiles: ReviewedFile[];

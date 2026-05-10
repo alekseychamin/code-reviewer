@@ -62,6 +62,8 @@ public sealed class ReviewRunDto
 
     public FindingsComparisonDto? FindingsComparison { get; init; }
 
+    public SemanticCodeContextDto SemanticCodeContext { get; init; } = new();
+
     public IReadOnlyList<ReviewCommentMessageDto> ReviewDiscussionMessages { get; init; } = [];
 
     public IReadOnlyList<InlineCommentDto> InlineComments { get; init; } = [];
@@ -86,4 +88,68 @@ public sealed class ReviewProgressUpdateDto
     public DateTimeOffset Timestamp { get; init; }
 
     public bool IsTerminal { get; init; }
+}
+
+public sealed class SemanticCodeContextDto
+{
+    public bool Enabled { get; init; }
+
+    public bool Attempted { get; init; }
+
+    public bool Succeeded { get; init; }
+
+    public bool TimedOut { get; init; }
+
+    public bool CacheReuseEnabled { get; init; }
+
+    public bool SourceCacheHit { get; init; }
+
+    public bool TargetCacheHit { get; init; }
+
+    public int SourceFilesSelected { get; init; }
+
+    public int TargetFilesSelected { get; init; }
+
+    public int SourceFilesIndexed { get; init; }
+
+    public int TargetFilesIndexed { get; init; }
+
+    public int SourceChunksIndexed { get; init; }
+
+    public int TargetChunksIndexed { get; init; }
+
+    public int QueryCount { get; init; }
+
+    public int CandidateCount { get; init; }
+
+    public int SnippetCount { get; init; }
+
+    public long ElapsedMilliseconds { get; init; }
+
+    public string Status { get; init; } = string.Empty;
+
+    public string Message { get; init; } = string.Empty;
+
+    public string? SourceCommitSha { get; init; }
+
+    public string? TargetCommitSha { get; init; }
+
+    public IReadOnlyList<SemanticCodeContextSnippetDto> Snippets { get; init; } = [];
+}
+
+public sealed class SemanticCodeContextSnippetDto
+{
+    public string RevisionKind { get; init; } = string.Empty;
+
+    public string CommitSha { get; init; } = string.Empty;
+
+    public string FilePath { get; init; } = string.Empty;
+
+    public int StartLine { get; init; }
+
+    public int EndLine { get; init; }
+
+    public double Score { get; init; }
+
+    public string Query { get; init; } = string.Empty;
 }

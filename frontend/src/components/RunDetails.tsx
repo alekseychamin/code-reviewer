@@ -36,6 +36,7 @@ export function RunDetails({
 }: RunDetailsProps) {
   const [isDiagramCollapsed, setIsDiagramCollapsed] = useState(true);
   const [isDescriptionCollapsed, setIsDescriptionCollapsed] = useState(true);
+  const [isSemanticContextCollapsed, setIsSemanticContextCollapsed] = useState(true);
   const [isDiscussionCollapsed, setIsDiscussionCollapsed] = useState(true);
   const [isPrimaryOpportunitiesCollapsed, setIsPrimaryOpportunitiesCollapsed] = useState(true);
   const [isOpportunitiesCollapsed, setIsOpportunitiesCollapsed] = useState(true);
@@ -54,6 +55,7 @@ export function RunDetails({
   useEffect(() => {
     setIsDiagramCollapsed(true);
     setIsDescriptionCollapsed(true);
+    setIsSemanticContextCollapsed(true);
     setIsDiscussionCollapsed(true);
     setIsPrimaryOpportunitiesCollapsed(true);
     setIsOpportunitiesCollapsed(true);
@@ -176,6 +178,30 @@ export function RunDetails({
       </div>
 
       <div className="results-stack">
+        <article className="result-card">
+          <div className="subsection-header">
+            <div>
+              <h3>Контекст модели</h3>
+              <p>{getSemanticContextSummary(run)}</p>
+            </div>
+            <div className="result-toolbar">
+              <span className={`secondary-chip ${run.semanticCodeContext?.succeeded ? 'success' : 'muted'}`}>
+                {getSemanticContextStatusLabel(run.semanticCodeContext?.status)}
+              </span>
+              <button
+                aria-expanded={!isSemanticContextCollapsed}
+                className="secondary-button"
+                disabled={!run.semanticCodeContext?.enabled && !run.semanticCodeContext?.attempted}
+                onClick={() => setIsSemanticContextCollapsed((value) => !value)}
+                type="button"
+              >
+                {isSemanticContextCollapsed ? 'Развернуть контекст' : 'Свернуть контекст'}
+              </button>
+            </div>
+          </div>
+          {!isSemanticContextCollapsed ? <SemanticCodeContextBlock run={run} /> : null}
+        </article>
+
         <article className="result-card">
           <div className="subsection-header">
             <h3>Диаграмма изменений</h3>
@@ -453,6 +479,77 @@ function OpportunitiesOverview({ items, run }: { items: CollectedOpportunity[]; 
   );
 }
 
+function SemanticCodeContextBlock({ run }: { run: ReviewRun }) {
+  const context = run.semanticCodeContext;
+  if (!context) {
+    return <div className="empty-state compact">Диагностика semantic context пока не сохранена для этого запуска.</div>;
+  }
+
+  const metrics = [
+    { label: 'Сниппеты в промпте', value: context.snippetCount },
+    { label: 'Кандидаты поиска', value: context.candidateCount },
+    { label: 'Запросы', value: context.queryCount },
+    { label: 'Source files', value: context.sourceFilesSelected },
+    { label: 'Target files', value: context.targetFilesSelected },
+    { label: 'Source chunks indexed', value: context.sourceChunksIndexed },
+    { label: 'Target chunks indexed', value: context.targetChunksIndexed },
+    { label: 'Время', value: formatDuration(context.elapsedMilliseconds) }
+  ];
+
+  return (
+    <div className="semantic-context">
+      <div className="semantic-context-grid">
+        {metrics.map((metric) => (
+          <div className="semantic-context-metric" key={metric.label}>
+            <span>{metric.label}</span>
+            <strong>{metric.value}</strong>
+          </div>
+        ))}
+      </div>
+
+      <div className="semantic-context-flags">
+        <span className={`secondary-chip ${context.cacheReuseEnabled ? 'success' : 'muted'}`}>
+          cache reuse {context.cacheReuseEnabled ? 'on' : 'off'}
+        </span>
+        <span className={`secondary-chip ${context.sourceCacheHit ? 'success' : 'muted'}`}>
+          source {context.sourceCacheHit ? 'cache hit' : 'indexed'}
+        </span>
+        {context.targetCommitSha ? (
+          <span className={`secondary-chip ${context.targetCacheHit ? 'success' : 'muted'}`}>
+            target {context.targetCacheHit ? 'cache hit' : 'indexed'}
+          </span>
+        ) : null}
+        {context.sourceCommitSha ? (
+          <span className="secondary-chip muted">source {shortSha(context.sourceCommitSha)}</span>
+        ) : null}
+        {context.targetCommitSha ? (
+          <span className="secondary-chip muted">target {shortSha(context.targetCommitSha)}</span>
+        ) : null}
+      </div>
+
+      {context.message ? <p className="semantic-context-message">{context.message}</p> : null}
+
+      {context.snippets.length ? (
+        <div className="semantic-context-snippets">
+          {context.snippets.map((snippet, index) => (
+            <article className="semantic-snippet" key={`${snippet.revisionKind}-${snippet.filePath}-${snippet.startLine}-${index}`}>
+              <div className="semantic-snippet-header">
+                <strong>{snippet.filePath}</strong>
+                <span className="secondary-chip muted">
+                  {snippet.revisionKind}@{shortSha(snippet.commitSha)} · {snippet.startLine}-{snippet.endLine} · {snippet.score.toFixed(3)}
+                </span>
+              </div>
+              {snippet.query ? <p>{snippet.query}</p> : null}
+            </article>
+          ))}
+        </div>
+      ) : (
+        <div className="empty-state compact">В промпт не попали дополнительные semantic snippets.</div>
+      )}
+    </div>
+  );
+}
+
 type CollectedOpportunity = {
   file: string;
   lineHint: string;
@@ -463,6 +560,62 @@ type CollectedOpportunity = {
   exampleCode: string;
   exampleCodeLanguage: string;
 };
+
+function getSemanticContextSummary(run: ReviewRun): string {
+  const context = run.semanticCodeContext;
+  if (!context?.enabled) {
+    return 'Semantic code context выключен или недоступен.';
+  }
+
+  if (!context.attempted) {
+    return 'Semantic code context ещё не запускался для этого run-а.';
+  }
+
+  if (context.timedOut) {
+    return `Semantic context не успел собраться за ${formatDuration(context.elapsedMilliseconds)}.`;
+  }
+
+  if (context.succeeded) {
+    return `${context.snippetCount} сниппетов ушло модели из ${context.candidateCount} кандидатов за ${formatDuration(context.elapsedMilliseconds)}.`;
+  }
+
+  return context.message || 'Semantic context выполнен без дополнительных сниппетов.';
+}
+
+function getSemanticContextStatusLabel(status?: string): string {
+  switch (status) {
+    case 'ready':
+      return 'готов';
+    case 'empty':
+      return 'пусто';
+    case 'timeout':
+      return 'timeout';
+    case 'failed':
+      return 'ошибка';
+    case 'disabled':
+      return 'выключен';
+    case 'skipped_missing_repository_context':
+      return 'нет repo';
+    case 'skipped_source_commit_unresolved':
+      return 'нет commit';
+    case 'skipped_no_queries':
+      return 'нет queries';
+    default:
+      return 'ожидает';
+  }
+}
+
+function formatDuration(milliseconds: number): string {
+  if (milliseconds < 1000) {
+    return `${milliseconds} мс`;
+  }
+
+  return `${(milliseconds / 1000).toFixed(1)} с`;
+}
+
+function shortSha(value?: string): string {
+  return value ? value.slice(0, 8) : '';
+}
 
 function collectPrimaryOpportunities(run: ReviewRun): CollectedOpportunity[] {
   return dedupeOpportunities(

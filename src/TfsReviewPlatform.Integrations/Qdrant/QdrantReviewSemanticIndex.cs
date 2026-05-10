@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Net;
 using System.Net.Http.Json;
 using System.Security.Cryptography;
@@ -261,18 +262,30 @@ public sealed class QdrantReviewSemanticIndex(
         }
     }
 
-    public async Task<IReadOnlyList<ReviewWorkspaceToolResponse>> BuildContextAsync(
+    public async Task<ReviewCodeSemanticContextResult> BuildContextAsync(
         Guid runId,
         DiffAcquisitionResult diffResult,
         PreprocessedDiff preprocessed,
         CancellationToken cancellationToken)
     {
-        if (!IsEnabled() ||
-            !options.Value.CodeContextEnabled ||
-            string.IsNullOrWhiteSpace(diffResult.RepositoryPath) ||
+        var startedAt = Stopwatch.GetTimestamp();
+        if (!IsEnabled() || !options.Value.CodeContextEnabled)
+        {
+            return BuildSkippedCodeContextResult(
+                enabled: false,
+                status: "disabled",
+                message: "Semantic code context is disabled.",
+                elapsedMilliseconds: GetElapsedMilliseconds(startedAt));
+        }
+
+        if (string.IsNullOrWhiteSpace(diffResult.RepositoryPath) ||
             string.IsNullOrWhiteSpace(diffResult.SourceRef))
         {
-            return [];
+            return BuildSkippedCodeContextResult(
+                enabled: true,
+                status: "skipped_missing_repository_context",
+                message: "Repository path or source ref is missing.",
+                elapsedMilliseconds: GetElapsedMilliseconds(startedAt));
         }
 
         using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
@@ -296,7 +309,11 @@ public sealed class QdrantReviewSemanticIndex(
                 workToken);
             if (string.IsNullOrWhiteSpace(sourceCommit))
             {
-                return [];
+                return BuildSkippedCodeContextResult(
+                    enabled: true,
+                    status: "skipped_source_commit_unresolved",
+                    message: "Source commit could not be resolved.",
+                    elapsedMilliseconds: GetElapsedMilliseconds(startedAt));
             }
 
             var sourceSnapshotKey = BuildCodeSnapshotKey(repositoryName, sourceCommit, "source");
@@ -305,7 +322,7 @@ public sealed class QdrantReviewSemanticIndex(
                 diffResult.SourceRef,
                 preprocessed.ChangedFiles,
                 workToken);
-            await IndexCodeSnapshotAsync(
+            var sourceIndex = await IndexCodeSnapshotAsync(
                 repositoryName,
                 diffResult.RepositoryPath,
                 diffResult.SourceRef,
@@ -317,6 +334,8 @@ public sealed class QdrantReviewSemanticIndex(
 
             string? targetCommit = null;
             string? targetSnapshotKey = null;
+            IReadOnlyList<string> targetFiles = [];
+            var targetIndex = CodeSnapshotIndexResult.Empty;
             if (!string.IsNullOrWhiteSpace(diffResult.TargetRef))
             {
                 targetCommit = await ResolveCommitShaAsync(
@@ -326,8 +345,8 @@ public sealed class QdrantReviewSemanticIndex(
                 if (!string.IsNullOrWhiteSpace(targetCommit))
                 {
                     targetSnapshotKey = BuildCodeSnapshotKey(repositoryName, targetCommit, "target");
-                    var targetFiles = SelectTargetCodeContextFiles(preprocessed.ChangedFiles);
-                    await IndexCodeSnapshotAsync(
+                    targetFiles = SelectTargetCodeContextFiles(preprocessed.ChangedFiles);
+                    targetIndex = await IndexCodeSnapshotAsync(
                         repositoryName,
                         diffResult.RepositoryPath,
                         diffResult.TargetRef,
@@ -344,7 +363,23 @@ public sealed class QdrantReviewSemanticIndex(
                 Math.Max(1, options.Value.CodeContextMaxQueries));
             if (queries.Count == 0)
             {
-                return [];
+                return ReviewCodeSemanticContextResult.Empty(BuildCodeContextDiagnostics(
+                    enabled: true,
+                    attempted: true,
+                    succeeded: false,
+                    timedOut: false,
+                    status: "skipped_no_queries",
+                    message: "No semantic search queries were produced from the diff.",
+                    elapsedMilliseconds: GetElapsedMilliseconds(startedAt),
+                    sourceCommitSha: sourceCommit,
+                    targetCommitSha: targetCommit,
+                    sourceFilesSelected: sourceFiles.Count,
+                    targetFilesSelected: targetFiles.Count,
+                    sourceIndex: sourceIndex,
+                    targetIndex: targetIndex,
+                    queryCount: 0,
+                    candidateCount: 0,
+                    snippets: []));
             }
 
             var candidates = new List<CodeContextSnippetCandidate>();
@@ -372,7 +407,7 @@ public sealed class QdrantReviewSemanticIndex(
             }
 
             var maxSnippets = Math.Max(1, options.Value.CodeContextMaxSnippets);
-            var responses = candidates
+            var selectedCandidates = candidates
                 .Where(candidate => !string.IsNullOrWhiteSpace(candidate.Content))
                 .GroupBy(candidate => $"{candidate.RevisionKind}|{candidate.FilePath}|{candidate.StartLine}")
                 .Select(group => group.OrderByDescending(candidate => candidate.Score).First())
@@ -380,6 +415,8 @@ public sealed class QdrantReviewSemanticIndex(
                 .ThenBy(candidate => candidate.RevisionKind, StringComparer.Ordinal)
                 .ThenBy(candidate => candidate.FilePath, StringComparer.OrdinalIgnoreCase)
                 .Take(maxSnippets)
+                .ToArray();
+            var responses = selectedCandidates
                 .Select(candidate => new ReviewWorkspaceToolResponse(
                     "semantic_code_search",
                     $"{candidate.RevisionKind}@{ShortSha(candidate.CommitSha)} score={candidate.Score:F3}",
@@ -388,15 +425,43 @@ public sealed class QdrantReviewSemanticIndex(
                     candidate.StartLine,
                     candidate.EndLine))
                 .ToArray();
+            var snippetArtifacts = selectedCandidates
+                .Select(BuildCodeContextSnippetArtifact)
+                .ToArray();
 
             logger.LogInformation(
-                "Semantic code context for run {RunId}: sourceFiles={SourceFiles}, queries={Queries}, snippets={Snippets}",
+                "Semantic code context for run {RunId}: sourceFiles={SourceFiles}, targetFiles={TargetFiles}, sourceCacheHit={SourceCacheHit}, targetCacheHit={TargetCacheHit}, queries={Queries}, candidates={Candidates}, snippets={Snippets}, elapsedMs={ElapsedMilliseconds}",
                 runId,
                 sourceFiles.Count,
+                targetFiles.Count,
+                sourceIndex.CacheHit,
+                targetIndex.CacheHit,
                 queries.Count,
-                responses.Length);
+                candidates.Count,
+                responses.Length,
+                GetElapsedMilliseconds(startedAt));
 
-            return responses;
+            return new ReviewCodeSemanticContextResult(
+                responses,
+                BuildCodeContextDiagnostics(
+                    enabled: true,
+                    attempted: true,
+                    succeeded: responses.Length > 0,
+                    timedOut: false,
+                    status: responses.Length > 0 ? "ready" : "empty",
+                    message: responses.Length > 0
+                        ? "Semantic code context was added to the review prompt."
+                        : "Semantic search completed but returned no snippets.",
+                    elapsedMilliseconds: GetElapsedMilliseconds(startedAt),
+                    sourceCommitSha: sourceCommit,
+                    targetCommitSha: targetCommit,
+                    sourceFilesSelected: sourceFiles.Count,
+                    targetFilesSelected: targetFiles.Count,
+                    sourceIndex: sourceIndex,
+                    targetIndex: targetIndex,
+                    queryCount: queries.Count,
+                    candidateCount: candidates.Count,
+                    snippets: snippetArtifacts));
         }
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
         {
@@ -404,7 +469,23 @@ public sealed class QdrantReviewSemanticIndex(
                 "Semantic code context retrieval timed out for run {RunId} after {TimeoutSeconds}s",
                 runId,
                 timeoutSeconds);
-            return [];
+            return ReviewCodeSemanticContextResult.Empty(BuildCodeContextDiagnostics(
+                enabled: true,
+                attempted: true,
+                succeeded: false,
+                timedOut: true,
+                status: "timeout",
+                message: $"Semantic code context timed out after {timeoutSeconds}s.",
+                elapsedMilliseconds: GetElapsedMilliseconds(startedAt),
+                sourceCommitSha: null,
+                targetCommitSha: null,
+                sourceFilesSelected: 0,
+                targetFilesSelected: 0,
+                sourceIndex: CodeSnapshotIndexResult.Empty,
+                targetIndex: CodeSnapshotIndexResult.Empty,
+                queryCount: 0,
+                candidateCount: 0,
+                snippets: []));
         }
         catch (OperationCanceledException)
         {
@@ -413,7 +494,23 @@ public sealed class QdrantReviewSemanticIndex(
         catch (Exception exception)
         {
             logger.LogWarning(exception, "Semantic code context retrieval failed for run {RunId}", runId);
-            return [];
+            return ReviewCodeSemanticContextResult.Empty(BuildCodeContextDiagnostics(
+                enabled: true,
+                attempted: true,
+                succeeded: false,
+                timedOut: false,
+                status: "failed",
+                message: exception.Message,
+                elapsedMilliseconds: GetElapsedMilliseconds(startedAt),
+                sourceCommitSha: null,
+                targetCommitSha: null,
+                sourceFilesSelected: 0,
+                targetFilesSelected: 0,
+                sourceIndex: CodeSnapshotIndexResult.Empty,
+                targetIndex: CodeSnapshotIndexResult.Empty,
+                queryCount: 0,
+                candidateCount: 0,
+                snippets: []));
         }
     }
 
@@ -483,7 +580,7 @@ public sealed class QdrantReviewSemanticIndex(
             .ToArray();
     }
 
-    private async Task IndexCodeSnapshotAsync(
+    private async Task<CodeSnapshotIndexResult> IndexCodeSnapshotAsync(
         string repositoryName,
         string repositoryPath,
         string revision,
@@ -501,12 +598,12 @@ public sealed class QdrantReviewSemanticIndex(
                 repositoryName,
                 revisionKind,
                 ShortSha(commitSha));
-            return;
+            return new CodeSnapshotIndexResult(CacheHit: true, FilesIndexed: 0, ChunksIndexed: 0);
         }
 
         if (files.Count == 0)
         {
-            return;
+            return CodeSnapshotIndexResult.Empty;
         }
 
         var chunks = new List<CodeContextChunk>();
@@ -523,16 +620,20 @@ public sealed class QdrantReviewSemanticIndex(
 
         if (chunks.Count == 0)
         {
-            return;
+            return CodeSnapshotIndexResult.Empty;
         }
 
+        var indexedFileCount = chunks
+            .Select(chunk => chunk.FilePath)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .Count();
         var texts = chunks
             .Select(chunk => $"{chunk.FilePath}\n{chunk.Content}")
             .ToArray();
         var vectors = await BuildEmbeddingsAsync(texts, cancellationToken);
         if (vectors.Count == 0)
         {
-            return;
+            return CodeSnapshotIndexResult.Empty;
         }
 
         await EnsureInitializedAsync(vectors[0].Length, cancellationToken);
@@ -567,7 +668,7 @@ public sealed class QdrantReviewSemanticIndex(
                     ["snapshot_key"] = snapshotKey,
                     ["revision_kind"] = revisionKind,
                     ["commit_sha"] = commitSha,
-                    ["file_count"] = files.Count,
+                    ["file_count"] = indexedFileCount,
                     ["chunk_count"] = chunks.Count,
                     ["indexed_at"] = indexedAt,
                     ["indexed_at_unix"] = indexedAtUnix
@@ -580,8 +681,10 @@ public sealed class QdrantReviewSemanticIndex(
             repositoryName,
             revisionKind,
             ShortSha(commitSha),
-            files.Count,
+            indexedFileCount,
             chunks.Count);
+
+        return new CodeSnapshotIndexResult(CacheHit: false, FilesIndexed: indexedFileCount, ChunksIndexed: chunks.Count);
     }
 
     private async Task<IReadOnlyList<CodeContextSnippetCandidate>> SearchCodeSnapshotAsync(
@@ -832,11 +935,99 @@ public sealed class QdrantReviewSemanticIndex(
             ]);
     }
 
+    private static SemanticCodeContextSnippetArtifact BuildCodeContextSnippetArtifact(
+        CodeContextSnippetCandidate candidate)
+    {
+        return new SemanticCodeContextSnippetArtifact
+        {
+            RevisionKind = candidate.RevisionKind,
+            CommitSha = candidate.CommitSha,
+            FilePath = candidate.FilePath,
+            StartLine = candidate.StartLine,
+            EndLine = candidate.EndLine,
+            Score = candidate.Score,
+            Query = TrimForLog(candidate.Query, 240)
+        };
+    }
+
+    private SemanticCodeContextArtifact BuildCodeContextDiagnostics(
+        bool enabled,
+        bool attempted,
+        bool succeeded,
+        bool timedOut,
+        string status,
+        string message,
+        long elapsedMilliseconds,
+        string? sourceCommitSha,
+        string? targetCommitSha,
+        int sourceFilesSelected,
+        int targetFilesSelected,
+        CodeSnapshotIndexResult sourceIndex,
+        CodeSnapshotIndexResult targetIndex,
+        int queryCount,
+        int candidateCount,
+        IReadOnlyList<SemanticCodeContextSnippetArtifact> snippets)
+    {
+        return new SemanticCodeContextArtifact
+        {
+            Enabled = enabled,
+            Attempted = attempted,
+            Succeeded = succeeded,
+            TimedOut = timedOut,
+            CacheReuseEnabled = options.Value.CodeContextReuseExistingSnapshots,
+            SourceCacheHit = sourceIndex.CacheHit,
+            TargetCacheHit = targetIndex.CacheHit,
+            SourceFilesSelected = sourceFilesSelected,
+            TargetFilesSelected = targetFilesSelected,
+            SourceFilesIndexed = sourceIndex.FilesIndexed,
+            TargetFilesIndexed = targetIndex.FilesIndexed,
+            SourceChunksIndexed = sourceIndex.ChunksIndexed,
+            TargetChunksIndexed = targetIndex.ChunksIndexed,
+            QueryCount = queryCount,
+            CandidateCount = candidateCount,
+            SnippetCount = snippets.Count,
+            ElapsedMilliseconds = elapsedMilliseconds,
+            Status = status,
+            Message = message,
+            SourceCommitSha = sourceCommitSha,
+            TargetCommitSha = targetCommitSha,
+            Snippets = snippets
+        };
+    }
+
+    private ReviewCodeSemanticContextResult BuildSkippedCodeContextResult(
+        bool enabled,
+        string status,
+        string message,
+        long elapsedMilliseconds)
+    {
+        return ReviewCodeSemanticContextResult.Empty(BuildCodeContextDiagnostics(
+            enabled,
+            attempted: false,
+            succeeded: false,
+            timedOut: false,
+            status,
+            message,
+            elapsedMilliseconds,
+            sourceCommitSha: null,
+            targetCommitSha: null,
+            sourceFilesSelected: 0,
+            targetFilesSelected: 0,
+            sourceIndex: CodeSnapshotIndexResult.Empty,
+            targetIndex: CodeSnapshotIndexResult.Empty,
+            queryCount: 0,
+            candidateCount: 0,
+            snippets: []));
+    }
+
     private static string BuildCodeSnapshotKey(string repositoryName, string commitSha, string revisionKind)
         => $"code:{repositoryName.Trim().ToLowerInvariant()}:{commitSha}:{revisionKind}";
 
     private static string ShortSha(string value)
         => string.IsNullOrWhiteSpace(value) ? string.Empty : value[..Math.Min(8, value.Length)];
+
+    private static long GetElapsedMilliseconds(long startedAt)
+        => (long)Stopwatch.GetElapsedTime(startedAt).TotalMilliseconds;
 
     private static bool IsEligibleCodeContextFile(string path)
     {
@@ -1317,6 +1508,14 @@ public sealed class QdrantReviewSemanticIndex(
         int StartLine,
         int EndLine,
         string Content);
+
+    private sealed record CodeSnapshotIndexResult(
+        bool CacheHit,
+        int FilesIndexed,
+        int ChunksIndexed)
+    {
+        public static CodeSnapshotIndexResult Empty { get; } = new(false, 0, 0);
+    }
 
     private sealed class QdrantPayload
     {
