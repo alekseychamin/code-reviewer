@@ -26,6 +26,8 @@ public sealed class QdrantReviewSemanticIndex(
 {
     private const int EmbeddingBatchSize = 6;
     private readonly SemaphoreSlim _initializationLock = new(1, 1);
+    private readonly SemaphoreSlim _codeContextCleanupLock = new(1, 1);
+    private DateTimeOffset _lastCodeContextCleanup = DateTimeOffset.MinValue;
     private volatile bool _initialized;
 
     public async Task IndexPreparedChunksAsync(ReviewRun run, CancellationToken cancellationToken)
@@ -273,15 +275,25 @@ public sealed class QdrantReviewSemanticIndex(
             return [];
         }
 
+        using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        var timeoutSeconds = options.Value.CodeContextTimeoutSeconds;
+        if (timeoutSeconds > 0)
+        {
+            timeoutCts.CancelAfter(TimeSpan.FromSeconds(timeoutSeconds));
+        }
+
+        var workToken = timeoutCts.Token;
         try
         {
+            await CleanupExpiredCodeContextAsync(workToken);
+
             var repositoryName = string.IsNullOrWhiteSpace(diffResult.RepositoryName)
                 ? Path.GetFileName(diffResult.RepositoryPath)
                 : diffResult.RepositoryName;
             var sourceCommit = await ResolveCommitShaAsync(
                 diffResult.RepositoryPath,
                 diffResult.SourceRef,
-                cancellationToken);
+                workToken);
             if (string.IsNullOrWhiteSpace(sourceCommit))
             {
                 return [];
@@ -292,7 +304,7 @@ public sealed class QdrantReviewSemanticIndex(
                 diffResult.RepositoryPath,
                 diffResult.SourceRef,
                 preprocessed.ChangedFiles,
-                cancellationToken);
+                workToken);
             await IndexCodeSnapshotAsync(
                 repositoryName,
                 diffResult.RepositoryPath,
@@ -301,7 +313,7 @@ public sealed class QdrantReviewSemanticIndex(
                 "source",
                 sourceSnapshotKey,
                 sourceFiles,
-                cancellationToken);
+                workToken);
 
             string? targetCommit = null;
             string? targetSnapshotKey = null;
@@ -310,7 +322,7 @@ public sealed class QdrantReviewSemanticIndex(
                 targetCommit = await ResolveCommitShaAsync(
                     diffResult.RepositoryPath,
                     diffResult.TargetRef,
-                    cancellationToken);
+                    workToken);
                 if (!string.IsNullOrWhiteSpace(targetCommit))
                 {
                     targetSnapshotKey = BuildCodeSnapshotKey(repositoryName, targetCommit, "target");
@@ -323,7 +335,7 @@ public sealed class QdrantReviewSemanticIndex(
                         "target",
                         targetSnapshotKey,
                         targetFiles,
-                        cancellationToken);
+                        workToken);
                 }
             }
 
@@ -344,7 +356,7 @@ public sealed class QdrantReviewSemanticIndex(
                     sourceCommit,
                     query,
                     Math.Max(1, options.Value.CodeContextTopKPerQuery),
-                    cancellationToken));
+                    workToken));
 
                 if (!string.IsNullOrWhiteSpace(targetSnapshotKey) &&
                     !string.IsNullOrWhiteSpace(targetCommit))
@@ -355,7 +367,7 @@ public sealed class QdrantReviewSemanticIndex(
                         targetCommit,
                         query,
                         Math.Max(1, options.Value.CodeContextTopKPerQuery),
-                        cancellationToken));
+                        workToken));
                 }
             }
 
@@ -385,6 +397,18 @@ public sealed class QdrantReviewSemanticIndex(
                 responses.Length);
 
             return responses;
+        }
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+        {
+            logger.LogWarning(
+                "Semantic code context retrieval timed out for run {RunId} after {TimeoutSeconds}s",
+                runId,
+                timeoutSeconds);
+            return [];
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
         }
         catch (Exception exception)
         {
@@ -469,6 +493,17 @@ public sealed class QdrantReviewSemanticIndex(
         IReadOnlyList<string> files,
         CancellationToken cancellationToken)
     {
+        if (options.Value.CodeContextReuseExistingSnapshots &&
+            await CodeSnapshotManifestExistsAsync(snapshotKey, cancellationToken))
+        {
+            logger.LogInformation(
+                "Semantic code context snapshot cache hit for {RepositoryName} {RevisionKind}@{CommitSha}",
+                repositoryName,
+                revisionKind,
+                ShortSha(commitSha));
+            return;
+        }
+
         if (files.Count == 0)
         {
             return;
@@ -502,6 +537,8 @@ public sealed class QdrantReviewSemanticIndex(
 
         await EnsureInitializedAsync(vectors[0].Length, cancellationToken);
 
+        var indexedAt = DateTimeOffset.UtcNow;
+        var indexedAtUnix = indexedAt.ToUnixTimeSeconds();
         var points = chunks
             .Select((chunk, index) => new QdrantPoint(
                 Id: CreatePointId($"code:{snapshotKey}:{chunk.FilePath}:{chunk.StartLine}:{chunk.EndLine}"),
@@ -517,11 +554,34 @@ public sealed class QdrantReviewSemanticIndex(
                     ["start_line"] = chunk.StartLine,
                     ["end_line"] = chunk.EndLine,
                     ["chunk_text"] = chunk.Content,
-                    ["indexed_at"] = DateTimeOffset.UtcNow
+                    ["indexed_at"] = indexedAt,
+                    ["indexed_at_unix"] = indexedAtUnix
+                }))
+            .Append(new QdrantPoint(
+                Id: CreatePointId($"code-manifest:{snapshotKey}"),
+                Vector: vectors[0],
+                Payload: new Dictionary<string, object?>
+                {
+                    ["entity_type"] = "code_context_snapshot",
+                    ["repository_name"] = repositoryName,
+                    ["snapshot_key"] = snapshotKey,
+                    ["revision_kind"] = revisionKind,
+                    ["commit_sha"] = commitSha,
+                    ["file_count"] = files.Count,
+                    ["chunk_count"] = chunks.Count,
+                    ["indexed_at"] = indexedAt,
+                    ["indexed_at_unix"] = indexedAtUnix
                 }))
             .ToArray();
 
         await UpsertPointsAsync(points, cancellationToken);
+        logger.LogInformation(
+            "Semantic code context snapshot indexed for {RepositoryName} {RevisionKind}@{CommitSha}: files={Files}, chunks={Chunks}",
+            repositoryName,
+            revisionKind,
+            ShortSha(commitSha),
+            files.Count,
+            chunks.Count);
     }
 
     private async Task<IReadOnlyList<CodeContextSnippetCandidate>> SearchCodeSnapshotAsync(
@@ -564,6 +624,65 @@ public sealed class QdrantReviewSemanticIndex(
                                 !string.IsNullOrWhiteSpace(candidate.Content))
             .ToArray()
             ?? [];
+    }
+
+    private async Task<bool> CodeSnapshotManifestExistsAsync(
+        string snapshotKey,
+        CancellationToken cancellationToken)
+    {
+        var count = await CountAsync(
+            new QdrantFilter(
+                [
+                    QdrantFieldCondition.MatchValue("entity_type", "code_context_snapshot"),
+                    QdrantFieldCondition.MatchValue("snapshot_key", snapshotKey)
+                ]),
+            cancellationToken);
+
+        return count > 0;
+    }
+
+    private async Task CleanupExpiredCodeContextAsync(CancellationToken cancellationToken)
+    {
+        var ttlHours = options.Value.CodeContextTtlHours;
+        if (ttlHours <= 0)
+        {
+            return;
+        }
+
+        var now = DateTimeOffset.UtcNow;
+        var interval = TimeSpan.FromMinutes(Math.Max(1, options.Value.CodeContextCleanupIntervalMinutes));
+        if (now - _lastCodeContextCleanup < interval)
+        {
+            return;
+        }
+
+        await _codeContextCleanupLock.WaitAsync(cancellationToken);
+        try
+        {
+            now = DateTimeOffset.UtcNow;
+            if (now - _lastCodeContextCleanup < interval)
+            {
+                return;
+            }
+
+            await DeleteAsync(
+                new QdrantFilter(
+                    [
+                        QdrantFieldCondition.MatchAnyValue("entity_type", ["code_context", "code_context_snapshot"]),
+                        QdrantFieldCondition.RangeLessThan("indexed_at_unix", now.AddHours(-ttlHours).ToUnixTimeSeconds())
+                    ]),
+                cancellationToken);
+            _lastCodeContextCleanup = now;
+        }
+        catch (Exception exception)
+        {
+            logger.LogWarning(exception, "Qdrant code context cleanup failed");
+            _lastCodeContextCleanup = now;
+        }
+        finally
+        {
+            _codeContextCleanupLock.Release();
+        }
     }
 
     private async Task<IReadOnlyList<string>> ListGitFilesAsync(
@@ -766,6 +885,40 @@ public sealed class QdrantReviewSemanticIndex(
             var body = await response.Content.ReadAsStringAsync(cancellationToken);
             throw new HttpRequestException($"Qdrant upsert failed with {(int)response.StatusCode} ({response.StatusCode}): {body}");
         }
+    }
+
+    private async Task<long> CountAsync(QdrantFilter filter, CancellationToken cancellationToken)
+    {
+        var client = CreateQdrantClient();
+        using var response = await client.PostAsJsonAsync(
+            $"/collections/{options.Value.CollectionName}/points/count",
+            new QdrantCountRequest(filter, true),
+            cancellationToken);
+        if (response.StatusCode == HttpStatusCode.NotFound)
+        {
+            return 0;
+        }
+
+        response.EnsureSuccessStatusCode();
+
+        await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
+        var parsed = await JsonSerializer.DeserializeAsync<QdrantCountResponse>(stream, cancellationToken: cancellationToken);
+        return parsed?.Result?.Count ?? 0;
+    }
+
+    private async Task DeleteAsync(QdrantFilter filter, CancellationToken cancellationToken)
+    {
+        var client = CreateQdrantClient();
+        using var response = await client.PostAsJsonAsync(
+            $"/collections/{options.Value.CollectionName}/points/delete?wait=true",
+            new QdrantDeleteRequest(filter),
+            cancellationToken);
+        if (response.StatusCode == HttpStatusCode.NotFound)
+        {
+            return;
+        }
+
+        response.EnsureSuccessStatusCode();
     }
 
     private async Task<QdrantSearchResponse?> SearchAsync(
@@ -1060,6 +1213,10 @@ public sealed class QdrantReviewSemanticIndex(
     private sealed record QdrantUpsertRequest(
         [property: JsonPropertyName("points")] IReadOnlyList<QdrantPoint> Points);
 
+    private sealed record QdrantCountRequest(
+        [property: JsonPropertyName("filter")] QdrantFilter Filter,
+        [property: JsonPropertyName("exact")] bool Exact);
+
     private sealed record QdrantSearchRequest(
         [property: JsonPropertyName("vector")] float[] Vector,
         [property: JsonPropertyName("limit")] int Limit,
@@ -1074,10 +1231,35 @@ public sealed class QdrantReviewSemanticIndex(
 
     private sealed record QdrantFieldCondition(
         [property: JsonPropertyName("key")] string Key,
-        [property: JsonPropertyName("match")] QdrantMatchValue Match);
+        [property: JsonPropertyName("match")]
+        [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+        QdrantMatchValue? Match = null,
+        [property: JsonPropertyName("range")]
+        [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+        QdrantRangeCondition? Range = null)
+    {
+        public static QdrantFieldCondition MatchValue(string key, string value)
+            => new(key, new QdrantMatchValue(value));
+
+        public static QdrantFieldCondition MatchAnyValue(string key, IReadOnlyList<string> values)
+            => new(key, new QdrantMatchValue(Any: values));
+
+        public static QdrantFieldCondition RangeLessThan(string key, long value)
+            => new(key, Range: new QdrantRangeCondition(Lt: value));
+    }
 
     private sealed record QdrantMatchValue(
-        [property: JsonPropertyName("value")] string Value);
+        [property: JsonPropertyName("value")]
+        [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+        string? Value = null,
+        [property: JsonPropertyName("any")]
+        [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+        IReadOnlyList<string>? Any = null);
+
+    private sealed record QdrantRangeCondition(
+        [property: JsonPropertyName("lt")]
+        [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+        long? Lt = null);
 
     private sealed record OllamaEmbedRequest(
         [property: JsonPropertyName("model")] string Model,
@@ -1093,6 +1275,18 @@ public sealed class QdrantReviewSemanticIndex(
     {
         [JsonPropertyName("result")]
         public IReadOnlyList<QdrantSearchResultItem>? Result { get; init; }
+    }
+
+    private sealed class QdrantCountResponse
+    {
+        [JsonPropertyName("result")]
+        public QdrantCountResult? Result { get; init; }
+    }
+
+    private sealed class QdrantCountResult
+    {
+        [JsonPropertyName("count")]
+        public long Count { get; init; }
     }
 
     private sealed class QdrantSearchResultItem

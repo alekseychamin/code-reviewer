@@ -24,6 +24,14 @@ public sealed class QdrantOptions
 
     public bool CodeContextEnabled { get; init; } = true;
 
+    public bool CodeContextReuseExistingSnapshots { get; init; } = true;
+
+    public int CodeContextTimeoutSeconds { get; init; } = 90;
+
+    public int CodeContextTtlHours { get; init; } = 168;
+
+    public int CodeContextCleanupIntervalMinutes { get; init; } = 60;
+
     public int CodeContextMaxSourceFiles { get; init; } = 600;
 
     public int CodeContextMaxTargetFiles { get; init; } = 160;
