@@ -317,10 +317,10 @@ public sealed class QdrantReviewSemanticIndex(
             }
 
             var sourceSnapshotKey = BuildCodeSnapshotKey(repositoryName, sourceCommit, "source");
-            var sourceFiles = await SelectSourceCodeContextFilesAsync(
+            var sourceSelection = await SelectSourceCodeContextFilesAsync(
                 diffResult.RepositoryPath,
                 diffResult.SourceRef,
-                preprocessed.ChangedFiles,
+                preprocessed,
                 workToken);
             var sourceIndex = await IndexCodeSnapshotAsync(
                 repositoryName,
@@ -329,12 +329,12 @@ public sealed class QdrantReviewSemanticIndex(
                 sourceCommit,
                 "source",
                 sourceSnapshotKey,
-                sourceFiles,
+                sourceSelection.Files,
                 workToken);
 
             string? targetCommit = null;
             string? targetSnapshotKey = null;
-            IReadOnlyList<string> targetFiles = [];
+            var targetSelection = CodeContextFileSelection.Empty;
             var targetIndex = CodeSnapshotIndexResult.Empty;
             if (!string.IsNullOrWhiteSpace(diffResult.TargetRef))
             {
@@ -345,7 +345,11 @@ public sealed class QdrantReviewSemanticIndex(
                 if (!string.IsNullOrWhiteSpace(targetCommit))
                 {
                     targetSnapshotKey = BuildCodeSnapshotKey(repositoryName, targetCommit, "target");
-                    targetFiles = SelectTargetCodeContextFiles(preprocessed.ChangedFiles);
+                    targetSelection = await SelectTargetCodeContextFilesAsync(
+                        diffResult.RepositoryPath,
+                        diffResult.TargetRef,
+                        preprocessed,
+                        workToken);
                     targetIndex = await IndexCodeSnapshotAsync(
                         repositoryName,
                         diffResult.RepositoryPath,
@@ -353,7 +357,7 @@ public sealed class QdrantReviewSemanticIndex(
                         targetCommit,
                         "target",
                         targetSnapshotKey,
-                        targetFiles,
+                        targetSelection.Files,
                         workToken);
                 }
             }
@@ -373,8 +377,8 @@ public sealed class QdrantReviewSemanticIndex(
                     elapsedMilliseconds: GetElapsedMilliseconds(startedAt),
                     sourceCommitSha: sourceCommit,
                     targetCommitSha: targetCommit,
-                    sourceFilesSelected: sourceFiles.Count,
-                    targetFilesSelected: targetFiles.Count,
+                    sourceSelection: sourceSelection,
+                    targetSelection: targetSelection,
                     sourceIndex: sourceIndex,
                     targetIndex: targetIndex,
                     queryCount: 0,
@@ -430,10 +434,10 @@ public sealed class QdrantReviewSemanticIndex(
                 .ToArray();
 
             logger.LogInformation(
-                "Semantic code context for run {RunId}: sourceFiles={SourceFiles}, targetFiles={TargetFiles}, sourceCacheHit={SourceCacheHit}, targetCacheHit={TargetCacheHit}, sourceIndexed={SourceIndexedFiles}/{SourceChunks}, targetIndexed={TargetIndexedFiles}/{TargetChunks}, targetMissing={TargetMissing}, targetTooLarge={TargetTooLarge}, targetEmpty={TargetEmpty}, targetWithoutChunks={TargetWithoutChunks}, targetReadFailed={TargetReadFailed}, queries={Queries}, candidates={Candidates}, snippets={Snippets}, elapsedMs={ElapsedMilliseconds}",
+                "Semantic code context for run {RunId}: sourceFiles={SourceFiles}, targetFiles={TargetFiles}, sourceCacheHit={SourceCacheHit}, targetCacheHit={TargetCacheHit}, sourceIndexed={SourceIndexedFiles}/{SourceChunks}, targetIndexed={TargetIndexedFiles}/{TargetChunks}, targetMissing={TargetMissing}, targetTooLarge={TargetTooLarge}, targetEmpty={TargetEmpty}, targetWithoutChunks={TargetWithoutChunks}, targetReadFailed={TargetReadFailed}, targetSkippedAdded={TargetSkippedAdded}, targetBaselineFiles={TargetBaselineFiles}, queries={Queries}, candidates={Candidates}, snippets={Snippets}, elapsedMs={ElapsedMilliseconds}",
                 runId,
-                sourceFiles.Count,
-                targetFiles.Count,
+                sourceSelection.Files.Count,
+                targetSelection.Files.Count,
                 sourceIndex.CacheHit,
                 targetIndex.CacheHit,
                 sourceIndex.FilesIndexed,
@@ -445,6 +449,8 @@ public sealed class QdrantReviewSemanticIndex(
                 targetIndex.FilesEmpty,
                 targetIndex.FilesWithoutChunks,
                 targetIndex.FilesReadFailed,
+                targetSelection.SkippedAdded,
+                targetSelection.BaselineFilesSelected,
                 queries.Count,
                 candidates.Count,
                 responses.Length,
@@ -460,13 +466,13 @@ public sealed class QdrantReviewSemanticIndex(
                     status: responses.Length > 0 ? "ready" : "empty",
                     message: BuildCodeContextMessage(
                         responses.Length,
-                        targetFiles.Count,
+                        targetSelection,
                         targetIndex),
                     elapsedMilliseconds: GetElapsedMilliseconds(startedAt),
                     sourceCommitSha: sourceCommit,
                     targetCommitSha: targetCommit,
-                    sourceFilesSelected: sourceFiles.Count,
-                    targetFilesSelected: targetFiles.Count,
+                    sourceSelection: sourceSelection,
+                    targetSelection: targetSelection,
                     sourceIndex: sourceIndex,
                     targetIndex: targetIndex,
                     queryCount: queries.Count,
@@ -489,8 +495,8 @@ public sealed class QdrantReviewSemanticIndex(
                 elapsedMilliseconds: GetElapsedMilliseconds(startedAt),
                 sourceCommitSha: null,
                 targetCommitSha: null,
-                sourceFilesSelected: 0,
-                targetFilesSelected: 0,
+                sourceSelection: CodeContextFileSelection.Empty,
+                targetSelection: CodeContextFileSelection.Empty,
                 sourceIndex: CodeSnapshotIndexResult.Empty,
                 targetIndex: CodeSnapshotIndexResult.Empty,
                 queryCount: 0,
@@ -514,8 +520,8 @@ public sealed class QdrantReviewSemanticIndex(
                 elapsedMilliseconds: GetElapsedMilliseconds(startedAt),
                 sourceCommitSha: null,
                 targetCommitSha: null,
-                sourceFilesSelected: 0,
-                targetFilesSelected: 0,
+                sourceSelection: CodeContextFileSelection.Empty,
+                targetSelection: CodeContextFileSelection.Empty,
                 sourceIndex: CodeSnapshotIndexResult.Empty,
                 targetIndex: CodeSnapshotIndexResult.Empty,
                 queryCount: 0,
@@ -559,35 +565,66 @@ public sealed class QdrantReviewSemanticIndex(
         }
     }
 
-    private async Task<IReadOnlyList<string>> SelectSourceCodeContextFilesAsync(
+    private async Task<CodeContextFileSelection> SelectSourceCodeContextFilesAsync(
         string repositoryPath,
         string revision,
-        IReadOnlyList<string> changedFiles,
+        PreprocessedDiff preprocessed,
         CancellationToken cancellationToken)
     {
-        var changedSet = changedFiles
+        var sourceReviewPaths = SelectSourceReviewPaths(preprocessed)
             .Where(IsEligibleCodeContextFile)
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
         var files = await ListGitFilesAsync(repositoryPath, revision, cancellationToken);
         var maxFiles = Math.Max(1, options.Value.CodeContextMaxSourceFiles);
-
-        return files
+        var selectedFiles = files
             .Where(IsEligibleCodeContextFile)
-            .OrderBy(file => changedSet.Contains(file) ? 0 : 1)
+            .OrderBy(file => sourceReviewPaths.Contains(file) ? 0 : 1)
             .ThenBy(file => file.Count(character => character == '/'))
             .ThenBy(file => file, StringComparer.OrdinalIgnoreCase)
             .Take(maxFiles)
             .ToArray();
+
+        return new CodeContextFileSelection(
+            selectedFiles,
+            SkippedAdded: 0,
+            SkippedDeleted: CountDeletedFiles(preprocessed),
+            BaselineFilesSelected: 0);
     }
 
-    private IReadOnlyList<string> SelectTargetCodeContextFiles(IReadOnlyList<string> changedFiles)
+    private async Task<CodeContextFileSelection> SelectTargetCodeContextFilesAsync(
+        string repositoryPath,
+        string revision,
+        PreprocessedDiff preprocessed,
+        CancellationToken cancellationToken)
     {
         var maxFiles = Math.Max(1, options.Value.CodeContextMaxTargetFiles);
-        return changedFiles
+        var targetReviewPaths = SelectTargetReviewPaths(preprocessed)
             .Where(IsEligibleCodeContextFile)
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .Take(maxFiles)
             .ToArray();
+        if (targetReviewPaths.Length > 0)
+        {
+            return new CodeContextFileSelection(
+                targetReviewPaths,
+                SkippedAdded: CountAddedFiles(preprocessed),
+                SkippedDeleted: 0,
+                BaselineFilesSelected: 0);
+        }
+
+        var baselineFiles = (await ListGitFilesAsync(repositoryPath, revision, cancellationToken))
+            .Where(IsEligibleTargetBaselineFile)
+            .OrderBy(GetTargetBaselineFilePriority)
+            .ThenBy(file => file.Count(character => character == '/'))
+            .ThenBy(file => file, StringComparer.OrdinalIgnoreCase)
+            .Take(maxFiles)
+            .ToArray();
+
+        return new CodeContextFileSelection(
+            baselineFiles,
+            SkippedAdded: CountAddedFiles(preprocessed),
+            SkippedDeleted: 0,
+            BaselineFilesSelected: baselineFiles.Length);
     }
 
     private async Task<CodeSnapshotIndexResult> IndexCodeSnapshotAsync(
@@ -1011,6 +1048,44 @@ public sealed class QdrantReviewSemanticIndex(
             .ToArray();
     }
 
+    private static IReadOnlyList<string> SelectSourceReviewPaths(PreprocessedDiff preprocessed)
+    {
+        if (preprocessed.ChangedFileDetails.Count == 0)
+        {
+            return preprocessed.ChangedFiles;
+        }
+
+        return preprocessed.ChangedFileDetails
+            .Where(file => file.ChangeType != DiffFileChangeKind.Deleted)
+            .Select(file => file.NewPath ?? file.FilePath)
+            .Where(path => !string.IsNullOrWhiteSpace(path))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+    }
+
+    private static IReadOnlyList<string> SelectTargetReviewPaths(PreprocessedDiff preprocessed)
+    {
+        if (preprocessed.ChangedFileDetails.Count == 0)
+        {
+            return preprocessed.ChangedFiles;
+        }
+
+        return preprocessed.ChangedFileDetails
+            .Where(file => file.ChangeType != DiffFileChangeKind.Added)
+            .Select(file => file.ChangeType == DiffFileChangeKind.Renamed || file.ChangeType == DiffFileChangeKind.Deleted
+                ? file.OldPath ?? file.FilePath
+                : file.OldPath ?? file.NewPath ?? file.FilePath)
+            .Where(path => !string.IsNullOrWhiteSpace(path))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+    }
+
+    private static int CountAddedFiles(PreprocessedDiff preprocessed)
+        => preprocessed.ChangedFileDetails.Count(file => file.ChangeType == DiffFileChangeKind.Added);
+
+    private static int CountDeletedFiles(PreprocessedDiff preprocessed)
+        => preprocessed.ChangedFileDetails.Count(file => file.ChangeType == DiffFileChangeKind.Deleted);
+
     private static string BuildCodeContextSnippetContent(CodeContextSnippetCandidate candidate)
     {
         return string.Join(
@@ -1025,7 +1100,7 @@ public sealed class QdrantReviewSemanticIndex(
 
     private static string BuildCodeContextMessage(
         int snippetCount,
-        int targetFilesSelected,
+        CodeContextFileSelection targetSelection,
         CodeSnapshotIndexResult targetIndex)
     {
         var messages = new List<string>
@@ -1035,11 +1110,18 @@ public sealed class QdrantReviewSemanticIndex(
                 : "Semantic search completed but returned no snippets."
         };
 
+        if (targetSelection.SkippedAdded > 0)
+        {
+            messages.Add(targetSelection.BaselineFilesSelected > 0
+                ? $"Target changed-file context skipped {targetSelection.SkippedAdded} added files and used {targetSelection.BaselineFilesSelected} baseline files instead."
+                : $"Target changed-file context skipped {targetSelection.SkippedAdded} added files because they do not exist at the target revision.");
+        }
+
         if (!targetIndex.CacheHit &&
-            targetFilesSelected > 0 &&
+            targetSelection.Files.Count > 0 &&
             targetIndex.ChunksIndexed == 0)
         {
-            messages.Add(BuildSnapshotSkipMessage("Target", targetFilesSelected, targetIndex));
+            messages.Add(BuildSnapshotSkipMessage("Target", targetSelection.Files.Count, targetIndex));
         }
 
         return string.Join(' ', messages.Where(message => !string.IsNullOrWhiteSpace(message)));
@@ -1100,8 +1182,8 @@ public sealed class QdrantReviewSemanticIndex(
         long elapsedMilliseconds,
         string? sourceCommitSha,
         string? targetCommitSha,
-        int sourceFilesSelected,
-        int targetFilesSelected,
+        CodeContextFileSelection sourceSelection,
+        CodeContextFileSelection targetSelection,
         CodeSnapshotIndexResult sourceIndex,
         CodeSnapshotIndexResult targetIndex,
         int queryCount,
@@ -1117,8 +1199,8 @@ public sealed class QdrantReviewSemanticIndex(
             CacheReuseEnabled = options.Value.CodeContextReuseExistingSnapshots,
             SourceCacheHit = sourceIndex.CacheHit,
             TargetCacheHit = targetIndex.CacheHit,
-            SourceFilesSelected = sourceFilesSelected,
-            TargetFilesSelected = targetFilesSelected,
+            SourceFilesSelected = sourceSelection.Files.Count,
+            TargetFilesSelected = targetSelection.Files.Count,
             SourceFilesIndexed = sourceIndex.FilesIndexed,
             TargetFilesIndexed = targetIndex.FilesIndexed,
             SourceChunksIndexed = sourceIndex.ChunksIndexed,
@@ -1133,6 +1215,9 @@ public sealed class QdrantReviewSemanticIndex(
             TargetFilesWithoutChunks = targetIndex.FilesWithoutChunks,
             SourceFilesReadFailed = sourceIndex.FilesReadFailed,
             TargetFilesReadFailed = targetIndex.FilesReadFailed,
+            SourceFilesSkippedDeleted = sourceSelection.SkippedDeleted,
+            TargetFilesSkippedAdded = targetSelection.SkippedAdded,
+            TargetBaselineFilesSelected = targetSelection.BaselineFilesSelected,
             QueryCount = queryCount,
             CandidateCount = candidateCount,
             SnippetCount = snippets.Count,
@@ -1161,8 +1246,8 @@ public sealed class QdrantReviewSemanticIndex(
             elapsedMilliseconds,
             sourceCommitSha: null,
             targetCommitSha: null,
-            sourceFilesSelected: 0,
-            targetFilesSelected: 0,
+            sourceSelection: CodeContextFileSelection.Empty,
+            targetSelection: CodeContextFileSelection.Empty,
             sourceIndex: CodeSnapshotIndexResult.Empty,
             targetIndex: CodeSnapshotIndexResult.Empty,
             queryCount: 0,
@@ -1195,6 +1280,54 @@ public sealed class QdrantReviewSemanticIndex(
                extension.Equals(".targets", StringComparison.OrdinalIgnoreCase) ||
                extension.Equals(".yml", StringComparison.OrdinalIgnoreCase) ||
                extension.Equals(".yaml", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool IsEligibleTargetBaselineFile(string path)
+    {
+        if (string.IsNullOrWhiteSpace(path) || IsExcludedCodeContextPath(path))
+        {
+            return false;
+        }
+
+        var fileName = Path.GetFileName(path);
+        return fileName.Equals("Directory.Build.props", StringComparison.OrdinalIgnoreCase) ||
+               fileName.Equals("Directory.Build.targets", StringComparison.OrdinalIgnoreCase) ||
+               fileName.Equals("NuGet.Config", StringComparison.OrdinalIgnoreCase) ||
+               fileName.Equals("global.json", StringComparison.OrdinalIgnoreCase) ||
+               fileName.EndsWith(".sln", StringComparison.OrdinalIgnoreCase) ||
+               fileName.EndsWith(".csproj", StringComparison.OrdinalIgnoreCase) ||
+               fileName.StartsWith("appsettings", StringComparison.OrdinalIgnoreCase) && fileName.EndsWith(".json", StringComparison.OrdinalIgnoreCase) ||
+               fileName.Equals("docker-compose.yml", StringComparison.OrdinalIgnoreCase) ||
+               fileName.Equals("docker-compose.yaml", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static int GetTargetBaselineFilePriority(string path)
+    {
+        var fileName = Path.GetFileName(path);
+        if (fileName.EndsWith(".sln", StringComparison.OrdinalIgnoreCase))
+        {
+            return 0;
+        }
+
+        if (fileName.Equals("Directory.Build.props", StringComparison.OrdinalIgnoreCase) ||
+            fileName.Equals("Directory.Build.targets", StringComparison.OrdinalIgnoreCase) ||
+            fileName.Equals("NuGet.Config", StringComparison.OrdinalIgnoreCase) ||
+            fileName.Equals("global.json", StringComparison.OrdinalIgnoreCase))
+        {
+            return 1;
+        }
+
+        if (fileName.EndsWith(".csproj", StringComparison.OrdinalIgnoreCase))
+        {
+            return 2;
+        }
+
+        if (fileName.StartsWith("appsettings", StringComparison.OrdinalIgnoreCase))
+        {
+            return 3;
+        }
+
+        return 4;
     }
 
     private static bool IsExcludedCodeContextPath(string path)
@@ -1670,6 +1803,15 @@ public sealed class QdrantReviewSemanticIndex(
         int FilesReadFailed)
     {
         public static CodeSnapshotIndexResult Empty { get; } = new(false, 0, 0, 0, 0, 0, 0, 0);
+    }
+
+    private sealed record CodeContextFileSelection(
+        IReadOnlyList<string> Files,
+        int SkippedAdded,
+        int SkippedDeleted,
+        int BaselineFilesSelected)
+    {
+        public static CodeContextFileSelection Empty { get; } = new([], 0, 0, 0);
     }
 
     private sealed record CodeContextFileReadResult(

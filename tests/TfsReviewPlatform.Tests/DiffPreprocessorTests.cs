@@ -37,6 +37,56 @@ public sealed class DiffPreprocessorTests
     }
 
     [Fact]
+    public void Process_TracksChangedFileDetails_ForAddedDeletedAndRenamedFiles()
+    {
+        var sut = new DiffPreprocessor(Microsoft.Extensions.Options.Options.Create(new ReviewPipelineOptions
+        {
+            MaxChunkCharacters = 1000
+        }));
+
+        var diff = """
+            diff --git a/src/App/NewService.cs b/src/App/NewService.cs
+            new file mode 100644
+            --- /dev/null
+            +++ b/src/App/NewService.cs
+            @@ -0,0 +1,2 @@
+            +public class NewService {}
+            diff --git a/src/App/OldService.cs b/src/App/OldService.cs
+            deleted file mode 100644
+            --- a/src/App/OldService.cs
+            +++ /dev/null
+            @@ -1,2 +0,0 @@
+            -public class OldService {}
+            diff --git a/src/App/BeforeRename.cs b/src/App/AfterRename.cs
+            similarity index 94%
+            rename from src/App/BeforeRename.cs
+            rename to src/App/AfterRename.cs
+            --- a/src/App/BeforeRename.cs
+            +++ b/src/App/AfterRename.cs
+            @@ -1,1 +1,1 @@
+            -public class BeforeRename {}
+            +public class AfterRename {}
+            """;
+
+        var result = sut.Process(diff);
+
+        var added = Assert.Single(result.ChangedFileDetails, file => file.FilePath == "src/App/NewService.cs");
+        Assert.Equal(DiffFileChangeKind.Added, added.ChangeType);
+        Assert.Null(added.OldPath);
+        Assert.Equal("src/App/NewService.cs", added.NewPath);
+
+        var deleted = Assert.Single(result.ChangedFileDetails, file => file.FilePath == "src/App/OldService.cs");
+        Assert.Equal(DiffFileChangeKind.Deleted, deleted.ChangeType);
+        Assert.Equal("src/App/OldService.cs", deleted.OldPath);
+        Assert.Null(deleted.NewPath);
+
+        var renamed = Assert.Single(result.ChangedFileDetails, file => file.FilePath == "src/App/AfterRename.cs");
+        Assert.Equal(DiffFileChangeKind.Renamed, renamed.ChangeType);
+        Assert.Equal("src/App/BeforeRename.cs", renamed.OldPath);
+        Assert.Equal("src/App/AfterRename.cs", renamed.NewPath);
+    }
+
+    [Fact]
     public void Process_SplitsOversizedSingleFileDiffIntoMultipleChunks()
     {
         var sut = new DiffPreprocessor(Microsoft.Extensions.Options.Options.Create(new ReviewPipelineOptions

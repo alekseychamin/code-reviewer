@@ -50,6 +50,12 @@ public sealed class SemanticCodeContextArtifact
 
     public int TargetFilesReadFailed { get; init; }
 
+    public int SourceFilesSkippedDeleted { get; init; }
+
+    public int TargetFilesSkippedAdded { get; init; }
+
+    public int TargetBaselineFilesSelected { get; init; }
+
     public int QueryCount { get; init; }
 
     public int CandidateCount { get; init; }

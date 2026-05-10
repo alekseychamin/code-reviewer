@@ -31,9 +31,12 @@ public sealed class DiffPreprocessor(IOptions<ReviewPipelineOptions> options) : 
         var files = SplitDiffByFile(diffText)
             .Where(item => !ShouldIgnore(item.FilePath))
             .ToArray();
+        var hintFiles = files
+            .Select(file => (file.FilePath, file.Content))
+            .ToArray();
 
         var filteredDiff = string.Concat(files.Select(file => file.Content));
-        var reviewHints = BuildReviewHints(files);
+        var reviewHints = BuildReviewHints(hintFiles);
         var reviewContextFiles = files
             .Select(file => ShouldExcludeFromReviewContext(file.FilePath, file.Content)
                 ? string.Empty
@@ -62,6 +65,10 @@ public sealed class DiffPreprocessor(IOptions<ReviewPipelineOptions> options) : 
             FilteredDiffText = filteredDiff,
             ReviewContextDiffText = reviewContextDiff,
             ChangedFiles = files.Select(file => file.FilePath).Distinct(StringComparer.OrdinalIgnoreCase).ToArray(),
+            ChangedFileDetails = files
+                .Select(file => new ChangedFileInfo(file.FilePath, file.OldPath, file.NewPath, file.ChangeType))
+                .DistinctBy(file => $"{file.FilePath}|{file.OldPath}|{file.NewPath}|{file.ChangeType}")
+                .ToArray(),
             ReviewChunks = reviewChunks,
             Chunks = preparedChunks,
             ReviewHints = reviewHints
@@ -1781,36 +1788,146 @@ public sealed class DiffPreprocessor(IOptions<ReviewPipelineOptions> options) : 
                filePath.EndsWith("Tests.cs", StringComparison.OrdinalIgnoreCase);
     }
 
-    private static IReadOnlyList<(string FilePath, string Content)> SplitDiffByFile(string diffText)
+    private static IReadOnlyList<DiffFileSection> SplitDiffByFile(string diffText)
     {
         var sections = Regex.Split(diffText, @"(^diff --git a/.*$)", RegexOptions.Multiline);
-        var results = new List<(string FilePath, string Content)>();
+        var results = new List<DiffFileSection>();
 
         for (var index = 1; index < sections.Length; index += 2)
         {
             var header = sections[index];
             var body = index + 1 < sections.Length ? sections[index + 1] : string.Empty;
             var content = header + body;
-            var filePath = ExtractFilePath(header);
-            results.Add((filePath, content));
+            results.Add(ParseDiffFileSection(header, content));
         }
 
         if (results.Count == 0 && !string.IsNullOrWhiteSpace(diffText))
         {
-            results.Add(("unknown.diff", diffText));
+            results.Add(new DiffFileSection(
+                "unknown.diff",
+                "unknown.diff",
+                "unknown.diff",
+                DiffFileChangeKind.Modified,
+                diffText));
         }
 
         return results;
     }
 
-    private static string ExtractFilePath(string header)
+    private static DiffFileSection ParseDiffFileSection(string header, string content)
     {
-        var marker = " b/";
-        var index = header.IndexOf(marker, StringComparison.Ordinal);
-        return index >= 0 ? header[(index + marker.Length)..].Trim() : "unknown.diff";
+        var (oldPathFromHeader, newPathFromHeader) = ExtractDiffHeaderPaths(header);
+        var oldPath = ExtractPathFromMarker(content, "--- ");
+        var newPath = ExtractPathFromMarker(content, "+++ ");
+
+        oldPath = string.IsNullOrWhiteSpace(oldPath) ? oldPathFromHeader : oldPath;
+        newPath = string.IsNullOrWhiteSpace(newPath) ? newPathFromHeader : newPath;
+        if (HasMarkerPath(content, "--- ", "/dev/null"))
+        {
+            oldPath = null;
+        }
+
+        if (HasMarkerPath(content, "+++ ", "/dev/null"))
+        {
+            newPath = null;
+        }
+
+        var changeType = ResolveChangeType(content, oldPath, newPath);
+        var filePath = changeType == DiffFileChangeKind.Deleted
+            ? oldPath ?? newPath ?? "unknown.diff"
+            : newPath ?? oldPath ?? "unknown.diff";
+
+        return new DiffFileSection(filePath, oldPath, newPath, changeType, content);
+    }
+
+    private static (string? OldPath, string? NewPath) ExtractDiffHeaderPaths(string header)
+    {
+        var match = Regex.Match(
+            header.Trim(),
+            @"^diff --git ""?a/(?<old>.+?)""?\s+""?b/(?<new>.+?)""?$",
+            RegexOptions.CultureInvariant);
+
+        return match.Success
+            ? (NormalizeDiffPath(match.Groups["old"].Value), NormalizeDiffPath(match.Groups["new"].Value))
+            : (null, null);
+    }
+
+    private static string? ExtractPathFromMarker(string content, string marker)
+    {
+        var line = content
+            .Replace("\r\n", "\n", StringComparison.Ordinal)
+            .Split('\n')
+            .FirstOrDefault(item => item.StartsWith(marker, StringComparison.Ordinal));
+        if (string.IsNullOrWhiteSpace(line))
+        {
+            return null;
+        }
+
+        var rawPath = line[marker.Length..].Trim();
+        return NormalizeDiffPath(rawPath);
+    }
+
+    private static bool HasMarkerPath(string content, string marker, string expectedPath)
+    {
+        return content
+            .Replace("\r\n", "\n", StringComparison.Ordinal)
+            .Split('\n')
+            .Any(item => item.StartsWith(marker, StringComparison.Ordinal) &&
+                         string.Equals(item[marker.Length..].Trim().Trim('"'), expectedPath, StringComparison.Ordinal));
+    }
+
+    private static string? NormalizeDiffPath(string rawPath)
+    {
+        var path = rawPath.Trim().Trim('"');
+        if (string.Equals(path, "/dev/null", StringComparison.Ordinal))
+        {
+            return null;
+        }
+
+        if (path.StartsWith("a/", StringComparison.Ordinal) ||
+            path.StartsWith("b/", StringComparison.Ordinal))
+        {
+            path = path[2..];
+        }
+
+        return string.IsNullOrWhiteSpace(path) ? null : path;
+    }
+
+    private static DiffFileChangeKind ResolveChangeType(
+        string content,
+        string? oldPath,
+        string? newPath)
+    {
+        if (content.Contains("\nnew file mode ", StringComparison.Ordinal) ||
+            oldPath is null)
+        {
+            return DiffFileChangeKind.Added;
+        }
+
+        if (content.Contains("\ndeleted file mode ", StringComparison.Ordinal) ||
+            newPath is null)
+        {
+            return DiffFileChangeKind.Deleted;
+        }
+
+        if (content.Contains("\nrename from ", StringComparison.Ordinal) ||
+            content.Contains("\nrename to ", StringComparison.Ordinal) ||
+            !string.Equals(oldPath, newPath, StringComparison.Ordinal))
+        {
+            return DiffFileChangeKind.Renamed;
+        }
+
+        return DiffFileChangeKind.Modified;
     }
 
     private sealed record DiffLine(char Kind, int NewLine, string Text);
+
+    private sealed record DiffFileSection(
+        string FilePath,
+        string? OldPath,
+        string? NewPath,
+        DiffFileChangeKind ChangeType,
+        string Content);
 
     private sealed record CdcConsumerInfo(
         string EntityName,

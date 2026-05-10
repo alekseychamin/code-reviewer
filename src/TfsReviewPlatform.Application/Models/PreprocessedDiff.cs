@@ -10,6 +10,8 @@ public sealed record PreprocessedDiff
 
     public IReadOnlyList<string> ChangedFiles { get; init; } = [];
 
+    public IReadOnlyList<ChangedFileInfo> ChangedFileDetails { get; init; } = [];
+
     public IReadOnlyList<string> ReviewChunks { get; init; } = [];
 
     public IReadOnlyList<string> Chunks { get; init; } = [];
@@ -17,4 +19,18 @@ public sealed record PreprocessedDiff
     public IReadOnlyList<ReviewHint> ReviewHints { get; init; } = [];
 
     public CodeGraph? Graph { get; init; }
+}
+
+public sealed record ChangedFileInfo(
+    string FilePath,
+    string? OldPath,
+    string? NewPath,
+    DiffFileChangeKind ChangeType);
+
+public enum DiffFileChangeKind
+{
+    Modified,
+    Added,
+    Deleted,
+    Renamed
 }
