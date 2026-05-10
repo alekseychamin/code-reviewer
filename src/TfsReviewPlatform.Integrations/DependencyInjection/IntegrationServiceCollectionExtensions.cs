@@ -72,7 +72,9 @@ public static class IntegrationServiceCollectionExtensions
         services.AddSingleton<IPullRequestDiffService, PullRequestDiffService>();
         services.AddSingleton<ILlmCompletionService, LlmCompletionService>();
         services.AddSingleton<IReviewPromptFactory, ReviewPromptFactory>();
-        services.AddSingleton<IReviewSemanticIndex, QdrantReviewSemanticIndex>();
+        services.AddSingleton<QdrantReviewSemanticIndex>();
+        services.AddSingleton<IReviewSemanticIndex>(provider => provider.GetRequiredService<QdrantReviewSemanticIndex>());
+        services.AddSingleton<IReviewCodeSemanticContextService>(provider => provider.GetRequiredService<QdrantReviewSemanticIndex>());
         services.AddSingleton<IPullRequestReviewPublisherProvider, AzureDevOpsReviewPublisherProvider>();
         services.AddSingleton<IPullRequestReviewPublisherProvider, GitHubReviewPublisherProvider>();
         services.AddSingleton<IPullRequestReviewPublisherProvider, GitLabReviewPublisherProvider>();

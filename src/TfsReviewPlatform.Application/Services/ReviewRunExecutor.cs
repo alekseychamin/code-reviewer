@@ -16,6 +16,7 @@ public sealed class ReviewRunExecutor(
     IReviewRunRepository reviewRunRepository,
     IReviewProgressStore reviewProgressStore,
     IReviewSemanticIndex reviewSemanticIndex,
+    IReviewCodeSemanticContextService reviewCodeSemanticContextService,
     IPullRequestDiffService pullRequestDiffService,
     IBranchComparisonDiffService branchComparisonDiffService,
     IDiffPreprocessor diffPreprocessor,
@@ -842,13 +843,22 @@ public sealed class ReviewRunExecutor(
             diffResult,
             run,
             cancellationToken);
-        var payload = BuildSinglePassDiffAndGraphPayload(preprocessed, deterministicContext);
+        var semanticCodeContext = await reviewCodeSemanticContextService.BuildContextAsync(
+            run.Id,
+            diffResult,
+            preprocessed,
+            cancellationToken);
+        var payload = BuildSinglePassDiffAndGraphPayload(
+            preprocessed,
+            deterministicContext,
+            semanticCodeContext);
         logger.LogInformation(
-            "Full-context primary review for run {RunId}: payloadChars={PayloadChars}, reviewHints={ReviewHints}, deterministicToolResponses={ToolResponses}",
+            "Full-context primary review for run {RunId}: payloadChars={PayloadChars}, reviewHints={ReviewHints}, deterministicToolResponses={ToolResponses}, semanticCodeSnippets={SemanticCodeSnippets}",
             run.Id,
             payload.Length,
             preprocessed.ReviewHints.Count,
-            deterministicContext.Count);
+            deterministicContext.Count,
+            semanticCodeContext.Count);
 
         var selection = await llmStageRouter.ResolveAsync(
             ReviewPipelineStage.ChunkReview,
@@ -1320,7 +1330,8 @@ public sealed class ReviewRunExecutor(
 
     private string BuildSinglePassDiffAndGraphPayload(
         PreprocessedDiff preprocessed,
-        IReadOnlyList<ReviewWorkspaceToolResponse> deterministicContext)
+        IReadOnlyList<ReviewWorkspaceToolResponse> deterministicContext,
+        IReadOnlyList<ReviewWorkspaceToolResponse> semanticCodeContext)
     {
         var sb = new StringBuilder();
         sb.AppendLine("=== DIFF ===");
@@ -1337,6 +1348,13 @@ public sealed class ReviewRunExecutor(
         if (!string.IsNullOrWhiteSpace(deterministicContextBlock))
         {
             sb.AppendLine(deterministicContextBlock);
+            sb.AppendLine();
+        }
+
+        var semanticCodeContextBlock = BuildSemanticCodeContextBlock(semanticCodeContext);
+        if (!string.IsNullOrWhiteSpace(semanticCodeContextBlock))
+        {
+            sb.AppendLine(semanticCodeContextBlock);
             sb.AppendLine();
         }
 
@@ -1364,6 +1382,36 @@ public sealed class ReviewRunExecutor(
         }
 
         return combined;
+    }
+
+    private static string BuildSemanticCodeContextBlock(IReadOnlyList<ReviewWorkspaceToolResponse> semanticCodeContext)
+    {
+        if (semanticCodeContext.Count == 0)
+        {
+            return string.Empty;
+        }
+
+        var builder = new StringBuilder();
+        builder.AppendLine("=== SEMANTIC SOURCE/TARGET CODE CONTEXT (top retrieved snippets; supporting evidence, not changed diff) ===");
+        foreach (var response in semanticCodeContext)
+        {
+            builder.AppendLine($"Source: {response.Source}");
+            if (!string.IsNullOrWhiteSpace(response.FilePath))
+            {
+                builder.AppendLine($"File: {response.FilePath}");
+            }
+
+            if (response.StartLine > 0)
+            {
+                builder.AppendLine($"Lines: {response.StartLine}-{response.EndLine}");
+            }
+
+            builder.AppendLine("Content:");
+            builder.AppendLine(TrimForPrompt(response.Content, 6000));
+            builder.AppendLine();
+        }
+
+        return builder.ToString().TrimEnd();
     }
 
     private static string BuildDeterministicContextBlock(IReadOnlyList<ReviewWorkspaceToolResponse> deterministicContext)

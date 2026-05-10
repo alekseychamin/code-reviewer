@@ -8,9 +8,11 @@ using System.Text.RegularExpressions;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using TfsReviewPlatform.Application.Abstractions;
+using TfsReviewPlatform.Application.Models;
 using TfsReviewPlatform.Domain.Entities;
 using TfsReviewPlatform.Domain.Enums;
 using TfsReviewPlatform.Domain.ValueObjects;
+using TfsReviewPlatform.Integrations.Git;
 using TfsReviewPlatform.Integrations.Llm;
 
 namespace TfsReviewPlatform.Integrations.Qdrant;
@@ -18,8 +20,9 @@ namespace TfsReviewPlatform.Integrations.Qdrant;
 public sealed class QdrantReviewSemanticIndex(
     IHttpClientFactory httpClientFactory,
     IOptions<QdrantOptions> options,
+    ShellGitCommandRunner gitCommandRunner,
     ILogger<QdrantReviewSemanticIndex> logger)
-    : IReviewSemanticIndex
+    : IReviewSemanticIndex, IReviewCodeSemanticContextService
 {
     private const int EmbeddingBatchSize = 6;
     private readonly SemaphoreSlim _initializationLock = new(1, 1);
@@ -256,6 +259,140 @@ public sealed class QdrantReviewSemanticIndex(
         }
     }
 
+    public async Task<IReadOnlyList<ReviewWorkspaceToolResponse>> BuildContextAsync(
+        Guid runId,
+        DiffAcquisitionResult diffResult,
+        PreprocessedDiff preprocessed,
+        CancellationToken cancellationToken)
+    {
+        if (!IsEnabled() ||
+            !options.Value.CodeContextEnabled ||
+            string.IsNullOrWhiteSpace(diffResult.RepositoryPath) ||
+            string.IsNullOrWhiteSpace(diffResult.SourceRef))
+        {
+            return [];
+        }
+
+        try
+        {
+            var repositoryName = string.IsNullOrWhiteSpace(diffResult.RepositoryName)
+                ? Path.GetFileName(diffResult.RepositoryPath)
+                : diffResult.RepositoryName;
+            var sourceCommit = await ResolveCommitShaAsync(
+                diffResult.RepositoryPath,
+                diffResult.SourceRef,
+                cancellationToken);
+            if (string.IsNullOrWhiteSpace(sourceCommit))
+            {
+                return [];
+            }
+
+            var sourceSnapshotKey = BuildCodeSnapshotKey(repositoryName, sourceCommit, "source");
+            var sourceFiles = await SelectSourceCodeContextFilesAsync(
+                diffResult.RepositoryPath,
+                diffResult.SourceRef,
+                preprocessed.ChangedFiles,
+                cancellationToken);
+            await IndexCodeSnapshotAsync(
+                repositoryName,
+                diffResult.RepositoryPath,
+                diffResult.SourceRef,
+                sourceCommit,
+                "source",
+                sourceSnapshotKey,
+                sourceFiles,
+                cancellationToken);
+
+            string? targetCommit = null;
+            string? targetSnapshotKey = null;
+            if (!string.IsNullOrWhiteSpace(diffResult.TargetRef))
+            {
+                targetCommit = await ResolveCommitShaAsync(
+                    diffResult.RepositoryPath,
+                    diffResult.TargetRef,
+                    cancellationToken);
+                if (!string.IsNullOrWhiteSpace(targetCommit))
+                {
+                    targetSnapshotKey = BuildCodeSnapshotKey(repositoryName, targetCommit, "target");
+                    var targetFiles = SelectTargetCodeContextFiles(preprocessed.ChangedFiles);
+                    await IndexCodeSnapshotAsync(
+                        repositoryName,
+                        diffResult.RepositoryPath,
+                        diffResult.TargetRef,
+                        targetCommit,
+                        "target",
+                        targetSnapshotKey,
+                        targetFiles,
+                        cancellationToken);
+                }
+            }
+
+            var queries = BuildCodeContextQueries(
+                preprocessed,
+                Math.Max(1, options.Value.CodeContextMaxQueries));
+            if (queries.Count == 0)
+            {
+                return [];
+            }
+
+            var candidates = new List<CodeContextSnippetCandidate>();
+            foreach (var query in queries)
+            {
+                candidates.AddRange(await SearchCodeSnapshotAsync(
+                    sourceSnapshotKey,
+                    "source",
+                    sourceCommit,
+                    query,
+                    Math.Max(1, options.Value.CodeContextTopKPerQuery),
+                    cancellationToken));
+
+                if (!string.IsNullOrWhiteSpace(targetSnapshotKey) &&
+                    !string.IsNullOrWhiteSpace(targetCommit))
+                {
+                    candidates.AddRange(await SearchCodeSnapshotAsync(
+                        targetSnapshotKey,
+                        "target",
+                        targetCommit,
+                        query,
+                        Math.Max(1, options.Value.CodeContextTopKPerQuery),
+                        cancellationToken));
+                }
+            }
+
+            var maxSnippets = Math.Max(1, options.Value.CodeContextMaxSnippets);
+            var responses = candidates
+                .Where(candidate => !string.IsNullOrWhiteSpace(candidate.Content))
+                .GroupBy(candidate => $"{candidate.RevisionKind}|{candidate.FilePath}|{candidate.StartLine}")
+                .Select(group => group.OrderByDescending(candidate => candidate.Score).First())
+                .OrderByDescending(candidate => candidate.Score)
+                .ThenBy(candidate => candidate.RevisionKind, StringComparer.Ordinal)
+                .ThenBy(candidate => candidate.FilePath, StringComparer.OrdinalIgnoreCase)
+                .Take(maxSnippets)
+                .Select(candidate => new ReviewWorkspaceToolResponse(
+                    "semantic_code_search",
+                    $"{candidate.RevisionKind}@{ShortSha(candidate.CommitSha)} score={candidate.Score:F3}",
+                    BuildCodeContextSnippetContent(candidate),
+                    candidate.FilePath,
+                    candidate.StartLine,
+                    candidate.EndLine))
+                .ToArray();
+
+            logger.LogInformation(
+                "Semantic code context for run {RunId}: sourceFiles={SourceFiles}, queries={Queries}, snippets={Snippets}",
+                runId,
+                sourceFiles.Count,
+                queries.Count,
+                responses.Length);
+
+            return responses;
+        }
+        catch (Exception exception)
+        {
+            logger.LogWarning(exception, "Semantic code context retrieval failed for run {RunId}", runId);
+            return [];
+        }
+    }
+
     public async Task DeleteTargetAsync(ReviewTargetDescriptor target, CancellationToken cancellationToken)
     {
         if (!IsEnabled())
@@ -290,6 +427,327 @@ public sealed class QdrantReviewSemanticIndex(
             logger.LogWarning(exception, "Qdrant target cleanup failed for {TargetTitle}", target.Title);
         }
     }
+
+    private async Task<IReadOnlyList<string>> SelectSourceCodeContextFilesAsync(
+        string repositoryPath,
+        string revision,
+        IReadOnlyList<string> changedFiles,
+        CancellationToken cancellationToken)
+    {
+        var changedSet = changedFiles
+            .Where(IsEligibleCodeContextFile)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var files = await ListGitFilesAsync(repositoryPath, revision, cancellationToken);
+        var maxFiles = Math.Max(1, options.Value.CodeContextMaxSourceFiles);
+
+        return files
+            .Where(IsEligibleCodeContextFile)
+            .OrderBy(file => changedSet.Contains(file) ? 0 : 1)
+            .ThenBy(file => file.Count(character => character == '/'))
+            .ThenBy(file => file, StringComparer.OrdinalIgnoreCase)
+            .Take(maxFiles)
+            .ToArray();
+    }
+
+    private IReadOnlyList<string> SelectTargetCodeContextFiles(IReadOnlyList<string> changedFiles)
+    {
+        var maxFiles = Math.Max(1, options.Value.CodeContextMaxTargetFiles);
+        return changedFiles
+            .Where(IsEligibleCodeContextFile)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .Take(maxFiles)
+            .ToArray();
+    }
+
+    private async Task IndexCodeSnapshotAsync(
+        string repositoryName,
+        string repositoryPath,
+        string revision,
+        string commitSha,
+        string revisionKind,
+        string snapshotKey,
+        IReadOnlyList<string> files,
+        CancellationToken cancellationToken)
+    {
+        if (files.Count == 0)
+        {
+            return;
+        }
+
+        var chunks = new List<CodeContextChunk>();
+        foreach (var file in files)
+        {
+            var content = await TryReadGitFileAsync(repositoryPath, revision, file, cancellationToken);
+            if (string.IsNullOrWhiteSpace(content))
+            {
+                continue;
+            }
+
+            chunks.AddRange(BuildCodeContextChunks(file, content));
+        }
+
+        if (chunks.Count == 0)
+        {
+            return;
+        }
+
+        var texts = chunks
+            .Select(chunk => $"{chunk.FilePath}\n{chunk.Content}")
+            .ToArray();
+        var vectors = await BuildEmbeddingsAsync(texts, cancellationToken);
+        if (vectors.Count == 0)
+        {
+            return;
+        }
+
+        await EnsureInitializedAsync(vectors[0].Length, cancellationToken);
+
+        var points = chunks
+            .Select((chunk, index) => new QdrantPoint(
+                Id: CreatePointId($"code:{snapshotKey}:{chunk.FilePath}:{chunk.StartLine}:{chunk.EndLine}"),
+                Vector: vectors[Math.Min(index, vectors.Count - 1)],
+                Payload: new Dictionary<string, object?>
+                {
+                    ["entity_type"] = "code_context",
+                    ["repository_name"] = repositoryName,
+                    ["snapshot_key"] = snapshotKey,
+                    ["revision_kind"] = revisionKind,
+                    ["commit_sha"] = commitSha,
+                    ["file_path"] = chunk.FilePath,
+                    ["start_line"] = chunk.StartLine,
+                    ["end_line"] = chunk.EndLine,
+                    ["chunk_text"] = chunk.Content,
+                    ["indexed_at"] = DateTimeOffset.UtcNow
+                }))
+            .ToArray();
+
+        await UpsertPointsAsync(points, cancellationToken);
+    }
+
+    private async Task<IReadOnlyList<CodeContextSnippetCandidate>> SearchCodeSnapshotAsync(
+        string snapshotKey,
+        string revisionKind,
+        string commitSha,
+        string query,
+        int limit,
+        CancellationToken cancellationToken)
+    {
+        var vector = await BuildEmbeddingAsync(query, cancellationToken);
+        if (vector.Length == 0)
+        {
+            return [];
+        }
+
+        await EnsureInitializedAsync(vector.Length, cancellationToken);
+
+        var response = await SearchAsync(
+            vector,
+            Math.Max(1, limit),
+            new QdrantFilter(
+                [
+                    new QdrantFieldCondition("entity_type", new QdrantMatchValue("code_context")),
+                    new QdrantFieldCondition("snapshot_key", new QdrantMatchValue(snapshotKey))
+                ]),
+            cancellationToken);
+
+        return response?.Result?
+            .Select(item => new CodeContextSnippetCandidate(
+                revisionKind,
+                commitSha,
+                query,
+                item.Score,
+                item.Payload?.FilePath ?? string.Empty,
+                item.Payload?.StartLine ?? 0,
+                item.Payload?.EndLine ?? 0,
+                item.Payload?.ChunkText ?? string.Empty))
+            .Where(candidate => !string.IsNullOrWhiteSpace(candidate.FilePath) &&
+                                !string.IsNullOrWhiteSpace(candidate.Content))
+            .ToArray()
+            ?? [];
+    }
+
+    private async Task<IReadOnlyList<string>> ListGitFilesAsync(
+        string repositoryPath,
+        string revision,
+        CancellationToken cancellationToken)
+    {
+        var output = await gitCommandRunner.RunAsync(
+            repositoryPath,
+            ["ls-tree", "-r", "--name-only", revision],
+            cancellationToken);
+
+        return output
+            .Replace("\r\n", "\n", StringComparison.Ordinal)
+            .Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Where(path => !IsExcludedCodeContextPath(path))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+    }
+
+    private async Task<string> ResolveCommitShaAsync(
+        string repositoryPath,
+        string revision,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            return (await gitCommandRunner.RunAsync(
+                    repositoryPath,
+                    ["rev-parse", revision],
+                    cancellationToken))
+                .Trim();
+        }
+        catch (Exception exception)
+        {
+            logger.LogWarning(exception, "Could not resolve commit sha for {Revision}", revision);
+            return string.Empty;
+        }
+    }
+
+    private async Task<string> TryReadGitFileAsync(
+        string repositoryPath,
+        string revision,
+        string filePath,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            var sizeText = await gitCommandRunner.RunAsync(
+                repositoryPath,
+                ["cat-file", "-s", $"{revision}:{filePath}"],
+                cancellationToken);
+            if (long.TryParse(sizeText.Trim(), out var size) &&
+                size > Math.Max(1, options.Value.CodeContextMaxFileBytes))
+            {
+                return string.Empty;
+            }
+
+            return await gitCommandRunner.RunAsync(
+                repositoryPath,
+                ["show", $"{revision}:{filePath}"],
+                cancellationToken);
+        }
+        catch
+        {
+            return string.Empty;
+        }
+    }
+
+    private IReadOnlyList<CodeContextChunk> BuildCodeContextChunks(string filePath, string content)
+    {
+        var normalized = content.Replace("\r\n", "\n", StringComparison.Ordinal);
+        var lines = normalized.Split('\n');
+        if (lines.Length == 0)
+        {
+            return [];
+        }
+
+        var maxLines = Math.Clamp(options.Value.CodeContextChunkMaxLines, 40, 240);
+        var overlap = Math.Clamp(options.Value.CodeContextChunkOverlapLines, 0, maxLines / 2);
+        var step = Math.Max(1, maxLines - overlap);
+        var chunks = new List<CodeContextChunk>();
+
+        for (var start = 0; start < lines.Length; start += step)
+        {
+            var selected = lines
+                .Skip(start)
+                .Take(maxLines)
+                .ToArray();
+            var chunkText = string.Join('\n', selected).Trim();
+            if (chunkText.Length < 80)
+            {
+                continue;
+            }
+
+            chunks.Add(new CodeContextChunk(
+                filePath,
+                start + 1,
+                start + selected.Length,
+                chunkText));
+
+            if (start + maxLines >= lines.Length)
+            {
+                break;
+            }
+        }
+
+        return chunks;
+    }
+
+    private static IReadOnlyList<string> BuildCodeContextQueries(PreprocessedDiff preprocessed, int maxQueries)
+    {
+        var queries = new List<string>();
+
+        queries.AddRange(preprocessed.ReviewHints.Select(hint => string.Join(
+            " ",
+            [
+                hint.RuleId,
+                hint.Category,
+                hint.FilePath,
+                hint.Message,
+                hint.Evidence,
+                hint.SuggestedVerification
+            ])));
+
+        queries.AddRange(preprocessed.ChangedFiles
+            .Where(IsEligibleCodeContextFile)
+            .Select(file => $"changed file dependencies implementation contract {file} {Path.GetFileNameWithoutExtension(file)}"));
+
+        return queries
+            .Select(NormalizeWhitespace)
+            .Where(query => query.Length >= 12)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .Take(maxQueries)
+            .ToArray();
+    }
+
+    private static string BuildCodeContextSnippetContent(CodeContextSnippetCandidate candidate)
+    {
+        return string.Join(
+            "\n",
+            [
+                $"Query: {TrimForLog(candidate.Query, 240)}",
+                $"Revision: {candidate.RevisionKind}@{ShortSha(candidate.CommitSha)}",
+                $"Score: {candidate.Score:F3}",
+                candidate.Content
+            ]);
+    }
+
+    private static string BuildCodeSnapshotKey(string repositoryName, string commitSha, string revisionKind)
+        => $"code:{repositoryName.Trim().ToLowerInvariant()}:{commitSha}:{revisionKind}";
+
+    private static string ShortSha(string value)
+        => string.IsNullOrWhiteSpace(value) ? string.Empty : value[..Math.Min(8, value.Length)];
+
+    private static bool IsEligibleCodeContextFile(string path)
+    {
+        if (string.IsNullOrWhiteSpace(path) || IsExcludedCodeContextPath(path))
+        {
+            return false;
+        }
+
+        var extension = Path.GetExtension(path);
+        return extension.Equals(".cs", StringComparison.OrdinalIgnoreCase) ||
+               extension.Equals(".sql", StringComparison.OrdinalIgnoreCase) ||
+               extension.Equals(".json", StringComparison.OrdinalIgnoreCase) ||
+               extension.Equals(".csproj", StringComparison.OrdinalIgnoreCase) ||
+               extension.Equals(".props", StringComparison.OrdinalIgnoreCase) ||
+               extension.Equals(".targets", StringComparison.OrdinalIgnoreCase) ||
+               extension.Equals(".yml", StringComparison.OrdinalIgnoreCase) ||
+               extension.Equals(".yaml", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool IsExcludedCodeContextPath(string path)
+    {
+        return path.Contains("/bin/", StringComparison.OrdinalIgnoreCase) ||
+               path.Contains("/obj/", StringComparison.OrdinalIgnoreCase) ||
+               path.Contains("/node_modules/", StringComparison.OrdinalIgnoreCase) ||
+               path.Contains("/.git/", StringComparison.OrdinalIgnoreCase) ||
+               path.EndsWith(".Designer.cs", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static string NormalizeWhitespace(string value)
+        => Regex.Replace(value.Trim(), @"\s+", " ", RegexOptions.CultureInvariant);
 
     private async Task UpsertPointsAsync(IReadOnlyList<QdrantPoint> points, CancellationToken cancellationToken)
     {
@@ -649,6 +1107,22 @@ public sealed class QdrantReviewSemanticIndex(
     private sealed record HistoricalFindingCandidate(
         QdrantPayload? Payload,
         double WeightedScore);
+
+    private sealed record CodeContextChunk(
+        string FilePath,
+        int StartLine,
+        int EndLine,
+        string Content);
+
+    private sealed record CodeContextSnippetCandidate(
+        string RevisionKind,
+        string CommitSha,
+        string Query,
+        double Score,
+        string FilePath,
+        int StartLine,
+        int EndLine,
+        string Content);
 
     private sealed class QdrantPayload
     {
