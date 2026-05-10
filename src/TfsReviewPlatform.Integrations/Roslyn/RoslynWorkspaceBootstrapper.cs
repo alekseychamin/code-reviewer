@@ -37,6 +37,8 @@ public sealed class RoslynWorkspaceBootstrapper(
         }
 
         var workspaceDir = Path.Combine(workspacesRoot, runId.ToString("N"));
+        string? solutionPath = null;
+        string? changedFilesPath = null;
         Directory.CreateDirectory(workspacesRoot);
 
         try
@@ -96,7 +98,7 @@ public sealed class RoslynWorkspaceBootstrapper(
                 cancellationToken);
             await gitCommandRunner.RunAsync(workspaceDir, ["checkout", "refs/remotes/origin/__source__"], cancellationToken);
 
-            var changedFilesPath = Path.Combine(workspaceDir, "changed-files.txt");
+            changedFilesPath = Path.Combine(workspaceDir, "changed-files.txt");
             var lines = changedFiles
                 .Where(static f => f.EndsWith(".cs", StringComparison.OrdinalIgnoreCase))
                 .Select(static f => f.Replace('\\', '/').Trim())
@@ -104,7 +106,7 @@ public sealed class RoslynWorkspaceBootstrapper(
                 .ToArray();
             await File.WriteAllLinesAsync(changedFilesPath, lines, cancellationToken);
 
-            var solutionPath = await FindSolutionPathAsync(workspaceDir, lines, cancellationToken);
+            solutionPath = await FindSolutionPathAsync(workspaceDir, lines, cancellationToken);
             if (string.IsNullOrWhiteSpace(solutionPath))
             {
                 return new RoslynWorkspaceBootstrapResult(false, workspaceDir, null, changedFilesPath, workspaceDir, "No .sln found in workspace.");
@@ -129,7 +131,13 @@ public sealed class RoslynWorkspaceBootstrapper(
                 // ignored
             }
 
-            return new RoslynWorkspaceBootstrapResult(false, null, null, null, null, exception.Message);
+            return new RoslynWorkspaceBootstrapResult(
+                false,
+                workspaceDir,
+                solutionPath,
+                changedFilesPath,
+                workspaceDir,
+                exception.Message);
         }
     }
 

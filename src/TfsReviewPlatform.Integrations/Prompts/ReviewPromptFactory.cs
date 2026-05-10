@@ -295,8 +295,9 @@ public sealed class ReviewPromptFactory : IReviewPromptFactory
             - Deterministic hints are candidate checks, not findings by themselves.
             - Compare the hints, supplemental context, and primary review response.
             - Add only missing findings that are clearly confirmed by the provided hint plus supplemental context.
-            - Focus on misses in these areas: SQL removed predicates, unused joins and row multiplication, options binding vs appsettings section shape, tests vs seed data, duplicate-key grouping determinism, and nullability contracts.
+            - Focus on misses in these areas: runtime visibility flows, Kafka/cache/pubsub side effects before filters, SSE/polling parity, fail-open business filters, polling offset keys, CDC ownership/order risks, SQL removed predicates, unused joins and row multiplication, options binding vs appsettings section shape, tests vs seed data, duplicate-key grouping determinism, and nullability contracts.
             - Do not repeat a finding already covered by the primary review response, unless the primary response covers only a broad root cause and the hint shows a distinct failure mode with separate evidence.
+            - Treat a pre-cache/pre-pubsub visibility miss as distinct from an SSE/polling parity miss when the handler/cache side effect and the read/stream endpoint have separate code anchors and separate fixes.
             - If a SQL join alias is now unused and the supplemental SQL/context shows the joined table can have multiple rows per key or no selected/filtered columns from that alias, emit a separate SQL cardinality finding.
             - If a changed test references a seed constant and the supplemental seed file lacks a row/value for that constant, emit a test fixture finding.
             - Keep severity proportional. Use Medium for confirmed data/test risks, High/Critical only for clearly merge-blocking behavior.
@@ -346,7 +347,10 @@ public sealed class ReviewPromptFactory : IReviewPromptFactory
             Rules:
             - Remove duplicates by same root cause (often same file + similar title/description).
             - Merge same-root contract findings across neighboring methods when they share the same interface/implementation mismatch and the same fix; mention both methods in one description.
+            - Prefer preserving recall over aggressive cleanup. Do not drop a Medium-or-higher finding merely because it is adjacent to another issue; drop it only when the same file, same line area, and same failure mode are already covered.
+            - Do not merge Kafka/cache/pubsub write-before-filter findings with SSE/polling/list parity findings when they point to different files or different fix points.
             - Keep higher severity version when duplicates conflict.
+            - Never remove or downgrade deterministic/pipeline findings about restore/build failures, missing package versions, unbounded PageSize, secret-like config values, or non-atomic bulk update + insert sequences unless another finding clearly covers the same failure mode at the same or higher severity.
             - Do not downgrade confirmed data correctness issues to Low. Removed business filters, SQL row multiplication, broken options binding, and test fixtures that cannot produce asserted data should usually remain Medium or higher.
             - Preserve only concrete, evidence-based findings.
             - Keep opportunities non-blocking and distinct.

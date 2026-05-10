@@ -51,6 +51,7 @@ public sealed class ReviewRunExecutor(
         ReviewRun? previousRun = null;
         DiffAcquisitionResult? diffResult = null;
         string? roslynCleanupDirectory = null;
+        var mandatoryFindings = new List<ReviewFinding>();
 
         try
         {
@@ -110,6 +111,12 @@ public sealed class ReviewRunExecutor(
                 }
                 else
                 {
+                    var bootstrapFinding = BuildRoslynBootstrapFailureFinding(bootstrap);
+                    if (bootstrapFinding is not null)
+                    {
+                        mandatoryFindings.Add(bootstrapFinding);
+                    }
+
                     await PersistAndPublishAsync(
                         run,
                         "Ход выполнения пайплайна: построение graph пропущено, используем diff-only чанки",
@@ -211,8 +218,31 @@ public sealed class ReviewRunExecutor(
                 opportunities.AddRange(parsed.Opportunities);
             }
 
+            findings.AddRange(mandatoryFindings.Where(finding =>
+                findings.All(existing => !CoversFinding(existing, finding))));
+            if (mandatoryFindings.Count > 0)
+            {
+                logger.LogInformation(
+                    "Added {FindingCount} mandatory pipeline findings for run {RunId}",
+                    mandatoryFindings.Count,
+                    run.Id);
+            }
+
+            var confirmedDeterministicFindings = BuildConfirmedDeterministicFindings(
+                preprocessed.ReviewHints,
+                findings);
+            findings.AddRange(confirmedDeterministicFindings);
+            if (confirmedDeterministicFindings.Count > 0)
+            {
+                logger.LogInformation(
+                    "Added {FindingCount} confirmed deterministic findings for run {RunId}",
+                    confirmedDeterministicFindings.Count,
+                    run.Id);
+            }
+
             if (reviewPipelineOptions.Value.EnableFinalModelNormalizationPass)
             {
+                var findingsBeforeNormalization = findings.ToArray();
                 await PersistAndPublishAsync(
                     run,
                     "Финальная нормализация findings через модель",
@@ -223,13 +253,15 @@ public sealed class ReviewRunExecutor(
                     findings,
                     opportunities,
                     cancellationToken);
-                findings = normalized.Findings.ToList();
+                findings = RestoreDroppedDistinctFindings(findingsBeforeNormalization, normalized.Findings).ToList();
                 opportunities = normalized.Opportunities.ToList();
                 logger.LogInformation(
-                    "Final model normalization for run {RunId}: findings={Findings}, opportunities={Opportunities}",
+                    "Final model normalization for run {RunId}: findings={Findings}, opportunities={Opportunities}, rawFindings={RawFindings}, restoredFindings={RestoredFindings}",
                     run.Id,
                     findings.Count,
-                    opportunities.Count);
+                    opportunities.Count,
+                    findingsBeforeNormalization.Length,
+                    findings.Count - normalized.Findings.Count);
             }
 
             var primaryOpportunities = opportunities;
@@ -1050,6 +1082,65 @@ public sealed class ReviewRunExecutor(
                 continue;
             }
 
+            if (hint.Category.StartsWith("RuntimeFlow/", StringComparison.OrdinalIgnoreCase))
+            {
+                requests.Add(new ReviewWorkspaceToolRequest(
+                    "read_file",
+                    "Read the runtime flow around the deterministic Kafka/cache/polling hint.",
+                    FilePath: hint.FilePath,
+                    StartLine: Math.Max(1, hint.StartLine - 40),
+                    MaxLines: 220));
+
+                foreach (var query in ExtractRuntimeFlowQueries(hint))
+                {
+                    requests.Add(new ReviewWorkspaceToolRequest(
+                        "grep_code",
+                        "Find related runtime flow entrypoints and side effects.",
+                        Query: query,
+                        MaxLines: 140));
+                }
+
+                continue;
+            }
+
+            if (hint.Category.StartsWith("CDC/", StringComparison.OrdinalIgnoreCase))
+            {
+                requests.Add(new ReviewWorkspaceToolRequest(
+                    "read_file",
+                    "Read the CDC registration or EF relationship around the deterministic CDC hint.",
+                    FilePath: hint.FilePath,
+                    StartLine: 1,
+                    MaxLines: 220));
+
+                var entityName = ExtractCdcEntityName(hint);
+                if (!string.IsNullOrWhiteSpace(entityName))
+                {
+                    requests.Add(new ReviewWorkspaceToolRequest(
+                        "find_usage",
+                        "Find usages and write paths for the CDC entity.",
+                        Query: entityName,
+                        MaxLines: 160));
+
+                    var pluralEntityName = PluralizeEntityName(entityName);
+                    if (!string.Equals(pluralEntityName, entityName, StringComparison.Ordinal))
+                    {
+                        requests.Add(new ReviewWorkspaceToolRequest(
+                            "grep_code",
+                            "Find DbSet/table usages for the CDC entity, including local writes.",
+                            Query: pluralEntityName,
+                            MaxLines: 160));
+                    }
+                }
+
+                requests.Add(new ReviewWorkspaceToolRequest(
+                    "grep_code",
+                    "Find all CDC registrations in the service to reason about topic ownership and ordering.",
+                    Query: "AddCdcConsumer",
+                    MaxLines: 160));
+
+                continue;
+            }
+
             if (hint.Category.StartsWith("Tests/", StringComparison.OrdinalIgnoreCase))
             {
                 var seedName = ExtractSeedName(hint.Evidence);
@@ -1090,7 +1181,7 @@ public sealed class ReviewRunExecutor(
                 !string.IsNullOrWhiteSpace(request.Query) ||
                 !string.IsNullOrWhiteSpace(request.FilePath))
             .DistinctBy(request => $"{request.ToolName}|{request.Query}|{request.FilePath}|{request.PathScope}|{request.StartLine}|{request.MaxLines}")
-            .Take(16)
+            .Take(24)
             .ToArray();
     }
 
@@ -1106,16 +1197,31 @@ public sealed class ReviewRunExecutor(
             return 1;
         }
 
-        if (hint.Category.StartsWith("SQL/", StringComparison.OrdinalIgnoreCase))
+        if (string.Equals(hint.RuleId, "RUNTIME_KAFKA_CACHE_PUBLISH_FILTERING", StringComparison.Ordinal))
         {
             return 2;
         }
 
+        if (hint.Category.StartsWith("RuntimeFlow/", StringComparison.OrdinalIgnoreCase))
+        {
+            return 3;
+        }
+
+        if (hint.Category.StartsWith("CDC/", StringComparison.OrdinalIgnoreCase))
+        {
+            return 4;
+        }
+
+        if (hint.Category.StartsWith("SQL/", StringComparison.OrdinalIgnoreCase))
+        {
+            return 5;
+        }
+
         return hint.RuleId switch
         {
-            "GROUP_BY_FIRST_WITHOUT_ORDER" => 3,
-            "NON_NULLABLE_CONTRACT_RETURNS_NULL" => 4,
-            _ => 5
+            "GROUP_BY_FIRST_WITHOUT_ORDER" => 6,
+            "NON_NULLABLE_CONTRACT_RETURNS_NULL" => 7,
+            _ => 6
         };
     }
 
@@ -1123,6 +1229,93 @@ public sealed class ReviewRunExecutor(
     {
         var match = Regex.Match(evidence, @"\b(Seed[A-Za-z0-9_]+)\.", RegexOptions.CultureInvariant);
         return match.Success ? match.Groups[1].Value : string.Empty;
+    }
+
+    private static IReadOnlyList<string> ExtractRuntimeFlowQueries(ReviewHint hint)
+    {
+        return hint.RuleId switch
+        {
+            "RUNTIME_KAFKA_CACHE_PUBLISH_FILTERING" =>
+            [
+                "HandleMarkerAsync",
+                "SaveHandlingMarkerAsync",
+                "PublishAsync",
+                "RedisPubSub",
+                "ClientCategoryIds",
+                "GetHandlingClientCategory",
+                "GetHandlingMarkersAsync"
+            ],
+            "RUNTIME_FAIL_OPEN_CONTEXT_FILTER" =>
+            [
+                "GetHandlingClientCategory",
+                "ClientCategoryIds",
+                "return null"
+            ],
+            "RUNTIME_POLLING_OFFSET_CONTEXT" =>
+            [
+                "GetSessionOffsetAsync",
+                "SaveSessionOffsetAsync",
+                "SessionId"
+            ],
+            "RUNTIME_STREAM_POLLING_PARITY" =>
+            [
+                "StreamMarkersAsync",
+                "ServerSentEvents",
+                "PublishAsync",
+                "GetHandlingMarkersAsync"
+            ],
+            _ =>
+            [
+                "SaveHandlingMarkerAsync",
+                "GetSessionOffsetAsync",
+                "ClientCategory"
+            ]
+        };
+    }
+
+    private static string ExtractCdcEntityName(ReviewHint hint)
+    {
+        var messageMatch = Regex.Match(hint.Message, @"entity '([^']+)'", RegexOptions.CultureInvariant);
+        if (messageMatch.Success)
+        {
+            return messageMatch.Groups[1].Value;
+        }
+
+        var relationMatch = Regex.Match(
+            hint.Message,
+            @"CDC entities '([^']+)' and '([^']+)'",
+            RegexOptions.CultureInvariant);
+        if (relationMatch.Success)
+        {
+            return relationMatch.Groups[1].Value;
+        }
+
+        var evidenceMatch = Regex.Match(
+            hint.Evidence,
+            @"AddCdcConsumer\s*<\s*[A-Za-z_][A-Za-z0-9_.]*\s*,\s*(?<entity>[A-Za-z_][A-Za-z0-9_.]*)\s*>",
+            RegexOptions.CultureInvariant);
+        if (!evidenceMatch.Success)
+        {
+            return string.Empty;
+        }
+
+        var rawEntity = evidenceMatch.Groups["entity"].Value;
+        var dotIndex = rawEntity.LastIndexOf('.');
+        return dotIndex >= 0 ? rawEntity[(dotIndex + 1)..] : rawEntity;
+    }
+
+    private static string PluralizeEntityName(string entityName)
+    {
+        if (entityName.EndsWith("y", StringComparison.Ordinal) &&
+            entityName.Length > 1 &&
+            "aeiou".IndexOf(char.ToLowerInvariant(entityName[^2]), StringComparison.Ordinal) < 0)
+        {
+            return entityName[..^1] + "ies";
+        }
+
+        return entityName.EndsWith("s", StringComparison.Ordinal)
+            ? entityName
+            : entityName + "s";
     }
 
     private string BuildSinglePassDiffAndGraphPayload(
@@ -1202,6 +1395,255 @@ public sealed class ReviewRunExecutor(
         }
 
         return builder.ToString().TrimEnd();
+    }
+
+    private static IReadOnlyList<ReviewFinding> BuildConfirmedDeterministicFindings(
+        IReadOnlyList<ReviewHint> hints,
+        IReadOnlyList<ReviewFinding> existingFindings)
+    {
+        return hints
+            .Select(BuildConfirmedDeterministicFinding)
+            .Where(finding => finding is not null)
+            .Cast<ReviewFinding>()
+            .Where(finding => existingFindings.All(existing => !CoversFinding(existing, finding)))
+            .ToArray();
+    }
+
+    private static ReviewFinding? BuildConfirmedDeterministicFinding(ReviewHint hint)
+    {
+        return hint.RuleId switch
+        {
+            "RUNTIME_KAFKA_CACHE_PUBLISH_FILTERING" => BuildKafkaCachePublishFinding(hint),
+            "API_UNBOUNDED_PAGE_SIZE" => BuildUnboundedPageSizeFinding(hint),
+            "EF_BULK_UPDATE_THEN_INSERT_WITHOUT_TRANSACTION" => BuildNonAtomicBulkUpdateFinding(hint),
+            "CONFIG_SECRET_LIKE_VALUE" => BuildSecretLikeConfigFinding(hint),
+            _ => null
+        };
+    }
+
+    private static ReviewFinding? BuildRoslynBootstrapFailureFinding(RoslynWorkspaceBootstrapResult bootstrap)
+    {
+        if (bootstrap.Success || string.IsNullOrWhiteSpace(bootstrap.ErrorMessage))
+        {
+            return null;
+        }
+
+        var error = bootstrap.ErrorMessage;
+        if (!IsRestoreOrBuildFailure(error))
+        {
+            return null;
+        }
+
+        var file = BuildBootstrapFindingFile(bootstrap);
+        var isTimeout = error.Contains("timed out", StringComparison.OrdinalIgnoreCase);
+        var title = isTimeout
+            ? "dotnet restore не завершился в отведённое время"
+            : "dotnet restore не проходит для source-ветки";
+        var description = isTimeout
+            ? "Roslyn/bootstrap не смог подготовить полноценный workspace: `dotnet restore` завис до timeout. Такой PR нельзя считать проверенным как buildable, а review потерял Roslyn-граф и часть cross-file контекста."
+            : "Roslyn/bootstrap не смог подготовить полноценный workspace: `dotnet restore` завершился ошибкой. Такой PR нельзя считать готовым к merge, пока source-ветка не восстанавливается из доступных package feeds; кроме того, review потерял Roslyn-граф и часть cross-file контекста.";
+
+        return new ReviewFinding(
+            file,
+            "dotnet restore",
+            FindingCategory.Reliability,
+            FindingSeverity.Critical,
+            ReviewFindingSource.InitialReview,
+            title,
+            description,
+            TrimForPrompt(error, 2500),
+            "Починить restore/build source-ветки: проверить версии внутренних NuGet-пакетов, доступность feed и `global.json`/SDK. После исправления перезапустить ревью, чтобы Roslyn graph построился на полноценном workspace.",
+            1,
+            1);
+    }
+
+    private static bool IsRestoreOrBuildFailure(string message)
+    {
+        return message.Contains("dotnet restore failed", StringComparison.OrdinalIgnoreCase) ||
+               message.Contains("dotnet restore timed out", StringComparison.OrdinalIgnoreCase) ||
+               message.Contains("dotnet build failed", StringComparison.OrdinalIgnoreCase) ||
+               message.Contains("NU110", StringComparison.OrdinalIgnoreCase) ||
+               message.Contains("Restore", StringComparison.OrdinalIgnoreCase) &&
+               message.Contains("failed", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static string BuildBootstrapFindingFile(RoslynWorkspaceBootstrapResult bootstrap)
+    {
+        if (!string.IsNullOrWhiteSpace(bootstrap.WorkspaceDirectory) &&
+            !string.IsNullOrWhiteSpace(bootstrap.SolutionPath))
+        {
+            try
+            {
+                return Path.GetRelativePath(bootstrap.WorkspaceDirectory, bootstrap.SolutionPath)
+                    .Replace('\\', '/');
+            }
+            catch
+            {
+                return Path.GetFileName(bootstrap.SolutionPath);
+            }
+        }
+
+        return !string.IsNullOrWhiteSpace(bootstrap.SolutionPath)
+            ? Path.GetFileName(bootstrap.SolutionPath)
+            : "restore/build";
+    }
+
+    private static ReviewFinding BuildKafkaCachePublishFinding(ReviewHint hint)
+    {
+        return new ReviewFinding(
+            hint.FilePath,
+            hint.StartLine > 0 ? $"line {hint.StartLine}" : string.Empty,
+            FindingCategory.Security,
+            FindingSeverity.Medium,
+            ReviewFindingSource.InitialReview,
+            "Kafka-handler сохраняет и публикует маркер до проверки видимости",
+            "В обработчике Kafka маркер сохраняется в cache/pubsub до того, как видимые в модели ограничения по системе, клиентской категории, зоне или похожему бизнес-контексту применены к данным. Если этот cache/pubsub затем читается SSE или другим пользовательским каналом, пользователь может получить маркер, который polling/list endpoint позже отфильтровал бы.",
+            hint.Evidence,
+            "Перенести проверку бизнес-видимости до SaveHandlingMarkerAsync/PublishAsync либо не публиковать пользовательски наблюдаемый payload до контекстной фильтрации. Если cache должен оставаться raw, фильтр должен быть гарантирован на каждом выходном канале до отправки пользователю.",
+            hint.StartLine,
+            hint.StartLine);
+    }
+
+    private static ReviewFinding BuildUnboundedPageSizeFinding(ReviewHint hint)
+    {
+        return new ReviewFinding(
+            hint.FilePath,
+            hint.StartLine > 0 ? $"line {hint.StartLine}" : "PageSize",
+            FindingCategory.Performance,
+            FindingSeverity.Medium,
+            ReviewFindingSource.InitialReview,
+            "PageSize валидируется только как положительное число",
+            "В запросе списка появился `PageSize`, но deterministic scan видит только нижнюю границу (`> 0`) и не видит максимального лимита. Пользователь может запросить очень большую страницу, что создаёт нагрузку на БД и память приложения.",
+            hint.Evidence,
+            "Добавить верхний лимит `PageSize` в валидатор/модель запроса и покрыть его тестом. Лимит лучше держать константой или options, согласованной с контрактом сервиса.",
+            hint.StartLine,
+            hint.StartLine);
+    }
+
+    private static ReviewFinding BuildNonAtomicBulkUpdateFinding(ReviewHint hint)
+    {
+        return new ReviewFinding(
+            hint.FilePath,
+            hint.StartLine > 0 ? $"line {hint.StartLine}" : "ExecuteUpdateAsync",
+            FindingCategory.Reliability,
+            FindingSeverity.Medium,
+            ReviewFindingSource.InitialReview,
+            "Bulk update и последующая вставка выполняются без общей транзакции",
+            "В изменённом методе есть `ExecuteUpdateAsync`, после которого видна вставка/`SaveChangesAsync`, но не видна явная транзакция. Если вторая операция упадёт после успешного bulk update, данные могут остаться в промежуточном состоянии.",
+            hint.Evidence,
+            "Обернуть связанные bulk update и insert/save в одну транзакцию или изменить алгоритм так, чтобы операция была атомарной и идемпотентно восстанавливалась после частичного сбоя.",
+            hint.StartLine,
+            hint.StartLine);
+    }
+
+    private static ReviewFinding BuildSecretLikeConfigFinding(ReviewHint hint)
+    {
+        return new ReviewFinding(
+            hint.FilePath,
+            hint.StartLine > 0 ? $"line {hint.StartLine}" : "secret-like config",
+            FindingCategory.Security,
+            FindingSeverity.Medium,
+            ReviewFindingSource.InitialReview,
+            "В конфиг добавлено секретоподобное значение",
+            "В изменённом `appsettings*.json` видно непустое значение, похожее на пароль, signing key, token или другой секрет. Даже для test/dev окружений такие значения стоит проверять: они могут быть переиспользуемыми и попасть в историю репозитория.",
+            hint.Evidence,
+            "Вынести секреты в защищённое хранилище/переменные окружения или заменить явным безопасным placeholder. Если значение намеренно тестовое, зафиксировать это в конфигурационных правилах сервиса.",
+            hint.StartLine,
+            hint.StartLine);
+    }
+
+    private static IReadOnlyList<ReviewFinding> RestoreDroppedDistinctFindings(
+        IReadOnlyList<ReviewFinding> originalFindings,
+        IReadOnlyList<ReviewFinding> normalizedFindings)
+    {
+        if (originalFindings.Count == 0)
+        {
+            return normalizedFindings;
+        }
+
+        var restored = normalizedFindings.ToList();
+        foreach (var candidate in originalFindings)
+        {
+            if (candidate.Severity is FindingSeverity.Low ||
+                candidate.Category is FindingCategory.CodeStyle)
+            {
+                continue;
+            }
+
+            var coveringIndex = restored.FindIndex(existing => CoversFinding(existing, candidate));
+            if (coveringIndex >= 0)
+            {
+                if (GetSeverityRank(candidate.Severity) < GetSeverityRank(restored[coveringIndex].Severity))
+                {
+                    restored[coveringIndex] = candidate;
+                }
+
+                continue;
+            }
+
+            restored.Add(candidate);
+        }
+
+        return restored;
+    }
+
+    private static int GetSeverityRank(FindingSeverity severity)
+    {
+        return severity switch
+        {
+            FindingSeverity.Critical => 0,
+            FindingSeverity.High => 1,
+            FindingSeverity.Medium => 2,
+            FindingSeverity.Low => 3,
+            _ => 4
+        };
+    }
+
+    private static bool CoversFinding(ReviewFinding existing, ReviewFinding candidate)
+    {
+        if (!PathsMatch(existing.File, candidate.File))
+        {
+            return false;
+        }
+
+        if (LineRangesAreClose(existing, candidate))
+        {
+            return true;
+        }
+
+        var existingText = $"{existing.Title} {existing.Description} {existing.Suggestion}";
+        var candidateTerms = ExtractSignificantTerms($"{candidate.Title} {candidate.Description}");
+        if (candidateTerms.Count == 0)
+        {
+            return false;
+        }
+
+        var matches = candidateTerms.Count(term =>
+            existingText.Contains(term, StringComparison.OrdinalIgnoreCase));
+        return matches >= Math.Min(3, candidateTerms.Count);
+    }
+
+    private static bool LineRangesAreClose(ReviewFinding existing, ReviewFinding candidate)
+    {
+        var existingStart = existing.StartLine;
+        var candidateStart = candidate.StartLine;
+        if (existingStart <= 0 || candidateStart <= 0)
+        {
+            return false;
+        }
+
+        var existingEnd = Math.Max(existingStart, existing.EndLine);
+        var candidateEnd = Math.Max(candidateStart, candidate.EndLine);
+        return candidateStart <= existingEnd + 8 && existingStart <= candidateEnd + 8;
+    }
+
+    private static IReadOnlyList<string> ExtractSignificantTerms(string text)
+    {
+        return Regex.Matches(text, @"[\p{L}\p{N}_]{5,}", RegexOptions.CultureInvariant)
+            .Select(match => match.Value)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .Take(12)
+            .ToArray();
     }
 
     private async Task<(IReadOnlyList<ReviewFinding> Findings, IReadOnlyList<ReviewOpportunityItem> Opportunities)>

@@ -408,4 +408,421 @@ public sealed class DiffPreprocessorTests
         Assert.Contains(result.ReviewHints, hint => hint.RuleId == "GROUP_BY_FIRST_WITHOUT_ORDER");
     }
 
+    [Fact]
+    public void Process_GeneratesCdcHints_ForNewConsumersAndInterTopicForeignKey()
+    {
+        var sut = new DiffPreprocessor(Microsoft.Extensions.Options.Options.Create(new ReviewPipelineOptions
+        {
+            MaxChunkCharacters = 4000
+        }));
+
+        var diff = """
+            diff --git a/src/App/DI/AddDependencies.cs b/src/App/DI/AddDependencies.cs
+            --- a/src/App/DI/AddDependencies.cs
+            +++ b/src/App/DI/AddDependencies.cs
+            @@ -170,1 +170,4 @@
+             services.AddMultipleKafka(KafkaCrm)
+            +    .AddCdcConsumer<MarkersContext, Domain.Entities.MarkerSystemRelate>(kafkaTopicsConfig.CdcRdmMarkerSystems)
+            +    .AddCdcConsumer<MarkersContext, Domain.Entities.MarkerSystemClientCategory>(kafkaTopicsConfig.CdcRdmMarkerSystemClientCategories)
+                 .AddConsumer<string, MarkerDetailMessage, MarkerDetailConsumerHandler>(kafkaTopicsConfig.MarkersDetails);
+            diff --git a/src/App/Db/Configurations/MarkerSystemClientCategoryConfiguration.cs b/src/App/Db/Configurations/MarkerSystemClientCategoryConfiguration.cs
+            --- /dev/null
+            +++ b/src/App/Db/Configurations/MarkerSystemClientCategoryConfiguration.cs
+            @@ -0,0 +1,16 @@
+            +public class MarkerSystemClientCategoryConfiguration : IEntityTypeConfiguration<MarkerSystemClientCategory>
+            +{
+            +    public void Configure(EntityTypeBuilder<MarkerSystemClientCategory> entity)
+            +    {
+            +        entity.HasKey(e => new { e.MarkerId, e.SystemId, e.ClientCategoryId });
+            +        entity.HasOne(e => e.MarkerSystemRelate)
+            +            .WithMany(e => e.MarkerSystemClientCategories)
+            +            .HasForeignKey(e => new { e.MarkerId, e.SystemId });
+            +    }
+            +}
+            """;
+
+        var result = sut.Process(diff);
+
+        Assert.Contains(result.ReviewHints, hint =>
+            hint.RuleId == "CDC_ENTITY_OWNERSHIP_REVIEW" &&
+            hint.Message.Contains("MarkerSystemRelate", StringComparison.Ordinal));
+        Assert.Contains(result.ReviewHints, hint =>
+            hint.RuleId == "CDC_INTER_TOPIC_FK_ORDERING" &&
+            hint.Message.Contains("MarkerSystemClientCategory", StringComparison.Ordinal) &&
+            hint.Message.Contains("MarkerSystemRelate", StringComparison.Ordinal));
+        Assert.Contains("CDC consumer was added", string.Join('\n', result.ReviewChunks), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Process_GeneratesRuntimeFlowHints_ForKafkaCacheAndPollingFilters()
+    {
+        var sut = new DiffPreprocessor(Microsoft.Extensions.Options.Options.Create(new ReviewPipelineOptions
+        {
+            MaxChunkCharacters = 4000
+        }));
+
+        var diff = """
+            diff --git a/src/App/Services/MarkerPollingService.cs b/src/App/Services/MarkerPollingService.cs
+            --- a/src/App/Services/MarkerPollingService.cs
+            +++ b/src/App/Services/MarkerPollingService.cs
+            @@ -40,1 +40,39 @@
+            +public async Task<MarkerModelResult[]> GetMarkersAsync(
+            +    long handlingId,
+            +    MarkerPollingRequest request,
+            +    IEnumerable<Claim> claims,
+            +    CancellationToken cancellationToken = default)
+            +{
+            +    var offset = await _cacheHandlingService.GetSessionOffsetAsync(handlingId, request.SessionId, cancellationToken);
+            +    var cachedMarkers = await _cacheHandlingService.GetHandlingMarkersAsync(handlingId, cancellationToken);
+            +    var handlingClientCategory = await ResolveHandlingClientCategoryAsync(handlingId, cancellationToken);
+            +    var systemId = ResolveSystemId(claims.GetSystem());
+            +    var markersList = cachedMarkers
+            +        .Where(marker => IsAvailableForContext(
+            +            marker,
+            +            systemId,
+            +            request.IsIdentified,
+            +            request.IsTaskNeeded,
+            +            handlingClientCategory))
+            +        .ToList();
+            +    await _cacheHandlingService.SaveSessionOffsetAsync(handlingId, request.SessionId, offset + markersList.Count, cancellationToken);
+            +    return [];
+            +}
+            +
+            +private static bool IsAvailableForContext(
+            +    HandlingMarkerCacheModel marker,
+            +    int systemId,
+            +    bool? isIdentified,
+            +    bool? isTaskNeeded,
+            +    HandlingClientCategoryCacheModel? handlingClientCategory)
+            +{
+            +    if (isTaskNeeded.HasValue && marker.IsTaskNeeded != isTaskNeeded.Value)
+            +    {
+            +        return false;
+            +    }
+            +
+            +    if (handlingClientCategory != null
+            +        && marker.ClientCategoryIds.Count > 0
+            +        && !marker.ClientCategoryIds.Contains(handlingClientCategory.ClientCategoryId))
+            +    {
+            +        return false;
+            +    }
+            +
+            +    return true;
+            +}
+            diff --git a/src/App/Services/MarkerHandlingService.cs b/src/App/Services/MarkerHandlingService.cs
+            --- a/src/App/Services/MarkerHandlingService.cs
+            +++ b/src/App/Services/MarkerHandlingService.cs
+            @@ -60,1 +60,29 @@
+            +public async Task HandleMarkerAsync(SubsMarkerMessage message, CancellationToken cancellationToken = default)
+            +{
+            +    var details = await _markerRepo.GetMarkerDetailsAsync(message.MarkerId, _options.MarkerSystem.DefaultSystemId, cancellationToken);
+            +    var cacheModel = new HandlingMarkerCacheModel
+            +    {
+            +        MarkerId = message.MarkerId,
+            +        SystemId = details.SystemId,
+            +        IsTaskNeeded = details.IsTaskNeeded,
+            +        IsAvailableAuthorizedZone = details.IsAvailableAuthorizedZone,
+            +        IsAvailableUnauthorizedZone = details.IsAvailableUnauthorizedZone,
+            +        ClientCategoryIds = [.. details.ClientCategoryIds]
+            +    };
+            +
+            +    await _cacheHandlingService.SaveHandlingMarkerAsync(message.HandlingId, cacheModel, cancellationToken);
+            +
+            +    var viewModel = new MarkerModelResult
+            +    {
+            +        HandlingId = message.HandlingId,
+            +        MarkerId = message.MarkerId,
+            +        IsTaskNeeded = details.IsTaskNeeded
+            +    };
+            +
+            +    await _redisPubSub.PublishAsync(viewModel);
+            +}
+            """;
+
+        var result = sut.Process(diff);
+
+        Assert.Contains(result.ReviewHints, hint =>
+            hint.RuleId == "RUNTIME_FAIL_OPEN_CONTEXT_FILTER");
+        Assert.Contains(result.ReviewHints, hint =>
+            hint.RuleId == "RUNTIME_POLLING_OFFSET_CONTEXT");
+        Assert.Contains(result.ReviewHints, hint =>
+            hint.RuleId == "RUNTIME_STREAM_POLLING_PARITY");
+        Assert.Contains(result.ReviewHints, hint =>
+            hint.RuleId == "RUNTIME_KAFKA_CACHE_PUBLISH_FILTERING" &&
+            hint.Category == "RuntimeFlow/KafkaCachePreFilter" &&
+            hint.SuggestedVerification.Contains("Do not merge", StringComparison.Ordinal));
+        Assert.Contains("Polling flow applies business filters", string.Join('\n', result.ReviewChunks), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Process_GeneratesKafkaCacheHint_WhenVisibilityCheckIsAfterCachePublish()
+    {
+        var sut = new DiffPreprocessor(Microsoft.Extensions.Options.Options.Create(new ReviewPipelineOptions
+        {
+            MaxChunkCharacters = 4000
+        }));
+
+        var diff = """
+            diff --git a/src/App/Services/MarkerHandlingService.cs b/src/App/Services/MarkerHandlingService.cs
+            --- a/src/App/Services/MarkerHandlingService.cs
+            +++ b/src/App/Services/MarkerHandlingService.cs
+            @@ -60,1 +60,35 @@
+            +public async Task HandleMarkerAsync(SubsMarkerMessage message, CancellationToken cancellationToken = default)
+            +{
+            +    var details = await _markerRepo.GetMarkerDetailsAsync(message.MarkerId, cancellationToken);
+            +    var cacheModel = new HandlingMarkerCacheModel
+            +    {
+            +        MarkerId = message.MarkerId,
+            +        SystemId = details.SystemId,
+            +        ClientCategoryIds = [.. details.ClientCategoryIds]
+            +    };
+            +
+            +    await _cacheHandlingService.SaveHandlingMarkerAsync(message.HandlingId, cacheModel, cancellationToken);
+            +    await _redisPubSub.PublishAsync(cacheModel);
+            +
+            +    var handlingClientCategory = await GetHandlingClientCategoryAsync(message.HandlingId, cancellationToken);
+            +    if (handlingClientCategory != null
+            +        && cacheModel.ClientCategoryIds.Count > 0
+            +        && !cacheModel.ClientCategoryIds.Contains(handlingClientCategory.ClientCategoryId))
+            +    {
+            +        return;
+            +    }
+            +}
+            """;
+
+        var result = sut.Process(diff);
+
+        var hint = Assert.Single(result.ReviewHints, hint =>
+            hint.RuleId == "RUNTIME_KAFKA_CACHE_PUBLISH_FILTERING");
+        Assert.Contains("SaveHandlingMarkerAsync", hint.Evidence, StringComparison.Ordinal);
+        Assert.Contains("PublishAsync", hint.Evidence, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Process_GeneratesKafkaCacheHint_ForCacheWriteWhenServiceStreamsCachedMarkers()
+    {
+        var sut = new DiffPreprocessor(Microsoft.Extensions.Options.Options.Create(new ReviewPipelineOptions
+        {
+            MaxChunkCharacters = 4000
+        }));
+
+        var diff = """
+            diff --git a/src/App/Services/MarkerHandlingService.cs b/src/App/Services/MarkerHandlingService.cs
+            --- a/src/App/Services/MarkerHandlingService.cs
+            +++ b/src/App/Services/MarkerHandlingService.cs
+            @@ -60,1 +60,23 @@
+            +public async Task HandleMarkerAsync(SubsMarkerMessage message, CancellationToken cancellationToken = default)
+            +{
+            +    var details = await _markerRepo.GetMarkerDetailsAsync(message.MarkerId, cancellationToken);
+            +    var cacheModel = new HandlingMarkerCacheModel
+            +    {
+            +        MarkerId = message.MarkerId,
+            +        SystemId = details.SystemId,
+            +        IsAvailableAuthorizedZone = details.IsAvailableAuthorizedZone,
+            +        ClientCategoryIds = [.. details.ClientCategoryIds]
+            +    };
+            +
+            +    await _cacheHandlingService.SaveHandlingMarkerAsync(message.HandlingId, cacheModel, cancellationToken);
+            +}
+            diff --git a/src/App/Services/MarkerNotificationService.cs b/src/App/Services/MarkerNotificationService.cs
+            --- a/src/App/Services/MarkerNotificationService.cs
+            +++ b/src/App/Services/MarkerNotificationService.cs
+            @@ -20,1 +20,7 @@
+            +public async Task StreamMarkersAsync(long handlingId, CancellationToken cancellationToken)
+            +{
+            +    var markers = await _cacheHandlingService.GetHandlingMarkersAsync(handlingId, cancellationToken);
+            +    await ServerSentEvents.WriteAsync(markers, cancellationToken);
+            +}
+            """;
+
+        var result = sut.Process(diff);
+
+        var hint = Assert.Single(result.ReviewHints, hint =>
+            hint.RuleId == "RUNTIME_KAFKA_CACHE_PUBLISH_FILTERING");
+        Assert.Contains("SaveHandlingMarkerAsync", hint.Evidence, StringComparison.Ordinal);
+        Assert.Contains("observable marker cache outputs", hint.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Process_DoesNotGenerateKafkaCacheHint_WhenVisibilityCheckPrecedesCachePublish()
+    {
+        var sut = new DiffPreprocessor(Microsoft.Extensions.Options.Options.Create(new ReviewPipelineOptions
+        {
+            MaxChunkCharacters = 4000
+        }));
+
+        var diff = """
+            diff --git a/src/App/Services/MarkerHandlingService.cs b/src/App/Services/MarkerHandlingService.cs
+            --- a/src/App/Services/MarkerHandlingService.cs
+            +++ b/src/App/Services/MarkerHandlingService.cs
+            @@ -60,1 +60,35 @@
+            +public async Task HandleMarkerAsync(SubsMarkerMessage message, CancellationToken cancellationToken = default)
+            +{
+            +    var details = await _markerRepo.GetMarkerDetailsAsync(message.MarkerId, cancellationToken);
+            +    var cacheModel = new HandlingMarkerCacheModel
+            +    {
+            +        MarkerId = message.MarkerId,
+            +        SystemId = details.SystemId,
+            +        ClientCategoryIds = [.. details.ClientCategoryIds]
+            +    };
+            +
+            +    var handlingClientCategory = await GetHandlingClientCategoryAsync(message.HandlingId, cancellationToken);
+            +    if (handlingClientCategory != null
+            +        && cacheModel.ClientCategoryIds.Count > 0
+            +        && !cacheModel.ClientCategoryIds.Contains(handlingClientCategory.ClientCategoryId))
+            +    {
+            +        return;
+            +    }
+            +
+            +    await _cacheHandlingService.SaveHandlingMarkerAsync(message.HandlingId, cacheModel, cancellationToken);
+            +    await _redisPubSub.PublishAsync(cacheModel);
+            +}
+            """;
+
+        var result = sut.Process(diff);
+
+        Assert.DoesNotContain(result.ReviewHints, hint =>
+            hint.RuleId == "RUNTIME_KAFKA_CACHE_PUBLISH_FILTERING");
+    }
+
+    [Fact]
+    public void Process_GeneratesPageSizeLimitHint_WhenValidatorHasOnlyLowerBound()
+    {
+        var sut = new DiffPreprocessor(Microsoft.Extensions.Options.Options.Create(new ReviewPipelineOptions
+        {
+            MaxChunkCharacters = 4000
+        }));
+
+        var diff = """
+            diff --git a/src/App/Validators/GetItemsValidator.cs b/src/App/Validators/GetItemsValidator.cs
+            --- /dev/null
+            +++ b/src/App/Validators/GetItemsValidator.cs
+            @@ -0,0 +1,14 @@
+            +public class GetItemsValidator : AbstractValidator<GetItemsRequest>
+            +{
+            +    public GetItemsValidator()
+            +    {
+            +        RuleFor(x => x.PageSize)
+            +            .GreaterThan(0)
+            +            .When(x => x.PageSize.HasValue);
+            +    }
+            +}
+            """;
+
+        var result = sut.Process(diff);
+
+        var hint = Assert.Single(result.ReviewHints, hint => hint.RuleId == "API_UNBOUNDED_PAGE_SIZE");
+        Assert.Contains("PageSize", hint.Evidence, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Process_DoesNotGeneratePageSizeLimitHint_WhenValidatorHasUpperBound()
+    {
+        var sut = new DiffPreprocessor(Microsoft.Extensions.Options.Options.Create(new ReviewPipelineOptions
+        {
+            MaxChunkCharacters = 4000
+        }));
+
+        var diff = """
+            diff --git a/src/App/Validators/GetItemsValidator.cs b/src/App/Validators/GetItemsValidator.cs
+            --- /dev/null
+            +++ b/src/App/Validators/GetItemsValidator.cs
+            @@ -0,0 +1,14 @@
+            +public class GetItemsValidator : AbstractValidator<GetItemsRequest>
+            +{
+            +    public GetItemsValidator()
+            +    {
+            +        RuleFor(x => x.PageSize)
+            +            .GreaterThan(0)
+            +            .LessThanOrEqualTo(100)
+            +            .When(x => x.PageSize.HasValue);
+            +    }
+            +}
+            """;
+
+        var result = sut.Process(diff);
+
+        Assert.DoesNotContain(result.ReviewHints, hint => hint.RuleId == "API_UNBOUNDED_PAGE_SIZE");
+    }
+
+    [Fact]
+    public void Process_GeneratesTransactionHint_WhenBulkUpdateIsFollowedByInsertWithoutTransaction()
+    {
+        var sut = new DiffPreprocessor(Microsoft.Extensions.Options.Options.Create(new ReviewPipelineOptions
+        {
+            MaxChunkCharacters = 4000
+        }));
+
+        var diff = """
+            diff --git a/src/App/Services/PeriodService.cs b/src/App/Services/PeriodService.cs
+            --- /dev/null
+            +++ b/src/App/Services/PeriodService.cs
+            @@ -0,0 +1,20 @@
+            +public async Task ReplaceAsync(long operatorId, CancellationToken cancellationToken)
+            +{
+            +    await _db.Periods
+            +        .Where(x => x.OperatorId == operatorId && x.ClosedAt == null)
+            +        .ExecuteUpdateAsync(set => set.SetProperty(x => x.ClosedAt, DateTime.UtcNow), cancellationToken);
+            +
+            +    _db.Periods.Add(new Period { OperatorId = operatorId });
+            +    await _db.SaveChangesAsync(cancellationToken);
+            +}
+            """;
+
+        var result = sut.Process(diff);
+
+        var hint = Assert.Single(result.ReviewHints, hint =>
+            hint.RuleId == "EF_BULK_UPDATE_THEN_INSERT_WITHOUT_TRANSACTION");
+        Assert.Contains("ExecuteUpdateAsync", hint.Evidence, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Process_GeneratesOptionsValidationAndSecretHints()
+    {
+        var sut = new DiffPreprocessor(Microsoft.Extensions.Options.Options.Create(new ReviewPipelineOptions
+        {
+            MaxChunkCharacters = 4000
+        }));
+
+        var diff = """
+            diff --git a/src/App/DI/AddConfigs.cs b/src/App/DI/AddConfigs.cs
+            --- /dev/null
+            +++ b/src/App/DI/AddConfigs.cs
+            @@ -0,0 +1,8 @@
+            +public static IServiceCollection AddConfigs(this IServiceCollection services, IConfiguration configuration)
+            +{
+            +    return services
+            +        .Configure<PaymentOptions>(configuration.GetRequiredSection(PaymentOptions.SectionName));
+            +}
+            diff --git a/src/App/appsettings.Development.json b/src/App/appsettings.Development.json
+            --- /dev/null
+            +++ b/src/App/appsettings.Development.json
+            @@ -0,0 +1,8 @@
+            +{
+            +  "Auth": {
+            +    "IssuerSigningKey": "real-looking-key"
+            +  },
+            +  "ConnectionStrings": {
+            +    "ConnectionDb": "Host=test-db;Username=svc;Password=password"
+            +  }
+            +}
+            diff --git a/src/App/appsettings.Local.json b/src/App/appsettings.Local.json
+            --- /dev/null
+            +++ b/src/App/appsettings.Local.json
+            @@ -0,0 +1,5 @@
+            +{
+            +  "ConnectionStrings": {
+            +    "ConnectionDb": "Host=localhost;Username=postgres;Password=postgres"
+            +  }
+            +}
+            """;
+
+        var result = sut.Process(diff);
+
+        Assert.Contains(result.ReviewHints, hint => hint.RuleId == "OPTIONS_BOUND_WITHOUT_VALIDATION");
+        var secretHint = Assert.Single(result.ReviewHints, hint => hint.RuleId == "CONFIG_SECRET_LIKE_VALUE");
+        Assert.Equal("src/App/appsettings.Development.json", secretHint.FilePath);
+        Assert.Contains("***", secretHint.Evidence, StringComparison.Ordinal);
+    }
+
 }

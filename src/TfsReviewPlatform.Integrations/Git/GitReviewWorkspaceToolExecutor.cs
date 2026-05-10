@@ -9,7 +9,7 @@ public sealed class GitReviewWorkspaceToolExecutor(
     IRepositoryFileContentService repositoryFileContentService) : IReviewWorkspaceToolExecutor
 {
     private const int MaxRequestsPerChunk = 3;
-    private const int MaxDeterministicRequests = 16;
+    private const int MaxDeterministicRequests = 24;
 
     public async Task<IReadOnlyList<ReviewWorkspaceToolResponse>> ExecuteAsync(
         DiffAcquisitionResult diffResult,

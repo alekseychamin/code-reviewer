@@ -89,6 +89,8 @@ public sealed class DiffPreprocessor(IOptions<ReviewPipelineOptions> options) : 
             if (file.FilePath.EndsWith(".cs", StringComparison.OrdinalIgnoreCase))
             {
                 AddCSharpDataIntegrityHints(file.FilePath, diffLines, hints);
+                AddApiPaginationLimitHints(file.FilePath, diffLines, hints);
+                AddTransactionalPersistenceHints(file.FilePath, diffLines, hints);
             }
 
             if (IsTestFile(file.FilePath))
@@ -98,6 +100,9 @@ public sealed class DiffPreprocessor(IOptions<ReviewPipelineOptions> options) : 
         }
 
         AddOptionsBindingHints(files, hints);
+        AddConfigSecretHints(files, hints);
+        AddCdcHints(files, hints);
+        AddRuntimeFlowHints(files, hints);
 
         return hints
             .DistinctBy(hint => $"{hint.RuleId}|{hint.FilePath}|{hint.StartLine}|{hint.Message}")
@@ -319,6 +324,115 @@ public sealed class DiffPreprocessor(IOptions<ReviewPipelineOptions> options) : 
             RegexOptions.CultureInvariant);
     }
 
+    private static void AddApiPaginationLimitHints(
+        string filePath,
+        IReadOnlyList<DiffLine> diffLines,
+        List<ReviewHint> hints)
+    {
+        var newLines = diffLines
+            .Where(line => line.Kind is '+' or ' ')
+            .ToArray();
+        var text = string.Join('\n', newLines.Select(line => line.Text));
+
+        if (!Regex.IsMatch(text, @"\bPageSize\b", RegexOptions.CultureInvariant))
+        {
+            return;
+        }
+
+        if (!Regex.IsMatch(
+                text,
+                @"RuleFor\s*\([^)]*\bPageSize\b[^)]*\)",
+                RegexOptions.CultureInvariant))
+        {
+            return;
+        }
+
+        if (HasPageSizeUpperBound(text))
+        {
+            return;
+        }
+
+        var line = newLines.FirstOrDefault(item => item.Text.Contains("PageSize", StringComparison.Ordinal));
+        if (line is null)
+        {
+            return;
+        }
+
+        hints.Add(new ReviewHint
+        {
+            RuleId = "API_UNBOUNDED_PAGE_SIZE",
+            Category = "Contract/Performance",
+            FilePath = filePath,
+            StartLine = line.NewLine,
+            Message = "PageSize is validated only for being present/positive; no upper bound is visible in the changed validator/model.",
+            Evidence = BuildNearbyEvidence(newLines, line.NewLine, 8),
+            SuggestedVerification = "Check the list endpoint contract and enforce a max page size. If this is a high-volume endpoint, an unbounded page size can produce large DB reads and response allocations."
+        });
+    }
+
+    private static bool HasPageSizeUpperBound(string text)
+    {
+        if (Regex.IsMatch(
+                text,
+                @"\b(?:MaxPageSize|DefaultPageSize|PageSizeLimit)\b",
+                RegexOptions.CultureInvariant))
+        {
+            return true;
+        }
+
+        if (Regex.IsMatch(
+                text,
+                @"RuleFor\s*\([^)]*\bPageSize\b[^)]*\)[\s\S]{0,500}\.(?:LessThan|LessThanOrEqualTo|InclusiveBetween|Must)\s*\(",
+                RegexOptions.CultureInvariant))
+        {
+            return true;
+        }
+
+        return Regex.IsMatch(
+            text,
+            @"\bPageSize\b\s*(?:<=|<)\s*\d+",
+            RegexOptions.CultureInvariant);
+    }
+
+    private static void AddTransactionalPersistenceHints(
+        string filePath,
+        IReadOnlyList<DiffLine> diffLines,
+        List<ReviewHint> hints)
+    {
+        var newLines = diffLines
+            .Where(line => line.Kind is '+' or ' ')
+            .ToArray();
+        var text = string.Join('\n', newLines.Select(line => line.Text));
+
+        if (!text.Contains("ExecuteUpdateAsync", StringComparison.Ordinal) ||
+            !ContainsAny(text, [".Add(", ".AddAsync(", "SaveChangesAsync", "AddNew"]))
+        {
+            return;
+        }
+
+        if (ContainsAny(text, ["BeginTransaction", "TransactionScope", "UseTransaction", "IDbContextTransaction"]))
+        {
+            return;
+        }
+
+        var line = newLines.FirstOrDefault(item => item.Text.Contains("ExecuteUpdateAsync", StringComparison.Ordinal));
+        if (line is null)
+        {
+            return;
+        }
+
+        hints.Add(new ReviewHint
+        {
+            RuleId = "EF_BULK_UPDATE_THEN_INSERT_WITHOUT_TRANSACTION",
+            Category = "Persistence/Transaction",
+            FilePath = filePath,
+            StartLine = line.NewLine,
+            Message = "ExecuteUpdateAsync is followed by an insert/save-like operation, but no explicit transaction is visible in the changed method/file.",
+            Evidence = BuildNearbyEvidence(newLines, line.NewLine, 14),
+            SuggestedVerification = "Confirm the close/update + insert/save sequence is atomic. If both changes represent one business operation, wrap them in one transaction or make the sequence safely recoverable."
+        });
+    }
+
     private static void AddTestAndSeedHints(
         string filePath,
         IReadOnlyList<DiffLine> diffLines,
@@ -364,7 +478,7 @@ public sealed class DiffPreprocessor(IOptions<ReviewPipelineOptions> options) : 
                     Line = line,
                     Match = Regex.Match(
                         line.Text,
-                        @"Configure<(?<type>[A-Za-z0-9_]+)>\s*\(\s*configuration\.GetSection\(\s*""(?<section>[^""]+)""\s*\)",
+                        @"Configure<(?<type>[A-Za-z0-9_]+)>\s*\(\s*configuration\.Get(?:Required)?Section\(\s*(?:""(?<section>[^""]+)""|(?<sectionExpr>[^)]+))\s*\)",
                         RegexOptions.CultureInvariant)
                 })
                 .Where(item => item.Match.Success))
@@ -387,9 +501,13 @@ public sealed class DiffPreprocessor(IOptions<ReviewPipelineOptions> options) : 
 
         foreach (var binding in optionBindings)
         {
-            var section = binding.Match.Groups["section"].Value;
-            if (visibleConfigKeys.Contains(section))
+            var section = binding.Match.Groups["section"].Success
+                ? binding.Match.Groups["section"].Value
+                : binding.Match.Groups["sectionExpr"].Value;
+            var sectionKey = NormalizeSectionKey(section);
+            if (!string.IsNullOrWhiteSpace(sectionKey) && visibleConfigKeys.Contains(sectionKey))
             {
+                AddOptionsValidationHintIfNeeded(binding.FilePath, binding.Line, files, hints);
                 continue;
             }
 
@@ -403,7 +521,597 @@ public sealed class DiffPreprocessor(IOptions<ReviewPipelineOptions> options) : 
                 Evidence = binding.Line.Text.Trim(),
                 SuggestedVerification = "Read appsettings*.json and environment conventions. If option keys live under another section, runtime configuration overrides will not bind."
             });
+
+            AddOptionsValidationHintIfNeeded(binding.FilePath, binding.Line, files, hints);
         }
+    }
+
+    private static string NormalizeSectionKey(string section)
+    {
+        var trimmed = section.Trim().Trim('"');
+        if (trimmed.EndsWith(".SectionName", StringComparison.Ordinal))
+        {
+            var typeName = NormalizeTypeName(trimmed[..^".SectionName".Length]);
+            return typeName.EndsWith("Options", StringComparison.Ordinal)
+                ? typeName[..^"Options".Length]
+                : typeName;
+        }
+
+        var colonIndex = trimmed.LastIndexOf(':');
+        return colonIndex >= 0 ? trimmed[(colonIndex + 1)..] : trimmed;
+    }
+
+    private static void AddOptionsValidationHintIfNeeded(
+        string filePath,
+        DiffLine bindingLine,
+        IReadOnlyList<(string FilePath, string Content)> files,
+        List<ReviewHint> hints)
+    {
+        var file = files.FirstOrDefault(item => string.Equals(item.FilePath, filePath, StringComparison.OrdinalIgnoreCase));
+        var text = file.Content ?? string.Empty;
+        if (ContainsAny(text, [".Validate(", ".ValidateDataAnnotations(", ".ValidateOnStart("]))
+        {
+            return;
+        }
+
+        hints.Add(new ReviewHint
+        {
+            RuleId = "OPTIONS_BOUND_WITHOUT_VALIDATION",
+            Category = "Configuration/OptionsValidation",
+            FilePath = filePath,
+            StartLine = bindingLine.NewLine,
+            Message = "Options are bound from configuration, but no Validate/ValidateOnStart call is visible in the changed DI code.",
+            Evidence = bindingLine.Text.Trim(),
+            SuggestedVerification = "Check whether required config values are validated at startup. Empty base appsettings or missing environment overrides can otherwise fail later on first request/consumer."
+        });
+    }
+
+    private static void AddConfigSecretHints(
+        IReadOnlyList<(string FilePath, string Content)> files,
+        List<ReviewHint> hints)
+    {
+        foreach (var file in files.Where(file =>
+                     Path.GetFileName(file.FilePath).StartsWith("appsettings", StringComparison.OrdinalIgnoreCase) &&
+                     !Path.GetFileName(file.FilePath).Contains(".Local.", StringComparison.OrdinalIgnoreCase) &&
+                     file.FilePath.EndsWith(".json", StringComparison.OrdinalIgnoreCase)))
+        {
+            var secretLines = EnumerateDiffLines(file.Content)
+                .Where(line => line.Kind == '+' && LooksLikeSecretConfigLine(line.Text))
+                .Take(3)
+                .ToArray();
+            if (secretLines.Length == 0)
+            {
+                continue;
+            }
+
+            var first = secretLines[0];
+            hints.Add(new ReviewHint
+            {
+                RuleId = "CONFIG_SECRET_LIKE_VALUE",
+                Category = "Configuration/Secrets",
+                FilePath = file.FilePath,
+                StartLine = first.NewLine,
+                Message = "Changed appsettings contains a non-empty secret-like value such as password, signing key, token, or API key.",
+                Evidence = string.Join(" | ", secretLines.Select(line => RedactSecretLine(line.Text.Trim()))),
+                SuggestedVerification = "Verify this value is only a safe placeholder. Real credentials, signing keys, and service passwords should come from protected environment configuration, not the repository."
+            });
+        }
+    }
+
+    private static bool LooksLikeSecretConfigLine(string text)
+    {
+        var trimmed = text.Trim();
+        if (trimmed.Length == 0 ||
+            trimmed.Contains("\"\"", StringComparison.Ordinal) ||
+            trimmed.Contains(": []", StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        if (Regex.IsMatch(
+                trimmed,
+                @"""(?:IssuerSigningKey|SigningKey|Secret|Token|ApiKey|Password)""\s*:\s*""[^""]+""",
+                RegexOptions.IgnoreCase | RegexOptions.CultureInvariant))
+        {
+            return true;
+        }
+
+        return Regex.IsMatch(
+            trimmed,
+            @"""[^""]*""\s*:\s*""[^""]*(?:Password\s*=|Pwd\s*=)[^""]+""",
+            RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+    }
+
+    private static string RedactSecretLine(string text)
+    {
+        var redacted = Regex.Replace(
+            text,
+            @"(""(?:IssuerSigningKey|SigningKey|Secret|Token|ApiKey|Password)""\s*:\s*"")[^""]+("")",
+            "$1***$2",
+            RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+        return Regex.Replace(
+            redacted,
+            @"((?:Password|Pwd)\s*=\s*)[^;""\s]+",
+            "$1***",
+            RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+    }
+
+    private static void AddCdcHints(
+        IReadOnlyList<(string FilePath, string Content)> files,
+        List<ReviewHint> hints)
+    {
+        var consumers = ExtractAddedCdcConsumers(files);
+        if (consumers.Length == 0)
+        {
+            return;
+        }
+
+        foreach (var consumer in consumers)
+        {
+            hints.Add(new ReviewHint
+            {
+                RuleId = "CDC_ENTITY_OWNERSHIP_REVIEW",
+                Category = "CDC/Ownership",
+                FilePath = consumer.FilePath,
+                StartLine = consumer.StartLine,
+                Message = $"CDC consumer was added for entity '{consumer.EntityName}'. Verify whether this entity/table still has local write paths.",
+                Evidence = consumer.Evidence,
+                SuggestedVerification = "Search for DbSet Add/Update/Remove/ExecuteUpdate and admin/API write handlers for the same entity. If CDC/RDM is now the source of truth, local writes can create conflicting ownership."
+            });
+        }
+
+        AddCdcForeignKeyOrderingHints(files, consumers, hints);
+    }
+
+    private static CdcConsumerInfo[] ExtractAddedCdcConsumers(IReadOnlyList<(string FilePath, string Content)> files)
+    {
+        return files
+            .Where(file => file.FilePath.EndsWith(".cs", StringComparison.OrdinalIgnoreCase))
+            .SelectMany(file => EnumerateDiffLines(file.Content)
+                .Where(line => line.Kind == '+')
+                .Select(line => new
+                {
+                    file.FilePath,
+                    Line = line,
+                    Match = Regex.Match(
+                        line.Text,
+                        @"\.AddCdcConsumer\s*<\s*(?<context>[A-Za-z_][A-Za-z0-9_.]*)\s*,\s*(?<entity>[A-Za-z_][A-Za-z0-9_.]*)\s*>\s*\((?<topic>[^)]*)\)",
+                        RegexOptions.CultureInvariant)
+                })
+                .Where(item => item.Match.Success)
+                .Select(item =>
+                {
+                    var rawEntity = item.Match.Groups["entity"].Value;
+                    return new CdcConsumerInfo(
+                        NormalizeTypeName(rawEntity),
+                        item.FilePath,
+                        item.Line.NewLine,
+                        item.Line.Text.Trim());
+                }))
+            .DistinctBy(item => item.EntityName, StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+    }
+
+    private static void AddCdcForeignKeyOrderingHints(
+        IReadOnlyList<(string FilePath, string Content)> files,
+        IReadOnlyList<CdcConsumerInfo> consumers,
+        List<ReviewHint> hints)
+    {
+        var cdcEntities = consumers
+            .Select(item => item.EntityName)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var file in files.Where(file => file.FilePath.EndsWith(".cs", StringComparison.OrdinalIgnoreCase)))
+        {
+            if (IsTestFile(file.FilePath))
+            {
+                continue;
+            }
+
+            var lines = EnumerateDiffLines(file.Content)
+                .Where(line => line.Kind is '+' or ' ')
+                .ToArray();
+            if (lines.Length == 0)
+            {
+                continue;
+            }
+
+            foreach (var relation in ExtractCdcRelations(lines, cdcEntities))
+            {
+                hints.Add(new ReviewHint
+                {
+                    RuleId = "CDC_INTER_TOPIC_FK_ORDERING",
+                    Category = "CDC/DataIntegrity",
+                    FilePath = file.FilePath,
+                    StartLine = relation.Line.NewLine,
+                    Message = $"CDC entities '{relation.DependentEntity}' and '{relation.PrincipalEntity}' are linked by an EF relationship/foreign key while both are consumed from CDC topics.",
+                    Evidence = relation.Line.Text.Trim(),
+                    SuggestedVerification = "Verify cross-topic ordering and replay behavior. If events can arrive independently, a child CDC event may hit a missing parent row unless the consumer has retry/DLQ/bootstrap guarantees or the replica avoids a strict FK."
+                });
+            }
+        }
+    }
+
+    private static IEnumerable<CdcRelationInfo> ExtractCdcRelations(
+        IReadOnlyList<DiffLine> lines,
+        IReadOnlySet<string> cdcEntities)
+    {
+        var dependentEntities = lines
+            .SelectMany(line => ExtractConfiguredOrDeclaredEntities(line.Text))
+            .Where(cdcEntities.Contains)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+        if (dependentEntities.Length == 0)
+        {
+            yield break;
+        }
+
+        foreach (var line in lines)
+        {
+            foreach (var principal in ExtractPrincipalEntityCandidates(line.Text, cdcEntities))
+            {
+                foreach (var dependent in dependentEntities)
+                {
+                    if (string.Equals(dependent, principal, StringComparison.OrdinalIgnoreCase))
+                    {
+                        continue;
+                    }
+
+                    yield return new CdcRelationInfo(dependent, principal, line);
+                }
+            }
+        }
+    }
+
+    private static IEnumerable<string> ExtractConfiguredOrDeclaredEntities(string text)
+    {
+        foreach (Match match in Regex.Matches(
+                     text,
+                     @"IEntityTypeConfiguration\s*<\s*(?<type>[A-Za-z_][A-Za-z0-9_.]*)\s*>",
+                     RegexOptions.CultureInvariant))
+        {
+            yield return NormalizeTypeName(match.Groups["type"].Value);
+        }
+
+        foreach (Match match in Regex.Matches(
+                     text,
+                     @"\bclass\s+(?<type>[A-Za-z_][A-Za-z0-9_]*)\b",
+                     RegexOptions.CultureInvariant))
+        {
+            yield return NormalizeTypeName(match.Groups["type"].Value);
+        }
+    }
+
+    private static IEnumerable<string> ExtractPrincipalEntityCandidates(
+        string text,
+        IReadOnlySet<string> cdcEntities)
+    {
+        foreach (Match match in Regex.Matches(
+                     text,
+                     @"\.HasOne\s*\(\s*[^=]*=>\s*[^.]+?\.(?<navigation>[A-Za-z_][A-Za-z0-9_]*)\s*\)",
+                     RegexOptions.CultureInvariant))
+        {
+            var candidate = NormalizeTypeName(match.Groups["navigation"].Value);
+            if (cdcEntities.Contains(candidate))
+            {
+                yield return candidate;
+            }
+        }
+
+        foreach (Match match in Regex.Matches(
+                     text,
+                     @"\b(?:public|private|protected|internal)?\s*(?:virtual\s+)?(?<type>[A-Za-z_][A-Za-z0-9_.]*)\s+[A-Za-z_][A-Za-z0-9_]*\s*\{\s*get;",
+                     RegexOptions.CultureInvariant))
+        {
+            var candidate = NormalizeTypeName(match.Groups["type"].Value);
+            if (cdcEntities.Contains(candidate))
+            {
+                yield return candidate;
+            }
+        }
+
+        foreach (Match match in Regex.Matches(
+                     text,
+                     @"principalTable\s*:\s*""(?<table>[^""]+)""",
+                     RegexOptions.CultureInvariant))
+        {
+            var table = NormalizeTypeName(match.Groups["table"].Value);
+            foreach (var entity in cdcEntities)
+            {
+                if (string.Equals(table, entity, StringComparison.OrdinalIgnoreCase) ||
+                    string.Equals(table, entity + "s", StringComparison.OrdinalIgnoreCase) ||
+                    string.Equals(table, entity + "es", StringComparison.OrdinalIgnoreCase))
+                {
+                    yield return entity;
+                }
+            }
+        }
+    }
+
+    private static string NormalizeTypeName(string value)
+    {
+        var trimmed = value.Trim();
+        var genericIndex = trimmed.IndexOf('<', StringComparison.Ordinal);
+        if (genericIndex >= 0)
+        {
+            trimmed = trimmed[..genericIndex];
+        }
+
+        var lastDotIndex = trimmed.LastIndexOf('.');
+        return lastDotIndex >= 0 ? trimmed[(lastDotIndex + 1)..] : trimmed;
+    }
+
+    private static void AddRuntimeFlowHints(
+        IReadOnlyList<(string FilePath, string Content)> files,
+        List<ReviewHint> hints)
+    {
+        var allText = string.Join('\n', files.Select(file => file.Content));
+        var hasObservableMarkerCacheOutput = ContainsAny(allText, [
+            "StreamMarkersAsync",
+            "ServerSentEvents",
+            "GetHandlingMarkersAsync",
+            "GetMarkersAsync"
+        ]);
+
+        foreach (var file in files.Where(file => file.FilePath.EndsWith(".cs", StringComparison.OrdinalIgnoreCase)))
+        {
+            if (IsTestFile(file.FilePath))
+            {
+                continue;
+            }
+
+            var lines = EnumerateDiffLines(file.Content)
+                .Where(line => line.Kind is '+' or ' ')
+                .ToArray();
+            if (lines.Length == 0)
+            {
+                continue;
+            }
+
+            AddKafkaCachePublishFilteringHints(file.FilePath, lines, hasObservableMarkerCacheOutput, hints);
+            AddFailOpenFilterHints(file.FilePath, lines, hints);
+            AddPollingOffsetContextHints(file.FilePath, lines, hints);
+            AddStreamPollingParityHints(file.FilePath, lines, hints);
+        }
+    }
+
+    private static void AddKafkaCachePublishFilteringHints(
+        string filePath,
+        IReadOnlyList<DiffLine> lines,
+        bool hasObservableMarkerCacheOutput,
+        List<ReviewHint> hints)
+    {
+        var text = string.Join('\n', lines.Select(line => line.Text));
+        if (!ContainsAny(text, [".SaveHandlingMarkerAsync", ".AddAsync(", ".SetAsync("]))
+        {
+            return;
+        }
+
+        if (!IsRuntimeCacheProducerFile(filePath, text))
+        {
+            return;
+        }
+
+        if (!hasObservableMarkerCacheOutput &&
+            !ContainsAny(text, ["PublishAsync", "ServerSentEvents", "RedisPubSub"]))
+        {
+            return;
+        }
+
+        if (!ContainsAny(text, [
+                "ClientCategory",
+                "IsAvailable",
+                "SystemId",
+                "AuthorizedZone",
+                "UnauthorizedZone",
+                "TenantId"
+            ]))
+        {
+            return;
+        }
+
+        var sideEffectIndex = FindFirstRuntimeVisibilitySideEffectIndex(lines);
+        if (sideEffectIndex < 0)
+        {
+            return;
+        }
+
+        var beforeSideEffectText = string.Join('\n', lines.Take(sideEffectIndex).Select(line => line.Text));
+        if (HasRuntimeVisibilityFilter(beforeSideEffectText))
+        {
+            return;
+        }
+
+        var sideEffects = lines
+            .Skip(sideEffectIndex)
+            .Where(line => IsRuntimeVisibilitySideEffect(line.Text))
+            .Take(2)
+            .ToArray();
+        var evidence = string.Join(" | ", sideEffects.Select(line => line.Text.Trim()));
+
+        hints.Add(new ReviewHint
+        {
+            RuleId = "RUNTIME_KAFKA_CACHE_PUBLISH_FILTERING",
+            Category = "RuntimeFlow/KafkaCachePreFilter",
+            FilePath = filePath,
+            StartLine = lines[sideEffectIndex].NewLine,
+            Message = "Kafka/cache flow saves marker data before a visible business-visibility filter is applied, while the service has observable marker cache outputs.",
+            Evidence = evidence,
+            SuggestedVerification = "Trace the incoming Kafka handler before Redis cache/SSE/pubsub writes. If system, client category, zone, task, tenant, or similar filters are only applied in later polling/list endpoints, report this as its own finding with the handler/cache side effect as the fix point. Do not merge it into a downstream SSE/polling parity finding when both are confirmed."
+        });
+    }
+
+    private static bool IsRuntimeCacheProducerFile(string filePath, string text)
+    {
+        return filePath.EndsWith("MarkerHandlingService.cs", StringComparison.OrdinalIgnoreCase) ||
+               filePath.Contains("Consumer", StringComparison.OrdinalIgnoreCase) ||
+               filePath.Contains("Handler", StringComparison.OrdinalIgnoreCase) ||
+               Regex.IsMatch(text, @"\b(?:Handle|Consume)\w*Async\s*\(", RegexOptions.CultureInvariant);
+    }
+
+    private static int FindFirstRuntimeVisibilitySideEffectIndex(IReadOnlyList<DiffLine> lines)
+    {
+        for (var index = 0; index < lines.Count; index++)
+        {
+            if (IsRuntimeVisibilitySideEffect(lines[index].Text))
+            {
+                return index;
+            }
+        }
+
+        return -1;
+    }
+
+    private static bool IsRuntimeVisibilitySideEffect(string text)
+    {
+        return text.Contains("SaveHandlingMarkerAsync", StringComparison.Ordinal) ||
+               text.Contains("PublishAsync", StringComparison.Ordinal) ||
+               text.Contains("ServerSentEvents", StringComparison.Ordinal) ||
+               text.Contains("RedisPubSub", StringComparison.Ordinal) ||
+               Regex.IsMatch(text, @"\.(?:AddAsync|SetAsync)\s*\(", RegexOptions.CultureInvariant);
+    }
+
+    private static bool HasRuntimeVisibilityFilter(string text)
+    {
+        if (string.IsNullOrWhiteSpace(text))
+        {
+            return false;
+        }
+
+        return
+            (ContainsAny(text, ["ClientCategory", "HandlingClientCategory"]) &&
+             ContainsAny(text, [".Contains(", ".Any(", ".All("])) ||
+            text.Contains("IsAvailableForContext", StringComparison.Ordinal) ||
+            Regex.IsMatch(text, @"\bIsAvailable(?:AuthorizedZone|UnauthorizedZone)?\b\s*(?:==|!=)", RegexOptions.CultureInvariant) ||
+            Regex.IsMatch(text, @"\bSystemId\b\s*(?:==|!=)", RegexOptions.CultureInvariant) ||
+            Regex.IsMatch(text, @"\bTenantId\b\s*(?:==|!=)", RegexOptions.CultureInvariant);
+    }
+
+    private static void AddFailOpenFilterHints(
+        string filePath,
+        IReadOnlyList<DiffLine> lines,
+        List<ReviewHint> hints)
+    {
+        for (var index = 0; index < lines.Count; index++)
+        {
+            var text = lines[index].Text;
+            if (!Regex.IsMatch(
+                    text,
+                    @"\b\w*(?:Category|Context|Info)\w*\s*!=\s*null\b",
+                    RegexOptions.CultureInvariant))
+            {
+                continue;
+            }
+
+            var window = lines
+                .Skip(index)
+                .Take(8)
+                .Select(line => line.Text)
+                .ToArray();
+            var windowText = string.Join('\n', window);
+            if (!windowText.Contains("ClientCategory", StringComparison.OrdinalIgnoreCase) ||
+                !windowText.Contains(".Contains(", StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            hints.Add(new ReviewHint
+            {
+                RuleId = "RUNTIME_FAIL_OPEN_CONTEXT_FILTER",
+                Category = "RuntimeFlow/FailOpenFilter",
+                FilePath = filePath,
+                StartLine = lines[index].NewLine,
+                Message = "A client-category/context filter is guarded by a non-null check, so missing context may skip the restrictive branch.",
+                Evidence = string.Join(" | ", window.Select(item => item.Trim()).Take(4)),
+                SuggestedVerification = "Verify the fallback path when handling/client context cannot be read. If markers have category restrictions, missing context should usually fail closed or return an empty result instead of bypassing the category filter."
+            });
+        }
+    }
+
+    private static void AddPollingOffsetContextHints(
+        string filePath,
+        IReadOnlyList<DiffLine> lines,
+        List<ReviewHint> hints)
+    {
+        var text = string.Join('\n', lines.Select(line => line.Text));
+        if (!text.Contains("GetSessionOffsetAsync", StringComparison.Ordinal) ||
+            !text.Contains("SaveSessionOffsetAsync", StringComparison.Ordinal))
+        {
+            return;
+        }
+
+        if (!ContainsAny(text, ["IsIdentified", "IsTaskNeeded", "GetSystem", "SystemId", "ClientCategory"]))
+        {
+            return;
+        }
+
+        var offsetLine = lines.First(line => line.Text.Contains("GetSessionOffsetAsync", StringComparison.Ordinal));
+        hints.Add(new ReviewHint
+        {
+            RuleId = "RUNTIME_POLLING_OFFSET_CONTEXT",
+            Category = "RuntimeFlow/PollingOffset",
+            FilePath = filePath,
+            StartLine = offsetLine.NewLine,
+            Message = "Polling offset is updated in a flow whose result also depends on request/user context filters.",
+            Evidence = offsetLine.Text.Trim(),
+            SuggestedVerification = "Verify that the offset key includes every dimension that changes the filtered marker list: session, system, identification zone, task flag, and client category. Otherwise one polling context can advance the offset for another context and hide markers."
+        });
+    }
+
+    private static void AddStreamPollingParityHints(
+        string filePath,
+        IReadOnlyList<DiffLine> lines,
+        List<ReviewHint> hints)
+    {
+        var text = string.Join('\n', lines.Select(line => line.Text));
+        if (!ContainsAny(text, ["IsAvailableAuthorizedZone", "IsAvailableUnauthorizedZone", "IsIdentified", "IsTaskNeeded", "ClientCategory"]))
+        {
+            return;
+        }
+
+        if (!ContainsAny(text, ["GetMarkersAsync", "poll", "Polling"]))
+        {
+            return;
+        }
+
+        var filterLine = lines.FirstOrDefault(line =>
+            line.Text.Contains("IsAvailable", StringComparison.Ordinal) ||
+            line.Text.Contains("ClientCategory", StringComparison.Ordinal) ||
+            line.Text.Contains("IsTaskNeeded", StringComparison.Ordinal));
+        if (filterLine is null)
+        {
+            return;
+        }
+
+        hints.Add(new ReviewHint
+        {
+            RuleId = "RUNTIME_STREAM_POLLING_PARITY",
+            Category = "RuntimeFlow/StreamPollingParity",
+            FilePath = filePath,
+            StartLine = filterLine.NewLine,
+            Message = "Polling flow applies business filters; verify that stream/SSE/pubsub outputs use the same visibility rules.",
+            Evidence = filterLine.Text.Trim(),
+            SuggestedVerification = "Find SSE/stream/pubsub endpoints and compare their marker filtering with polling. If stream output reads the same cache without system/category/zone/task filtering, users can see markers that polling would hide."
+        });
+    }
+
+    private static bool ContainsAny(string text, IReadOnlyList<string> needles)
+    {
+        return needles.Any(needle => text.Contains(needle, StringComparison.OrdinalIgnoreCase));
+    }
+
+    private static string BuildNearbyEvidence(IReadOnlyList<DiffLine> lines, int lineNumber, int maxLines)
+    {
+        var index = lines
+            .Select((line, position) => new { line, position })
+            .FirstOrDefault(item => item.line.NewLine == lineNumber)
+            ?.position ?? 0;
+        var start = Math.Max(0, index - 2);
+        return string.Join(" | ", lines
+            .Skip(start)
+            .Take(Math.Max(1, maxLines))
+            .Select(line => line.Text.Trim())
+            .Where(text => !string.IsNullOrWhiteSpace(text)));
     }
 
     private IReadOnlyList<string> BuildChunks(
@@ -1103,4 +1811,15 @@ public sealed class DiffPreprocessor(IOptions<ReviewPipelineOptions> options) : 
     }
 
     private sealed record DiffLine(char Kind, int NewLine, string Text);
+
+    private sealed record CdcConsumerInfo(
+        string EntityName,
+        string FilePath,
+        int StartLine,
+        string Evidence);
+
+    private sealed record CdcRelationInfo(
+        string DependentEntity,
+        string PrincipalEntity,
+        DiffLine Line);
 }
