@@ -222,17 +222,22 @@ public sealed class ReviewRun
         var semanticCodeContext = artifacts.SemanticCodeContext.Attempted || !Artifacts.SemanticCodeContext.Attempted
             ? artifacts.SemanticCodeContext
             : Artifacts.SemanticCodeContext;
+        var externalReview = artifacts.ExternalReview.Attempted || !Artifacts.ExternalReview.Attempted
+            ? artifacts.ExternalReview
+            : Artifacts.ExternalReview;
 
         return ReferenceEquals(progressUpdates, artifacts.ProgressUpdates) &&
-               ReferenceEquals(semanticCodeContext, artifacts.SemanticCodeContext)
+               ReferenceEquals(semanticCodeContext, artifacts.SemanticCodeContext) &&
+               ReferenceEquals(externalReview, artifacts.ExternalReview)
             ? artifacts
-            : CopyArtifacts(artifacts, progressUpdates, semanticCodeContext);
+            : CopyArtifacts(artifacts, progressUpdates, semanticCodeContext, externalReview);
     }
 
     private static ReviewArtifacts CopyArtifacts(
         ReviewArtifacts artifacts,
         IReadOnlyList<ReviewProgressUpdate> progressUpdates,
-        SemanticCodeContextArtifact? semanticCodeContext = null)
+        SemanticCodeContextArtifact? semanticCodeContext = null,
+        ExternalReviewArtifact? externalReview = null)
     {
         return new ReviewArtifacts
         {
@@ -250,6 +255,7 @@ public sealed class ReviewRun
             PrimaryOpportunities = artifacts.PrimaryOpportunities,
             FindingsComparison = artifacts.FindingsComparison,
             SemanticCodeContext = semanticCodeContext ?? artifacts.SemanticCodeContext,
+            ExternalReview = externalReview ?? artifacts.ExternalReview,
             ProgressUpdates = progressUpdates
         };
     }

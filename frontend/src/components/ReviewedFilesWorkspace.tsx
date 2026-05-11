@@ -327,7 +327,11 @@ function InlineThreadCard({
   const highlightedContext = buildHighlightedContext(thread);
   const sourceLabel = getFindingSourceLabel(thread.source);
   const sourceClass =
-    thread.source === 'FollowUpDiscussion' ? 'source-followup' : 'source-initial';
+    thread.source === 'ExternalReview'
+      ? 'source-external'
+      : thread.source === 'FollowUpDiscussion'
+        ? 'source-followup'
+        : 'source-initial';
 
   return (
     <article
@@ -458,6 +462,9 @@ function InlineThreadCard({
 }
 
 function getFindingSourceLabel(source: string): string {
+  if (source === 'ExternalReview') {
+    return 'PR-Agent';
+  }
   if (source === 'FollowUpDiscussion') {
     return 'После уточнения';
   }

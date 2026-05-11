@@ -14,6 +14,11 @@ public interface IReviewRunRepository
         int limit,
         CancellationToken cancellationToken);
 
+    Task<IReadOnlyList<ReviewRun>> SearchByServiceAsync(
+        string query,
+        int limit,
+        CancellationToken cancellationToken);
+
     Task DeleteForTargetAsync(
         ReviewTargetDescriptor target,
         CancellationToken cancellationToken);

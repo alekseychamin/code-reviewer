@@ -20,6 +20,10 @@ interface ReviewFormProps {
   branchHistoryError: string | null;
   branchHistoryLoading: boolean;
   branchHistoryDeleting: boolean;
+  serviceHistory: ReviewHistory | null;
+  serviceHistoryError: string | null;
+  serviceHistoryLoading: boolean;
+  serviceHistoryQuery: string;
   selectedBaselineRunId?: string;
   onStartPullRequestReview: (payload: PullRequestReviewPayload) => Promise<void>;
   onStartBranchReview: (payload: BranchReviewPayload) => Promise<void>;
@@ -28,9 +32,11 @@ interface ReviewFormProps {
   onDeleteHistoryRun: (runId: string) => Promise<void>;
   onStopReviewRun: (runId: string) => Promise<void>;
   onSelectHistoryRun: (runId: string) => Promise<void>;
+  onSelectServiceHistoryRun: (runId: string) => Promise<void>;
   onSelectBaselineRun: (runId: string) => void;
   onBranchContextChange: (repositoryName: string, sourceBranch: string, targetBranch: string) => void;
   onPullRequestUrlChange: (url: string) => void;
+  onServiceHistoryQueryChange: (query: string) => void;
   onModeChange: (mode: ReviewMode) => void;
   activeRunId?: string;
   selectedRunId?: string;
@@ -46,6 +52,10 @@ export function ReviewForm({
   branchHistoryError,
   branchHistoryLoading,
   branchHistoryDeleting,
+  serviceHistory,
+  serviceHistoryError,
+  serviceHistoryLoading,
+  serviceHistoryQuery,
   selectedBaselineRunId,
   onStartPullRequestReview,
   onStartBranchReview,
@@ -54,9 +64,11 @@ export function ReviewForm({
   onDeleteHistoryRun,
   onStopReviewRun,
   onSelectHistoryRun,
+  onSelectServiceHistoryRun,
   onSelectBaselineRun,
   onBranchContextChange,
   onPullRequestUrlChange,
+  onServiceHistoryQueryChange,
   onModeChange,
   activeRunId,
   selectedRunId
@@ -541,6 +553,19 @@ export function ReviewForm({
             ))}
           </select>
         </label>
+
+        <ServiceHistoryPanel
+          history={serviceHistory}
+          isLoading={serviceHistoryLoading}
+          error={serviceHistoryError}
+          query={serviceHistoryQuery}
+          activeRunId={activeRunId}
+          selectedRunId={selectedRunId}
+          onDeleteRun={onDeleteHistoryRun}
+          onQueryChange={onServiceHistoryQueryChange}
+          onSelectRun={onSelectServiceHistoryRun}
+          onStopRun={onStopReviewRun}
+        />
       </div>
 
       <div className="panel-footer">
@@ -554,6 +579,152 @@ export function ReviewForm({
 
       {submitError ? <div className="inline-error">{submitError}</div> : null}
     </section>
+  );
+}
+
+interface ServiceHistoryPanelProps {
+  history: ReviewHistory | null;
+  isLoading: boolean;
+  error: string | null;
+  query: string;
+  onQueryChange: (query: string) => void;
+  onDeleteRun: (runId: string) => Promise<void>;
+  onStopRun: (runId: string) => Promise<void>;
+  onSelectRun: (runId: string) => Promise<void>;
+  activeRunId?: string;
+  selectedRunId?: string;
+}
+
+function ServiceHistoryPanel({
+  history,
+  isLoading,
+  error,
+  query,
+  onQueryChange,
+  onDeleteRun,
+  onStopRun,
+  onSelectRun,
+  activeRunId,
+  selectedRunId
+}: ServiceHistoryPanelProps) {
+  const normalizedQuery = query.trim();
+  const [isCollapsed, setIsCollapsed] = useState(false);
+
+  return (
+    <div className="history-panel service-history-panel form-stack-full">
+      <div className="history-panel-header">
+        <div>
+          <p className="eyebrow">История по сервису</p>
+          <h3>Поиск сохранённых ревью</h3>
+          <p className="history-selected-summary">
+            Поиск идёт по вхождению в имя сервиса, репозиторий, заголовок PR, URL и ветки.
+          </p>
+        </div>
+        <div className="history-actions">
+          {isLoading ? <span className="secondary-chip">Ищем...</span> : null}
+          {history && history.items.length > 0 ? (
+            <button
+              aria-expanded={!isCollapsed}
+              className="secondary-button"
+              onClick={() => setIsCollapsed((value) => !value)}
+              type="button"
+            >
+              {isCollapsed ? 'Показать' : 'Свернуть'}
+            </button>
+          ) : null}
+        </div>
+      </div>
+
+      <label className="form-field service-history-search">
+        Имя сервиса или часть названия
+        <input
+          value={query}
+          onChange={(event) => onQueryChange(event.target.value)}
+          placeholder="Например: Broadband, Marker, Casper или часть URL PR"
+        />
+      </label>
+
+      {error ? <div className="inline-error">{error}</div> : null}
+
+      {!normalizedQuery && !error ? (
+        <p className="history-note">Начни вводить фрагмент имени, чтобы быстро открыть прошлый запуск ревью.</p>
+      ) : null}
+
+      {!isCollapsed && !error && !isLoading && history && history.items.length > 0 ? (
+        <div className="history-list">
+          {history.items.map((item) => {
+            const isSelected = item.id === selectedRunId;
+            const isActive = item.id === activeRunId;
+            const canStopRun = item.status === 'Running' || item.status === 'Pending';
+            const canDeleteRun = item.status !== 'Running' && item.status !== 'Pending';
+            return (
+              <article className={`history-item ${isSelected ? 'selected' : ''} ${isActive ? 'active' : ''}`} key={item.id}>
+                <button
+                  className="history-item-main"
+                  onClick={() => {
+                    void onSelectRun(item.id);
+                  }}
+                  type="button"
+                >
+                  <div className="history-item-row">
+                    <strong>{item.serviceName || item.repositoryName || item.title}</strong>
+                    <span className={`status-pill status-${String(item.status).toLowerCase()}`}>{translateStatus(item.status)}</span>
+                  </div>
+                  <div className="history-meta">{renderHistoryTarget(item)}</div>
+                  <div className="history-item-row">
+                    <span className="history-meta">{formatTimestamp(item.createdAt)}</span>
+                    {isActive ? <span className="secondary-chip">Текущий прогресс</span> : null}
+                    {isSelected ? <span className="secondary-chip">Открыт запуск</span> : null}
+                  </div>
+                  <div className="history-meta">
+                    Найдено: {item.findingsCount}
+                    {item.criticalCount > 0 ? ` · critical ${item.criticalCount}` : ''}
+                    {item.highCount > 0 ? ` · high ${item.highCount}` : ''}
+                    {item.authorName ? ` · ${item.authorName}` : ''}
+                  </div>
+                  <div className="history-meta">Клик откроет результат. Baseline текущего PR не меняется.</div>
+                </button>
+                <div className="history-item-actions">
+                  {canStopRun ? (
+                    <button
+                      className="secondary-button history-stop-button"
+                      onClick={() => {
+                        if (!window.confirm('Остановить это ревью?')) {
+                          return;
+                        }
+
+                        void onStopRun(item.id);
+                      }}
+                      type="button"
+                    >
+                      Остановить
+                    </button>
+                  ) : null}
+                  <button
+                    className="secondary-button history-delete-button"
+                    disabled={!canDeleteRun}
+                    onClick={() => {
+                      if (!window.confirm('Удалить этот запуск ревью из истории?')) {
+                        return;
+                      }
+
+                      void onDeleteRun(item.id);
+                    }}
+                    type="button"
+                  >
+                    Удалить
+                  </button>
+                </div>
+              </article>
+            );
+          })}
+        </div>
+      ) : null}
+
+      {!error && !isLoading && normalizedQuery && history && history.items.length === 0 ? (
+        <p className="history-note">По этому фрагменту история ревью пока не найдена.</p>
+      ) : null}
+    </div>
   );
 }
 
@@ -948,6 +1119,19 @@ function renderSelectedBaselineSummary(item: ReviewHistoryItem | undefined): str
 
   const title = item.serviceName || item.title;
   return `Baseline: ${title} · ${formatTimestamp(item.createdAt)} · ${item.findingsCount} замечаний`;
+}
+
+function renderHistoryTarget(item: ReviewHistoryItem): string {
+  if (item.targetKind === 'BranchComparison') {
+    const repositoryName = item.repositoryName || item.serviceName || item.title;
+    const sourceBranch = item.sourceBranch || '?';
+    const targetBranch = item.targetBranch || '?';
+    return `Ветки: ${repositoryName} · ${sourceBranch} -> ${targetBranch}`;
+  }
+
+  return item.pullRequestUrl
+    ? `PR: ${item.pullRequestUrl}`
+    : `PR: ${item.title}`;
 }
 
 function translateStatus(status: string): string {

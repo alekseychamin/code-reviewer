@@ -301,6 +301,7 @@ public sealed class MarkdownReportBuilder : IMarkdownReportBuilder
         return source switch
         {
             ReviewFindingSource.FollowUpDiscussion => "Добавлено после уточнения",
+            ReviewFindingSource.ExternalReview => "Внешний ревьюер",
             _ => "Первичное ревью"
         };
     }

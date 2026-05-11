@@ -36,6 +36,26 @@ public sealed class InMemoryReviewRunRepository : IReviewRunRepository
         return Task.FromResult(runs);
     }
 
+    public Task<IReadOnlyList<ReviewRun>> SearchByServiceAsync(
+        string query,
+        int limit,
+        CancellationToken cancellationToken)
+    {
+        var normalizedQuery = query.Trim();
+        if (string.IsNullOrWhiteSpace(normalizedQuery))
+        {
+            return Task.FromResult<IReadOnlyList<ReviewRun>>([]);
+        }
+
+        IReadOnlyList<ReviewRun> runs = _runs.Values
+            .Where(candidate => Matches(candidate, normalizedQuery))
+            .OrderByDescending(candidate => candidate.CreatedAt)
+            .Take(limit)
+            .ToArray();
+
+        return Task.FromResult(runs);
+    }
+
     public Task DeleteForTargetAsync(
         ReviewTargetDescriptor target,
         CancellationToken cancellationToken)
@@ -92,4 +112,20 @@ public sealed class InMemoryReviewRunRepository : IReviewRunRepository
 
     private static string NormalizeTargetPart(string? value)
         => (value ?? string.Empty).Trim();
+
+    private static bool Matches(ReviewRun run, string query)
+    {
+        return Contains(run.ServiceName, query) ||
+               Contains(run.DisplayTitle, query) ||
+               Contains(run.Target.RepositoryName, query) ||
+               Contains(run.Target.PullRequestUrl, query) ||
+               Contains(run.Target.SourceBranch, query) ||
+               Contains(run.Target.TargetBranch, query);
+    }
+
+    private static bool Contains(string? value, string query)
+    {
+        return !string.IsNullOrWhiteSpace(value) &&
+               value.Contains(query, StringComparison.OrdinalIgnoreCase);
+    }
 }

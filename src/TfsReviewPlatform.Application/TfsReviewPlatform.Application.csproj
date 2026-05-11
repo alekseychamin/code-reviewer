@@ -14,4 +14,8 @@
     <FrameworkReference Include="Microsoft.AspNetCore.App" />
   </ItemGroup>
 
+  <ItemGroup>
+    <InternalsVisibleTo Include="TfsReviewPlatform.Tests" />
+  </ItemGroup>
+
 </Project>

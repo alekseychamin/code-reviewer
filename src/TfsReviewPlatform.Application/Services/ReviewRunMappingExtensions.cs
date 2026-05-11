@@ -65,6 +65,7 @@ public static class ReviewRunMappingExtensions
                     ResolvedFindings = run.Artifacts.FindingsComparison.ResolvedFindings.Select(MapFinding).ToArray()
                 },
             SemanticCodeContext = MapSemanticCodeContext(run.Artifacts.SemanticCodeContext),
+            ExternalReview = MapExternalReview(run.Artifacts.ExternalReview),
             ReviewDiscussionMessages = run.Artifacts.ReviewDiscussionMessages.Select(message => new ReviewCommentMessageDto
             {
                 Role = message.Role,
@@ -156,6 +157,31 @@ public static class ReviewRunMappingExtensions
         };
     }
 
+    private static ExternalReviewDto MapExternalReview(ExternalReviewArtifact artifact)
+    {
+        return new ExternalReviewDto
+        {
+            Enabled = artifact.Enabled,
+            Attempted = artifact.Attempted,
+            Succeeded = artifact.Succeeded,
+            TimedOut = artifact.TimedOut,
+            EngineName = artifact.EngineName,
+            Status = artifact.Status,
+            Message = artifact.Message,
+            ElapsedMilliseconds = artifact.ElapsedMilliseconds,
+            StartedAt = artifact.StartedAt,
+            CompletedAt = artifact.CompletedAt,
+            Commands = artifact.Commands.Select(command => new ExternalReviewCommandDto
+            {
+                Command = command.Command,
+                Succeeded = command.Succeeded,
+                ElapsedMilliseconds = command.ElapsedMilliseconds,
+                Artifact = ExternalReviewArtifactDisplayFormatter.Format(command),
+                ErrorMessage = command.ErrorMessage
+            }).ToArray()
+        };
+    }
+
     private static SemanticCodeContextDto MapSemanticCodeContext(SemanticCodeContextArtifact artifact)
     {
         return new SemanticCodeContextDto
@@ -218,7 +244,12 @@ public static class ReviewRunMappingExtensions
         {
             Id = run.Id,
             Status = run.Status,
+            TargetKind = run.Target.Kind,
             Title = run.DisplayTitle,
+            PullRequestUrl = run.Target.PullRequestUrl,
+            RepositoryName = run.Target.RepositoryName,
+            SourceBranch = run.Target.SourceBranch,
+            TargetBranch = run.Target.TargetBranch,
             ServiceName = run.ServiceName,
             AuthorName = run.AuthorName,
             ProviderProfileId = run.ProviderProfileId,

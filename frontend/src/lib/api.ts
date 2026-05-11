@@ -127,6 +127,11 @@ export async function getPullRequestReviewHistory(pullRequestUrl: string): Promi
   return request<ReviewHistory>(`/api/reviews/history/pull-requests?${query.toString()}`);
 }
 
+export async function getServiceReviewHistory(query: string): Promise<ReviewHistory> {
+  const search = new URLSearchParams({ query });
+  return request<ReviewHistory>(`/api/reviews/history/services?${search.toString()}`);
+}
+
 export async function deletePullRequestReviewHistory(pullRequestUrl: string): Promise<void> {
   const query = new URLSearchParams({ pullRequestUrl });
   await request<void>(`/api/reviews/history/pull-requests?${query.toString()}`, {

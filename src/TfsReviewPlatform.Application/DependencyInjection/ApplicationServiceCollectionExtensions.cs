@@ -13,11 +13,13 @@ public static class ApplicationServiceCollectionExtensions
         services.Configure<ProviderCatalogOptions>(configuration.GetSection(ProviderCatalogOptions.SectionName));
         services.Configure<ReviewRoutingOptions>(configuration.GetSection(ReviewRoutingOptions.SectionName));
         services.Configure<ReviewPipelineOptions>(configuration.GetSection(ReviewPipelineOptions.SectionName));
+        services.Configure<ExternalReviewOptions>(configuration.GetSection(ExternalReviewOptions.SectionName));
         services.Configure<AzureDevOpsOptions>(configuration.GetSection(AzureDevOpsOptions.SectionName));
 
         services.AddSingleton<IReviewRequestValidator, ReviewRequestValidator>();
         services.AddSingleton<IDiffPreprocessor, DiffPreprocessor>();
         services.AddSingleton<IChunkReviewResponseParser, ChunkReviewResponseParser>();
+        services.AddSingleton<IExternalReviewArtifactParser, ExternalReviewArtifactParser>();
         services.AddSingleton<IFindingsComparisonService, FindingsComparisonService>();
         services.AddSingleton<IMarkdownReportBuilder, MarkdownReportBuilder>();
         services.AddScoped<IReviewRunExecutor, ReviewRunExecutor>();

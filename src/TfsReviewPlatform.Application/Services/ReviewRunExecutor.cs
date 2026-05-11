@@ -5,6 +5,7 @@ using System.Text;
 using System.Text.RegularExpressions;
 using TfsReviewPlatform.Application.Abstractions;
 using TfsReviewPlatform.Application.Models;
+using TfsReviewPlatform.Application.Models.Graph;
 using TfsReviewPlatform.Application.Prompts;
 using TfsReviewPlatform.Domain.Entities;
 using TfsReviewPlatform.Domain.Enums;
@@ -29,10 +30,13 @@ public sealed class ReviewRunExecutor(
     IRoslynGraphBuilder roslynGraphBuilder,
     IGraphAwareChunker graphAwareChunker,
     IReviewWorkspaceToolExecutor reviewWorkspaceToolExecutor,
+    IExternalReviewEngine externalReviewEngine,
+    IExternalReviewArtifactParser externalReviewArtifactParser,
     IFindingsComparisonService findingsComparisonService,
     IMarkdownReportBuilder markdownReportBuilder,
     IReviewPublisher reviewPublisher,
     IOptions<ReviewPipelineOptions> reviewPipelineOptions,
+    IOptions<ExternalReviewOptions> externalReviewOptions,
     ILogger<ReviewRunExecutor> logger)
     : IReviewRunExecutor
 {
@@ -52,7 +56,10 @@ public sealed class ReviewRunExecutor(
         ReviewRun? previousRun = null;
         DiffAcquisitionResult? diffResult = null;
         string? roslynCleanupDirectory = null;
+        string? roslynWorkspaceRoot = null;
+        CodeGraph? roslynGraph = null;
         var mandatoryFindings = new List<ReviewFinding>();
+        Task<ExternalReviewArtifact>? externalReviewTask = null;
 
         try
         {
@@ -67,6 +74,12 @@ public sealed class ReviewRunExecutor(
             await PersistAndPublishAsync(run, "Diff acquired", ReviewPipelineStage.Preprocessing, 15, cancellationToken);
 
             var preprocessed = diffPreprocessor.Process(diffResult.DiffText);
+
+            if (!request.ForceRerun && previousRun is not null && HasNoChangesSincePreviousReview(previousRun, preprocessed))
+            {
+                await ReusePreviousReviewResultAsync(run, previousRun, cancellationToken);
+                return;
+            }
 
             var pipelineOptsForRoslyn = reviewPipelineOptions.Value;
             if (pipelineOptsForRoslyn.Roslyn.Enabled)
@@ -87,6 +100,7 @@ public sealed class ReviewRunExecutor(
                 if (bootstrap is { Success: true, WorkspaceDirectory: { } ws, SolutionPath: { } sln })
                 {
                     roslynCleanupDirectory = bootstrap.CleanupDirectory;
+                    roslynWorkspaceRoot = ws;
 
                     await PersistAndPublishAsync(
                         run,
@@ -96,6 +110,7 @@ public sealed class ReviewRunExecutor(
                         cancellationToken);
 
                     var graph = await roslynGraphBuilder.BuildAsync(ws, sln, preprocessed.ChangedFiles, cancellationToken);
+                    roslynGraph = graph;
                     preprocessed = await graphAwareChunker.AugmentWithGraphChunksAsync(
                         preprocessed,
                         graph,
@@ -141,59 +156,52 @@ public sealed class ReviewRunExecutor(
                 30,
                 cancellationToken);
 
-            if (!request.ForceRerun && previousRun is not null && HasNoChangesSincePreviousReview(previousRun, preprocessed))
+            var reviewScope = await BuildIncrementalReviewScopeAsync(
+                previousRun,
+                preprocessed,
+                request,
+                run,
+                roslynGraph,
+                roslynWorkspaceRoot,
+                pipelineOptsForRoslyn,
+                cancellationToken);
+            var reviewPreprocessed = reviewScope.ReviewPreprocessed;
+            if (reviewScope.IsIncremental)
             {
-                var reusedComparison = findingsComparisonService.CompareUnchangedDiff(
-                    previousRun.Id,
-                    previousRun.Findings,
-                    previousRun.Findings);
-                var reusedArtifacts = new ReviewArtifacts
-                {
-                    DiffText = previousRun.Artifacts.DiffText,
-                    PreparedChunks = previousRun.Artifacts.PreparedChunks,
-                    ChangedFiles = previousRun.Artifacts.ChangedFiles,
-                    ChangeDescription = previousRun.Artifacts.ChangeDescription,
-                    ChangeDescriptionStructured = previousRun.Artifacts.ChangeDescriptionStructured,
-                    ChangeDiagramMermaid = previousRun.Artifacts.ChangeDiagramMermaid,
-                    MarkdownReport = previousRun.Artifacts.MarkdownReport,
-                    SummaryComment = previousRun.Artifacts.SummaryComment,
-                    ReviewDiscussionMessages = previousRun.Artifacts.ReviewDiscussionMessages,
-                    InlineComments = previousRun.Artifacts.InlineComments,
-                    ReviewedFiles = previousRun.Artifacts.ReviewedFiles,
-                    PrimaryOpportunities = previousRun.Artifacts.PrimaryOpportunities,
-                    FindingsComparison = reusedComparison,
-                    SemanticCodeContext = previousRun.Artifacts.SemanticCodeContext
-                };
-
-                run.UpdateArtifacts(reusedArtifacts);
-                run.UpdateFindings(previousRun.Findings);
-                await reviewRunRepository.UpdateAsync(run, cancellationToken);
                 await PersistAndPublishAsync(
                     run,
-                    "Новых изменений с прошлого завершённого ревью не найдено. Используем сохранённый результат.",
-                    ReviewPipelineStage.FinalSynthesis,
-                    95,
+                    $"Incremental review: модель получит {reviewPreprocessed.ChangedFiles.Count} delta-файлов из {preprocessed.ChangedFiles.Count}",
+                    ReviewPipelineStage.ChangeDescription,
+                    32,
                     cancellationToken);
-
-                run.Complete(reusedArtifacts, previousRun.Findings, false);
-                var reusedCompletedUpdate = new ReviewProgressUpdate(
-                    run.Id,
-                    run.Status,
-                    run.CurrentStage,
-                    run.ProgressPercent,
-                    run.CurrentMessage,
-                    DateTimeOffset.UtcNow,
-                    true);
-                run.RecordProgress(reusedCompletedUpdate);
-                await reviewRunRepository.UpdateAsync(run, cancellationToken);
-                await TryIndexSemanticArtifactsAsync(run, cancellationToken);
-                await reviewProgressStore.PublishAsync(reusedCompletedUpdate, cancellationToken);
-                reviewProgressStore.Complete(run.Id);
-                return;
             }
 
-            var changeSummary = await GenerateChangeSummaryAsync(run, run.DisplayTitle, preprocessed, request, cancellationToken);
+            externalReviewTask = StartExternalReviewAsync(run, cancellationToken);
+            if (externalReviewTask is not null)
+            {
+                run.UpdateArtifacts(CopyArtifactsWithSemanticCodeContext(
+                    run.Artifacts,
+                    run.Artifacts.SemanticCodeContext,
+                    new ExternalReviewArtifact
+                    {
+                        Enabled = true,
+                        Attempted = true,
+                        EngineName = externalReviewOptions.Value.EngineName,
+                        Status = "running",
+                        Message = "External review sidecar is running.",
+                        StartedAt = DateTimeOffset.UtcNow
+                    }));
+                await reviewRunRepository.UpdateAsync(run, cancellationToken);
+                _ = TrackExternalReviewCompletionAsync(externalReviewTask, run);
+            }
+
+            var externalChangeSummary = await TryBuildExternalChangeSummaryAsync(externalReviewTask, run, cancellationToken);
+            var changeSummary = externalChangeSummary
+                                ?? await GenerateChangeSummaryAsync(run, run.DisplayTitle, preprocessed, request, cancellationToken);
             var description = changeSummary.Description;
+            var reviewDescription = reviewScope.IsIncremental
+                ? $"{description}\n\nIncremental review mode: review only the provided delta diff sections. Baseline findings are known context; do not repeat them unless the delta introduces a new, distinct issue."
+                : description;
             run.UpdateArtifacts(new ReviewArtifacts
             {
                 DiffText = preprocessed.FilteredDiffText,
@@ -204,19 +212,80 @@ public sealed class ReviewRunExecutor(
                 ChangeDiagramMermaid = changeSummary.DiagramMermaid
             });
             await reviewRunRepository.UpdateAsync(run, cancellationToken);
-            await PersistAndPublishAsync(run, "Change description generated", ReviewPipelineStage.ChunkReview, 45, cancellationToken);
+            await PersistAndPublishAsync(
+                run,
+                externalChangeSummary is null ? "Change description generated" : "Change description generated by PR-Agent",
+                ReviewPipelineStage.ChunkReview,
+                45,
+                cancellationToken);
 
-            var rawFindings = reviewPipelineOptions.Value.SinglePassFullDiffAndGraphPrimaryReview
-                ? await ReviewSinglePassFullContextAsync(description, preprocessed, diffResult, request, run, cancellationToken)
-                : await ReviewChunksAsync(description, preprocessed.ReviewChunks, diffResult, request, run, cancellationToken);
+            ExternalReviewArtifact? externalReviewForFindings = null;
+            var externalInsights = ExternalReviewInsights.Empty;
+            var externalScoutReview = await TryReviewExternalScoutMissingCriticsAsync(
+                reviewDescription,
+                reviewPreprocessed,
+                externalReviewTask,
+                request,
+                run,
+                reviewScope.IsIncremental && previousRun is not null ? previousRun.Findings : [],
+                cancellationToken);
+            IReadOnlyList<string> rawFindings;
+            if (externalScoutReview is not null)
+            {
+                rawFindings = externalScoutReview.RawResponses;
+                externalReviewForFindings = externalScoutReview.ExternalReview;
+                externalInsights = externalScoutReview.Insights;
+            }
+            else
+            {
+                rawFindings = reviewPipelineOptions.Value.SinglePassFullDiffAndGraphPrimaryReview
+                    ? await ReviewSinglePassFullContextAsync(reviewDescription, reviewPreprocessed, diffResult, request, run, cancellationToken)
+                    : await ReviewChunksAsync(reviewDescription, reviewPreprocessed.ReviewChunks, diffResult, request, run, cancellationToken);
+            }
             await PersistAndPublishAsync(run, "Raw findings collected", ReviewPipelineStage.FindingsNormalization, 75, cancellationToken);
 
             var findings = new List<ReviewFinding>();
             var opportunities = new List<ReviewOpportunityItem>();
-            foreach (var raw in rawFindings)
+            if (externalScoutReview is not null && externalReviewOptions.Value.UseReviewFindings)
             {
+                var seedFindings = reviewScope.IsIncremental && previousRun is not null
+                    ? FilterIncrementalCandidateFindings(externalInsights.Findings, previousRun, reviewPreprocessed)
+                    : externalInsights.Findings;
+                findings.AddRange(seedFindings);
+                opportunities.AddRange(externalInsights.Opportunities);
+                logger.LogInformation(
+                    "Seeded external review scout findings for run {RunId}: findings={Findings}, opportunities={Opportunities}",
+                    run.Id,
+                    seedFindings.Count,
+                    externalInsights.Opportunities.Count);
+            }
+
+            for (var index = 0; index < rawFindings.Count; index++)
+            {
+                var raw = rawFindings[index];
                 var parsed = chunkReviewResponseParser.ParseChunkResponse(raw);
-                findings.AddRange(parsed.Findings);
+                logger.LogInformation(
+                    "Parsed raw review response for run {RunId}: responseIndex={ResponseIndex}, responseChars={ResponseChars}, findings={Findings}, opportunities={Opportunities}, preview={Preview}",
+                    run.Id,
+                    index + 1,
+                    raw.Length,
+                    parsed.Findings.Count,
+                    parsed.Opportunities.Count,
+                    BuildPreview(raw));
+                if (externalScoutReview is null)
+                {
+                    findings.AddRange(parsed.Findings);
+                }
+                else
+                {
+                    var supportedFindings = SuppressContradictedScoutFindings(
+                        parsed.Findings,
+                        preprocessed.FilteredDiffText,
+                        run.Id);
+                    findings.AddRange(supportedFindings.Where(finding =>
+                        findings.All(existing => !CoversFinding(existing, finding))));
+                }
+
                 opportunities.AddRange(parsed.Opportunities);
             }
 
@@ -231,7 +300,7 @@ public sealed class ReviewRunExecutor(
             }
 
             var confirmedDeterministicFindings = BuildConfirmedDeterministicFindings(
-                preprocessed.ReviewHints,
+                reviewPreprocessed.ReviewHints,
                 findings);
             findings.AddRange(confirmedDeterministicFindings);
             if (confirmedDeterministicFindings.Count > 0)
@@ -240,6 +309,37 @@ public sealed class ReviewRunExecutor(
                     "Added {FindingCount} confirmed deterministic findings for run {RunId}",
                     confirmedDeterministicFindings.Count,
                     run.Id);
+            }
+
+            if (externalScoutReview is null && externalReviewOptions.Value.UseReviewFindings)
+            {
+                externalReviewForFindings ??= await CompleteExternalReviewAsync(externalReviewTask, run, cancellationToken);
+                externalInsights = ReferenceEquals(externalInsights, ExternalReviewInsights.Empty)
+                    ? externalReviewArtifactParser.Parse(externalReviewForFindings)
+                    : externalInsights;
+                var externalFindingsAdded = 0;
+                foreach (var finding in externalInsights.Findings)
+                {
+                    if (findings.All(existing => !CoversFinding(existing, finding)))
+                    {
+                        findings.Add(finding);
+                        externalFindingsAdded++;
+                    }
+                }
+
+                if (externalInsights.Opportunities.Count > 0)
+                {
+                    opportunities.AddRange(externalInsights.Opportunities);
+                }
+
+                if (externalFindingsAdded > 0 || externalInsights.Opportunities.Count > 0)
+                {
+                    logger.LogInformation(
+                        "Added external review insights for run {RunId}: findings={Findings}, opportunities={Opportunities}",
+                        run.Id,
+                        externalFindingsAdded,
+                        externalInsights.Opportunities.Count);
+                }
             }
 
             if (reviewPipelineOptions.Value.EnableFinalModelNormalizationPass)
@@ -252,6 +352,7 @@ public sealed class ReviewRunExecutor(
                     76,
                     cancellationToken);
                 var normalized = await RunFinalModelNormalizationAsync(
+                    run,
                     findings,
                     opportunities,
                     cancellationToken);
@@ -266,10 +367,40 @@ public sealed class ReviewRunExecutor(
                     findings.Count - normalized.Findings.Count);
             }
 
+            var deduplicatedFindings = DeduplicateFindings(findings);
+            if (deduplicatedFindings.Count != findings.Count)
+            {
+                logger.LogInformation(
+                    "Local finding deduplication for run {RunId}: before={Before}, after={After}",
+                    run.Id,
+                    findings.Count,
+                    deduplicatedFindings.Count);
+                findings = deduplicatedFindings.ToList();
+            }
+
+            if (reviewScope.IsIncremental && previousRun is not null)
+            {
+                var incrementalFindings = FilterIncrementalCandidateFindings(
+                    findings,
+                    previousRun,
+                    reviewPreprocessed);
+                if (incrementalFindings.Count != findings.Count)
+                {
+                    logger.LogInformation(
+                        "Incremental review filtered baseline-covered findings for run {RunId}: before={Before}, after={After}",
+                        run.Id,
+                        findings.Count,
+                        incrementalFindings.Count);
+                    findings = incrementalFindings.ToList();
+                }
+            }
+
             var primaryOpportunities = opportunities;
             var findingsComparison = previousRun is null
                 ? null
-                : HasNoChangesSincePreviousReview(previousRun, preprocessed)
+                : reviewScope.IsIncremental
+                    ? BuildIncrementalFindingsComparison(previousRun, findings)
+                    : HasNoChangesSincePreviousReview(previousRun, preprocessed)
                     ? findingsComparisonService.CompareUnchangedDiff(
                         previousRun.Id,
                         previousRun.Findings,
@@ -285,6 +416,7 @@ public sealed class ReviewRunExecutor(
             var inlineComments = markdownReportBuilder.BuildInlineComments(findings, preprocessed.FilteredDiffText);
             var reviewedFiles = await BuildReviewedFilesAsync(diffResult, inlineComments, cancellationToken);
             var enrichedInlineComments = FlattenInlineThreads(reviewedFiles);
+            var externalReview = await CompleteExternalReviewAsync(externalReviewTask, run, cancellationToken);
             run.UpdateArtifacts(new ReviewArtifacts
             {
                 DiffText = preprocessed.FilteredDiffText,
@@ -296,7 +428,8 @@ public sealed class ReviewRunExecutor(
                 InlineComments = enrichedInlineComments,
                 ReviewedFiles = reviewedFiles,
                 PrimaryOpportunities = primaryOpportunities,
-                FindingsComparison = findingsComparison
+                FindingsComparison = findingsComparison,
+                ExternalReview = externalReview
             });
             await reviewRunRepository.UpdateAsync(run, cancellationToken);
             await PersistAndPublishAsync(run, "File review workspace generated", ReviewPipelineStage.FinalSynthesis, 90, cancellationToken);
@@ -316,7 +449,8 @@ public sealed class ReviewRunExecutor(
                 InlineComments = enrichedInlineComments,
                 ReviewedFiles = reviewedFiles,
                 PrimaryOpportunities = primaryOpportunities,
-                FindingsComparison = findingsComparison
+                FindingsComparison = findingsComparison,
+                ExternalReview = externalReview
             });
             await reviewRunRepository.UpdateAsync(run, cancellationToken);
             await PersistAndPublishAsync(run, "Final report generated", ReviewPipelineStage.FinalSynthesis, 93, cancellationToken);
@@ -350,7 +484,8 @@ public sealed class ReviewRunExecutor(
                 InlineComments = enrichedInlineComments,
                 ReviewedFiles = reviewedFiles,
                 PrimaryOpportunities = primaryOpportunities,
-                FindingsComparison = findingsComparison
+                FindingsComparison = findingsComparison,
+                ExternalReview = externalReview
             };
 
             run.Complete(artifacts, findings, publishSucceeded);
@@ -447,7 +582,8 @@ public sealed class ReviewRunExecutor(
 
     private static ReviewArtifacts CopyArtifactsWithSemanticCodeContext(
         ReviewArtifacts artifacts,
-        SemanticCodeContextArtifact semanticCodeContext)
+        SemanticCodeContextArtifact semanticCodeContext,
+        ExternalReviewArtifact? externalReview = null)
     {
         return new ReviewArtifacts
         {
@@ -465,6 +601,7 @@ public sealed class ReviewRunExecutor(
             PrimaryOpportunities = artifacts.PrimaryOpportunities,
             FindingsComparison = artifacts.FindingsComparison,
             SemanticCodeContext = semanticCodeContext,
+            ExternalReview = externalReview ?? artifacts.ExternalReview,
             ProgressUpdates = artifacts.ProgressUpdates
         };
     }
@@ -536,7 +673,8 @@ public sealed class ReviewRunExecutor(
             "MaxChangeSummaryCharacters={MaxChangeSummaryCharacters}, RoslynEnabled={RoslynEnabled}, " +
             "SinglePassFullDiffAndGraphPrimaryReview={SinglePassPrimary}, SinglePassFullContextMaxCharacters={SinglePassMax}, " +
             "IncludeRoslynGraphInFullContextPayload={IncludeGraph}, FullContextMaxToolIterations={FullContextMaxToolIterations}, " +
-            "EnableFinalModelNormalizationPass={EnableFinalNormalization}",
+            "EnableDeterministicCoverageCritic={EnableDeterministicCoverageCritic}, EnableFinalModelNormalizationPass={EnableFinalNormalization}, " +
+            "UseIncrementalReviewMode={UseIncrementalReviewMode}",
             run.Id,
             string.IsNullOrWhiteSpace(request.ProviderProfileId) ? "(routing default)" : request.ProviderProfileId,
             request.ForceRerun,
@@ -550,7 +688,195 @@ public sealed class ReviewRunExecutor(
             o.SinglePassFullContextMaxCharacters,
             o.IncludeRoslynGraphInFullContextPayload,
             o.FullContextMaxToolIterations,
-            o.EnableFinalModelNormalizationPass);
+            o.EnableDeterministicCoverageCritic,
+            o.EnableFinalModelNormalizationPass,
+            o.UseIncrementalReviewMode);
+    }
+
+    private Task<ExternalReviewArtifact>? StartExternalReviewAsync(
+        ReviewRun run,
+        CancellationToken cancellationToken)
+    {
+        var opts = externalReviewOptions.Value;
+        if (!opts.Enabled)
+        {
+            return null;
+        }
+
+        logger.LogInformation(
+            "Starting external review sidecar for run {RunId}: engine={EngineName}, commands={Commands}, baseUrl={BaseUrl}",
+            run.Id,
+            opts.EngineName,
+            string.Join(",", opts.Commands),
+            opts.BaseUrl);
+
+        var task = externalReviewEngine.RunAsync(run, cancellationToken);
+        _ = task.ContinueWith(
+            completedTask =>
+            {
+                if (completedTask.Exception is not null)
+                {
+                    logger.LogWarning(
+                        completedTask.Exception,
+                        "External review sidecar task faulted for run {RunId}",
+                        run.Id);
+                }
+            },
+            CancellationToken.None,
+            TaskContinuationOptions.OnlyOnFaulted,
+            TaskScheduler.Default);
+
+        return task;
+    }
+
+    private async Task<ExternalReviewArtifact> CompleteExternalReviewAsync(
+        Task<ExternalReviewArtifact>? externalReviewTask,
+        ReviewRun run,
+        CancellationToken cancellationToken)
+    {
+        if (externalReviewTask is null)
+        {
+            return ExternalReviewArtifact.Empty;
+        }
+
+        var waitSeconds = Math.Max(0, externalReviewOptions.Value.MaxWaitAtEndSeconds);
+        var completedTask = externalReviewTask.IsCompleted
+            ? externalReviewTask
+            : await Task.WhenAny(
+                externalReviewTask,
+                Task.Delay(TimeSpan.FromSeconds(waitSeconds), cancellationToken));
+
+        if (completedTask == externalReviewTask)
+        {
+            var artifact = await externalReviewTask;
+            logger.LogInformation(
+                "External review sidecar completed for run {RunId}: status={Status}, commands={Commands}, elapsedMs={ElapsedMs}",
+                run.Id,
+                artifact.Status,
+                artifact.Commands.Count,
+                artifact.ElapsedMilliseconds);
+            return artifact;
+        }
+
+        logger.LogInformation(
+            "External review sidecar is still running for run {RunId} after final wait of {WaitSeconds}s",
+            run.Id,
+            waitSeconds);
+        return new ExternalReviewArtifact
+        {
+            Enabled = true,
+            Attempted = true,
+            EngineName = externalReviewOptions.Value.EngineName,
+            Status = "running",
+            Message = $"External review sidecar did not finish before final synthesis wait ({waitSeconds}s)."
+        };
+    }
+
+    private async Task<ChangeSummaryResult?> TryBuildExternalChangeSummaryAsync(
+        Task<ExternalReviewArtifact>? externalReviewTask,
+        ReviewRun run,
+        CancellationToken cancellationToken)
+    {
+        var opts = externalReviewOptions.Value;
+        if (externalReviewTask is null || !opts.UseChangeSummary)
+        {
+            return null;
+        }
+
+        var waitSeconds = Math.Max(0, opts.ChangeSummaryWaitSeconds);
+        await PersistAndPublishAsync(
+            run,
+            $"Ждем описание изменений от {opts.EngineName}",
+            ReviewPipelineStage.ChangeDescription,
+            30,
+            cancellationToken);
+
+        var completedTask = externalReviewTask.IsCompleted
+            ? externalReviewTask
+            : await Task.WhenAny(
+                externalReviewTask,
+                Task.Delay(TimeSpan.FromSeconds(waitSeconds), cancellationToken));
+        if (completedTask != externalReviewTask)
+        {
+            logger.LogInformation(
+                "External review sidecar did not provide change summary for run {RunId} within {WaitSeconds}s; falling back to primary model",
+                run.Id,
+                waitSeconds);
+            return null;
+        }
+
+        var artifact = await externalReviewTask;
+        var changeSummary = externalReviewArtifactParser.Parse(artifact).ChangeSummary;
+        if (changeSummary is null)
+        {
+            logger.LogInformation(
+                "External review sidecar completed without parseable change summary for run {RunId}; falling back to primary model",
+                run.Id);
+            return null;
+        }
+
+        logger.LogInformation(
+            "Using external review sidecar change summary for run {RunId}: engine={EngineName}, hasDiagram={HasDiagram}",
+            run.Id,
+            artifact.EngineName,
+            !string.IsNullOrWhiteSpace(changeSummary.DiagramMermaid));
+        return changeSummary;
+    }
+
+    private async Task TrackExternalReviewCompletionAsync(
+        Task<ExternalReviewArtifact> externalReviewTask,
+        ReviewRun run)
+    {
+        try
+        {
+            var artifact = await externalReviewTask;
+            run.UpdateArtifacts(CopyArtifactsWithSemanticCodeContext(
+                run.Artifacts,
+                run.Artifacts.SemanticCodeContext,
+                artifact));
+            await reviewRunRepository.UpdateAsync(run, CancellationToken.None);
+            logger.LogInformation(
+                "External review sidecar artifact persisted for run {RunId}: status={Status}, commands={Commands}, elapsedMs={ElapsedMs}",
+                run.Id,
+                artifact.Status,
+                artifact.Commands.Count,
+                artifact.ElapsedMilliseconds);
+        }
+        catch (Exception exception)
+        {
+            logger.LogWarning(exception, "External review sidecar artifact tracking failed for run {RunId}", run.Id);
+        }
+    }
+
+    private async Task<string> CompleteWithProgressHeartbeatAsync(
+        ProviderProfile profile,
+        LlmChatRequest request,
+        ReviewRun run,
+        ReviewPipelineStage stage,
+        int progressPercent,
+        string heartbeatMessage,
+        CancellationToken cancellationToken)
+    {
+        var startedAt = DateTimeOffset.UtcNow;
+        var completionTask = llmCompletionService.CompleteAsync(profile, request, cancellationToken);
+
+        while (true)
+        {
+            var delayTask = Task.Delay(TimeSpan.FromSeconds(30), cancellationToken);
+            var completedTask = await Task.WhenAny(completionTask, delayTask);
+            if (completedTask == completionTask)
+            {
+                return await completionTask;
+            }
+
+            var elapsedSeconds = (int)Math.Max(1, (DateTimeOffset.UtcNow - startedAt).TotalSeconds);
+            await PersistAndPublishAsync(
+                run,
+                $"{heartbeatMessage} ({elapsedSeconds} с)",
+                stage,
+                progressPercent,
+                cancellationToken);
+        }
     }
 
     private async Task<ChangeSummaryResult> GenerateChangeSummaryAsync(
@@ -582,7 +908,7 @@ public sealed class ReviewRunExecutor(
                 fullDiffLength - maxChangeSummaryCharacters);
         }
 
-        var response = await llmCompletionService.CompleteAsync(
+        var response = await CompleteWithProgressHeartbeatAsync(
             selection.Profile,
             new LlmChatRequest
             {
@@ -594,6 +920,10 @@ public sealed class ReviewRunExecutor(
                     ReviewPipelineStage.ChangeDescription,
                     $"Changed files:\n{fileList}\n\nDiff snippet:\n{diffSnippet}")
             },
+            run,
+            ReviewPipelineStage.ChangeDescription,
+            30,
+            "Генерируем описание изменений: модель отвечает",
             cancellationToken);
 
         var parsed = ParseChangeSummary(response);
@@ -855,6 +1185,341 @@ public sealed class ReviewRunExecutor(
         return MermaidDiagramNormalizer.Normalize(response);
     }
 
+    private async Task<ExternalScoutReviewResult?> TryReviewExternalScoutMissingCriticsAsync(
+        string description,
+        PreprocessedDiff preprocessed,
+        Task<ExternalReviewArtifact>? externalReviewTask,
+        ReviewExecutionRequest request,
+        ReviewRun run,
+        IReadOnlyList<ReviewFinding> baselineKnownFindings,
+        CancellationToken cancellationToken)
+    {
+        var pipelineOptions = reviewPipelineOptions.Value;
+        if (!pipelineOptions.UseExternalReviewScoutMode ||
+            externalReviewTask is null ||
+            !externalReviewOptions.Value.Enabled ||
+            !externalReviewOptions.Value.UseReviewFindings)
+        {
+            return null;
+        }
+
+        var externalReview = await CompleteExternalReviewAsync(externalReviewTask, run, cancellationToken);
+        if (!externalReview.Attempted ||
+            externalReview.Commands.Count == 0 ||
+            externalReview.Status is "failed" or "timed_out")
+        {
+            logger.LogInformation(
+                "External review scout mode skipped for run {RunId}: status={Status}, commands={Commands}",
+                run.Id,
+                externalReview.Status,
+                externalReview.Commands.Count);
+            return null;
+        }
+
+        var externalInsights = externalReviewArtifactParser.Parse(externalReview);
+        var knownFindings = baselineKnownFindings.Count == 0
+            ? externalInsights.Findings
+            : externalInsights.Findings.Concat(baselineKnownFindings).ToArray();
+        var critics = ExternalScoutCritics
+            .Select(critic => (Critic: critic, DiffContext: BuildExternalScoutCriticDiffContext(preprocessed, critic)))
+            .Where(item => !string.IsNullOrWhiteSpace(item.DiffContext))
+            .ToArray();
+        if (critics.Length == 0)
+        {
+            logger.LogInformation("External review scout mode had no critic diff context for run {RunId}", run.Id);
+            return null;
+        }
+
+        var selection = await llmStageRouter.ResolveAsync(
+            ReviewPipelineStage.ChunkReview,
+            request.ProviderProfileId,
+            request.StageOverrides,
+            cancellationToken);
+
+        await PersistAndPublishAsync(
+            run,
+            $"PR-Agent scout готов: запускаем {critics.Length} missing-critics",
+            ReviewPipelineStage.ChunkReview,
+            50,
+            cancellationToken);
+
+        var responses = new string[critics.Length];
+        var completedCritics = 0;
+        var maxConcurrency = Math.Clamp(
+            pipelineOptions.MaxConcurrentExternalReviewScoutCritics,
+            1,
+            critics.Length);
+        using var semaphore = new SemaphoreSlim(maxConcurrency, maxConcurrency);
+        var tasks = critics.Select(async (item, index) =>
+        {
+            await semaphore.WaitAsync(cancellationToken);
+            try
+            {
+                responses[index] = await llmCompletionService.CompleteAsync(
+                    selection.Profile,
+                    new LlmChatRequest
+                    {
+                        Model = selection.Model,
+                        Temperature = 0,
+                        ExpectJson = true,
+                        SystemPrompt = BuildExternalScoutCriticSystemPrompt(item.Critic),
+                        UserPrompt = BuildExternalScoutCriticUserPrompt(
+                            description,
+                            knownFindings,
+                            item.Critic,
+                            item.DiffContext)
+                    },
+                    cancellationToken);
+            }
+            finally
+            {
+                semaphore.Release();
+            }
+
+            var completed = Interlocked.Increment(ref completedCritics);
+            var progress = 50 + (int)Math.Round((completed / (double)critics.Length) * 22d);
+            await PersistAndPublishAsync(
+                run,
+                $"Missing-critics: завершено {completed} из {critics.Length}",
+                ReviewPipelineStage.ChunkReview,
+                progress,
+                cancellationToken);
+        }).ToArray();
+
+        await Task.WhenAll(tasks);
+        logger.LogInformation(
+            "External review scout mode completed for run {RunId}: critics={Critics}, externalFindings={ExternalFindings}",
+            run.Id,
+            critics.Length,
+            externalInsights.Findings.Count);
+
+        return new ExternalScoutReviewResult(
+            responses.Where(response => !string.IsNullOrWhiteSpace(response)).ToArray(),
+            externalReview,
+            externalInsights);
+    }
+
+    private string BuildExternalScoutCriticDiffContext(
+        PreprocessedDiff preprocessed,
+        ExternalScoutCritic critic)
+    {
+        var maxCharacters = Math.Max(8000, reviewPipelineOptions.Value.ExternalReviewScoutMaxCriticCharacters);
+        var chunks = preprocessed.ReviewChunks.Count > 0
+            ? preprocessed.ReviewChunks
+            : preprocessed.Chunks;
+        var selectedChunks = chunks
+            .Where(chunk => critic.Keywords.Any(keyword => chunk.Contains(keyword, StringComparison.OrdinalIgnoreCase)))
+            .Take(8)
+            .ToList();
+        if (selectedChunks.Count == 0)
+        {
+            selectedChunks = chunks.Take(6).ToList();
+        }
+
+        var builder = new StringBuilder();
+        foreach (var chunk in selectedChunks)
+        {
+            if (builder.Length >= maxCharacters)
+            {
+                break;
+            }
+
+            var remaining = maxCharacters - builder.Length;
+            var text = chunk.Length > remaining
+                ? chunk[..remaining]
+                : chunk;
+            builder.AppendLine(text);
+            builder.AppendLine();
+        }
+
+        return builder.ToString().Trim();
+    }
+
+    private static string BuildExternalScoutCriticSystemPrompt(ExternalScoutCritic critic)
+    {
+        return $$"""
+            You are a focused missing-issues critic in an automated code review pipeline.
+            PR-Agent has already produced a first review. Your task is to find only important issues that are missing from the known findings.
+
+            Focus area:
+            {{critic.Name}}
+
+            Focus instructions:
+            {{critic.Instructions}}
+
+            Rules:
+            - Do not repeat, rephrase, or split known findings.
+            - Report only issues directly supported by the provided diff context.
+            - Prefer High/Medium findings. Use Low only for a concrete test or maintainability trap.
+            - Before reporting a missing call, missing wiring, or missing enrichment step, verify the provided diff context does not already show the exact call or equivalent wiring.
+            - Put non-blocking maintainability, duplication, refactoring, and readability improvements in opportunities instead of findings unless the repetition creates a concrete bug.
+            - Do not omit useful opportunities just because findings are also present.
+            - Return every human-readable field in Russian: title, description, suggestion, and line_hint.
+            - Keep file paths, identifiers, method names, type names, and code snippets unchanged.
+            - If there are no new issues, return empty arrays.
+            - Return valid JSON only, no markdown.
+
+            JSON schema:
+            {
+              "findings": [
+                {
+                  "file": "path/from/diff",
+                  "line_hint": "short location",
+                  "type": "Security|Performance|Architecture|Bug|Reliability|Logic|CodeStyle",
+                  "severity": "Critical|High|Medium|Low",
+                  "title": "short title",
+                  "description": "what breaks, when, and why",
+                  "existing_code": "small concrete snippet from the diff",
+                  "suggestion": "specific fix",
+                  "start_line": 0,
+                  "end_line": 0
+                }
+              ],
+              "opportunities": [
+                {
+                  "file": "path/from/diff",
+                  "line_hint": "short location",
+                  "title": "short title",
+                  "description": "non-blocking improvement and why it matters",
+                  "suggestion": "specific improvement",
+                  "start_line": 0,
+                  "end_line": 0
+                }
+              ]
+            }
+            """;
+    }
+
+    private static string BuildExternalScoutCriticUserPrompt(
+        string description,
+        IReadOnlyList<ReviewFinding> knownFindings,
+        ExternalScoutCritic critic,
+        string diffContext)
+    {
+        var knownFindingsJson = JsonSerializer.Serialize(
+            knownFindings.Take(20).Select(finding => new
+            {
+                finding.File,
+                finding.LineHint,
+                finding.Title,
+                finding.Description,
+                finding.StartLine,
+                finding.EndLine
+            }),
+            new JsonSerializerOptions { WriteIndented = true });
+
+        return $$"""
+            Change description:
+            {{description}}
+
+            Known findings from PR-Agent. Do not repeat these:
+            {{knownFindingsJson}}
+
+            Critic focus:
+            {{critic.Name}}
+
+            Diff context:
+            {{diffContext}}
+            """;
+    }
+
+    private static readonly ExternalScoutCritic[] ExternalScoutCritics =
+    [
+        new(
+            "SQL/data integrity",
+            [
+                ".sql",
+                "select ",
+                "join ",
+                "where ",
+                "group by",
+                "first(",
+                "isbasic",
+                "isbcallowed",
+                "replicbranch",
+                "macroregion"
+            ],
+            "Look for changed SQL semantics, removed business filters, row multiplication, non-deterministic picks, null handling, or data-integrity changes that PR-Agent missed."),
+        new(
+            "Concurrency/cache/background services",
+            [
+                "cache",
+                "volatile",
+                "lock",
+                "semaphore",
+                "concurrent",
+                "backgroundservice",
+                "hostedservice",
+                "refreshasync",
+                "dictionary"
+            ],
+            "Look for races, inconsistent cache publication, background-service lifetime issues, partial refresh visibility, cancellation handling, and stale/error state behavior."),
+        new(
+            "DI/options/config/bootstrap",
+            [
+                "adddependencies",
+                "configure<",
+                "options",
+                "appsettings",
+                "validateonstart",
+                "hostedservice",
+                "singleton",
+                "scoped"
+            ],
+            "Look for wrong config section binding, missing validation, unsafe service lifetimes, startup failure modes, or options defaults that can silently change production behavior."),
+        new(
+            "Tests/seeds/regression coverage",
+            [
+                "tests",
+                "testcontainer",
+                "seed",
+                "assert",
+                "fact]",
+                "theory]",
+                "task.delay"
+            ],
+            "Look for tests that pass for the wrong reason, missing seed data, brittle timing, unasserted behavior, or coverage gaps around changed business rules."),
+        new(
+            "Public contracts/nullability/serialization",
+            [
+                "notmapped",
+                "nullable",
+                "string ",
+                "int?",
+                "readmodel",
+                "dto",
+                "excel",
+                "return null",
+                "json"
+            ],
+            "Look for public/read-model contract drift, nullable mismatches, serialization/export fields populated later than consumers expect, and null-return contracts. Do not report missing enrichment when the diff context already shows an EnrichWithRegionData or equivalent call before mapping/export."),
+        new(
+            "Maintainability/duplication",
+            [
+                "extension",
+                "enrich",
+                "enrichwith",
+                "foreach",
+                "orderregion",
+                "macroregion",
+                "timezone",
+                "regioncacheextensions",
+                "mapper",
+                "provider"
+            ],
+            "Look specifically for repeated changed logic across overloads, helpers, mapping/enrichment code, and call sites that is likely to drift. Return high-signal duplication as opportunities when a small shared helper or strategy would reduce future mistakes. Use findings only when the duplicate logic already diverges in a way that breaks visible behavior.")
+    ];
+
+    private sealed record ExternalScoutCritic(
+        string Name,
+        IReadOnlyList<string> Keywords,
+        string Instructions);
+
+    private sealed record ExternalScoutReviewResult(
+        IReadOnlyList<string> RawResponses,
+        ExternalReviewArtifact ExternalReview,
+        ExternalReviewInsights Insights);
+
     private async Task<IReadOnlyList<string>> ReviewSinglePassFullContextAsync(
         string description,
         PreprocessedDiff preprocessed,
@@ -909,9 +1574,9 @@ public sealed class ReviewRunExecutor(
 
         var systemPrompt = reviewPromptFactory.BuildSinglePassPrimaryReviewSystemPrompt(description);
         var userPrompt = reviewPromptFactory.BuildSinglePassPrimaryReviewUserPrompt(payload);
-        var maxIterations = Math.Clamp(reviewPipelineOptions.Value.FullContextMaxToolIterations, 1, 6);
+        var maxIterations = Math.Clamp(reviewPipelineOptions.Value.FullContextMaxToolIterations, 0, 6);
 
-        var response = await llmCompletionService.CompleteAsync(
+        var response = await CompleteWithProgressHeartbeatAsync(
             selection.Profile,
             new LlmChatRequest
             {
@@ -921,29 +1586,46 @@ public sealed class ReviewRunExecutor(
                 SystemPrompt = systemPrompt,
                 UserPrompt = userPrompt
             },
+            run,
+            ReviewPipelineStage.ChunkReview,
+            52,
+            "Первичное ревью: модель анализирует полный diff",
             cancellationToken);
 
         var currentPayload = userPrompt;
+        if (maxIterations == 0)
+        {
+            logger.LogInformation(
+                "Full-context tool loop is disabled for run {RunId}: FullContextMaxToolIterations=0",
+                run.Id);
+        }
+
         for (var iteration = 1; iteration <= maxIterations; iteration++)
         {
             var envelope = ParseChunkReviewAgentEnvelope(response);
-            logger.LogInformation(
-                "Full-context tool decision for run {RunId}, iteration {Iteration}: NeedMoreContext={NeedMoreContext}, ToolRequestsCount={ToolRequestsCount}",
-                run.Id,
-                iteration,
-                envelope.NeedMoreContext,
-                envelope.ToolRequests.Count);
+            LogFullContextToolRequestDecision(run, iteration, envelope);
             if (!envelope.NeedMoreContext || envelope.ToolRequests.Count == 0)
             {
                 break;
             }
 
-            var toolResponses = await reviewWorkspaceToolExecutor.ExecuteAsync(
+            var workspaceToolResponses = await reviewWorkspaceToolExecutor.ExecuteAsync(
                 diffResult,
                 "(full-diff)",
                 envelope.ToolRequests,
                 cancellationToken);
-            if (toolResponses.Count == 0)
+            LogFullContextToolResponses(run, iteration, workspaceToolResponses, "workspace");
+
+            var fallbackToolResponses = DiffToolFallbackContextBuilder.Build(
+                preprocessed.FilteredDiffText,
+                envelope.ToolRequests,
+                workspaceToolResponses);
+            LogFullContextToolResponses(run, iteration, fallbackToolResponses, "diff-fallback");
+
+            var toolResponses = workspaceToolResponses
+                .Concat(fallbackToolResponses)
+                .ToArray();
+            if (toolResponses.Length == 0)
             {
                 logger.LogInformation(
                     "Full-context tool loop produced no results for run {RunId}, iteration {Iteration}",
@@ -953,7 +1635,7 @@ public sealed class ReviewRunExecutor(
             }
 
             currentPayload = BuildChunkReviewPayload(currentPayload, toolResponses);
-            response = await llmCompletionService.CompleteAsync(
+            response = await CompleteWithProgressHeartbeatAsync(
                 selection.Profile,
                 new LlmChatRequest
                 {
@@ -967,6 +1649,10 @@ public sealed class ReviewRunExecutor(
                         ReviewPipelineStage.ChunkReview,
                         currentPayload)
                 },
+                run,
+                ReviewPipelineStage.ChunkReview,
+                62,
+                "Первичное ревью: модель проверяет tool-context",
                 cancellationToken);
         }
 
@@ -1005,6 +1691,16 @@ public sealed class ReviewRunExecutor(
             return null;
         }
 
+        if (!reviewPipelineOptions.Value.EnableDeterministicCoverageCritic)
+        {
+            logger.LogInformation(
+                "Deterministic coverage critic is disabled for run {RunId}: reviewHints={ReviewHints}, deterministicContext={DeterministicContext}",
+                run.Id,
+                preprocessed.ReviewHints.Count,
+                deterministicContext.Count);
+            return null;
+        }
+
         await PersistAndPublishAsync(
             run,
             "Проверяем покрытие deterministic review-hints",
@@ -1014,7 +1710,7 @@ public sealed class ReviewRunExecutor(
 
         var hintsBlock = ReviewHintFormatter.BuildAllHintsBlock(preprocessed.ReviewHints);
         var contextBlock = BuildDeterministicContextBlock(deterministicContext);
-        var response = await llmCompletionService.CompleteAsync(
+        var response = await CompleteWithProgressHeartbeatAsync(
             selection.Profile,
             new LlmChatRequest
             {
@@ -1027,6 +1723,10 @@ public sealed class ReviewRunExecutor(
                     contextBlock,
                     primaryReviewResponse)
             },
+            run,
+            ReviewPipelineStage.ChunkReview,
+            68,
+            "Проверяем покрытие deterministic review-hints: модель отвечает",
             cancellationToken);
 
         logger.LogInformation(
@@ -1479,7 +2179,7 @@ public sealed class ReviewRunExecutor(
         return builder.ToString().TrimEnd();
     }
 
-    private static IReadOnlyList<ReviewFinding> BuildConfirmedDeterministicFindings(
+    internal static IReadOnlyList<ReviewFinding> BuildConfirmedDeterministicFindings(
         IReadOnlyList<ReviewHint> hints,
         IReadOnlyList<ReviewFinding> existingFindings)
     {
@@ -1496,6 +2196,12 @@ public sealed class ReviewRunExecutor(
         return hint.RuleId switch
         {
             "RUNTIME_KAFKA_CACHE_PUBLISH_FILTERING" => BuildKafkaCachePublishFinding(hint),
+            "SQL_REMOVED_BUSINESS_FILTER" => BuildSqlRemovedBusinessFilterFinding(hint),
+            "SQL_JOIN_ALIAS_ONLY_USED_IN_JOIN" => BuildSqlUnusedJoinAliasFinding(hint),
+            "OPTIONS_SECTION_NOT_VISIBLE_IN_CHANGED_CONFIG" => BuildOptionsSectionMismatchFinding(hint),
+            "OPTIONS_BOUND_WITHOUT_VALIDATION" => BuildOptionsWithoutValidationFinding(hint),
+            "GROUP_BY_FIRST_WITHOUT_ORDER" => BuildGroupByFirstWithoutOrderFinding(hint),
+            "NON_NULLABLE_CONTRACT_RETURNS_NULL" => BuildNonNullableContractReturnsNullFinding(hint),
             "API_UNBOUNDED_PAGE_SIZE" => BuildUnboundedPageSizeFinding(hint),
             "EF_BULK_UPDATE_THEN_INSERT_WITHOUT_TRANSACTION" => BuildNonAtomicBulkUpdateFinding(hint),
             "CONFIG_SECRET_LIKE_VALUE" => BuildSecretLikeConfigFinding(hint),
@@ -1602,6 +2308,102 @@ public sealed class ReviewRunExecutor(
             hint.StartLine);
     }
 
+    private static ReviewFinding BuildSqlRemovedBusinessFilterFinding(ReviewHint hint)
+    {
+        return new ReviewFinding(
+            hint.FilePath,
+            hint.StartLine > 0 ? $"line {hint.StartLine}" : "SQL business filters",
+            FindingCategory.Logic,
+            FindingSeverity.Medium,
+            ReviewFindingSource.InitialReview,
+            "SQL перестал фильтровать разрешённые регионы",
+            "В SQL удалены предикаты `IsBasic`/`IsBcAllowed`, а новый запрос не показывает эквивалентного ограничения. Если в ReplicBranch есть небазовые или запрещённые для broadband регионы, список заказов начнёт возвращать записи, которые раньше отсекались на уровне запроса.",
+            hint.Evidence,
+            "Вернуть бизнес-фильтр в SQL либо явно перенести его в новый источник данных кэша и покрыть сценарий тестом: регион с IsBasic=false или IsBcAllowed=false не должен попадать в результат.",
+            hint.StartLine,
+            hint.StartLine);
+    }
+
+    private static ReviewFinding BuildSqlUnusedJoinAliasFinding(ReviewHint hint)
+    {
+        return new ReviewFinding(
+            hint.FilePath,
+            hint.StartLine > 0 ? $"line {hint.StartLine}" : "SQL join",
+            FindingCategory.Logic,
+            FindingSeverity.Medium,
+            ReviewFindingSource.InitialReview,
+            "Неиспользуемый join может размножить строки",
+            "После удаления предикатов alias из join больше не используется вне самого join-блока. Если присоединённая таблица содержит несколько строк на ключ, такой left join не фильтрует результат, но может продублировать заказы.",
+            hint.Evidence,
+            "Удалить неиспользуемый join или оставить только тот join/predicate, который действительно нужен для фильтрации. Для таблицы с потенциальными дублями добавить детерминирующее условие или EXISTS.",
+            hint.StartLine,
+            hint.StartLine);
+    }
+
+    private static ReviewFinding BuildOptionsSectionMismatchFinding(ReviewHint hint)
+    {
+        return new ReviewFinding(
+            hint.FilePath,
+            hint.StartLine > 0 ? $"line {hint.StartLine}" : "options binding",
+            FindingCategory.Reliability,
+            FindingSeverity.Medium,
+            ReviewFindingSource.InitialReview,
+            "Options привязаны к невидимой секции конфига",
+            "DI привязывает options к секции, которой нет среди изменённых appsettings-секций. Если ключи фактически лежат в другой секции, runtime будет использовать дефолты, а environment overrides для добавленного параметра не сработают.",
+            hint.Evidence,
+            "Согласовать имя секции в `Configure<TOptions>` с appsettings/environment convention или вынести `SectionName` в options-класс и использовать его в DI и конфиге.",
+            hint.StartLine,
+            hint.StartLine);
+    }
+
+    private static ReviewFinding BuildOptionsWithoutValidationFinding(ReviewHint hint)
+    {
+        return new ReviewFinding(
+            hint.FilePath,
+            hint.StartLine > 0 ? $"line {hint.StartLine}" : "options validation",
+            FindingCategory.Reliability,
+            FindingSeverity.Medium,
+            ReviewFindingSource.InitialReview,
+            "Options регистрируются без startup-валидации",
+            "Новая конфигурация привязана через options, но рядом не видно `Validate`/`ValidateOnStart`. Если обязательное значение отсутствует или лежит в неправильной секции, сервис узнает об этом только при первом использовании фонового сервиса или запроса.",
+            hint.Evidence,
+            "Добавить валидацию options при старте или явно обработать безопасные дефолты там, где параметр используется.",
+            hint.StartLine,
+            hint.StartLine);
+    }
+
+    private static ReviewFinding BuildGroupByFirstWithoutOrderFinding(ReviewHint hint)
+    {
+        return new ReviewFinding(
+            hint.FilePath,
+            hint.StartLine > 0 ? $"line {hint.StartLine}" : "GroupBy/First",
+            FindingCategory.Logic,
+            FindingSeverity.Medium,
+            ReviewFindingSource.InitialReview,
+            "GroupBy выбирает первый регион недетерминированно",
+            "Код группирует записи и берёт `First()` без явного порядка или критерия выбора. Если источник вернёт несколько строк на один код региона, в кэш попадёт произвольная запись, и название/часовой пояс/макрорегион могут зависеть от порядка ответа БД.",
+            hint.Evidence,
+            "Выбрать каноническую запись явным predicate/OrderBy, например предпочитать IsBasic/IsBcAllowed или другой бизнес-признак, и покрыть дубль по RegionCode тестом.",
+            hint.StartLine,
+            hint.StartLine);
+    }
+
+    private static ReviewFinding BuildNonNullableContractReturnsNullFinding(ReviewHint hint)
+    {
+        return new ReviewFinding(
+            hint.FilePath,
+            hint.StartLine > 0 ? $"line {hint.StartLine}" : "nullable contract",
+            FindingCategory.Bug,
+            FindingSeverity.Medium,
+            ReviewFindingSource.InitialReview,
+            "Ненулевой контракт возвращает null",
+            "Метод с non-nullable сигнатурой рядом с `return null` вводит вызывающий код в заблуждение: потребители могут считать значение обязательным, а при неизвестном регионе получить null в модель или словить NRE после последующей обработки.",
+            hint.Evidence,
+            "Сделать возвращаемый тип nullable в интерфейсе и реализации либо возвращать безопасное значение/ошибку, если отсутствие региона является исключительным состоянием.",
+            hint.StartLine,
+            hint.StartLine);
+    }
+
     private static ReviewFinding BuildNonAtomicBulkUpdateFinding(ReviewHint hint)
     {
         return new ReviewFinding(
@@ -1634,16 +2436,16 @@ public sealed class ReviewRunExecutor(
             hint.StartLine);
     }
 
-    private static IReadOnlyList<ReviewFinding> RestoreDroppedDistinctFindings(
+    internal static IReadOnlyList<ReviewFinding> RestoreDroppedDistinctFindings(
         IReadOnlyList<ReviewFinding> originalFindings,
         IReadOnlyList<ReviewFinding> normalizedFindings)
     {
         if (originalFindings.Count == 0)
         {
-            return normalizedFindings;
+            return DeduplicateFindings(normalizedFindings);
         }
 
-        var restored = normalizedFindings.ToList();
+        var restored = DeduplicateFindings(normalizedFindings).ToList();
         foreach (var candidate in originalFindings)
         {
             if (candidate.Severity is FindingSeverity.Low ||
@@ -1655,10 +2457,7 @@ public sealed class ReviewRunExecutor(
             var coveringIndex = restored.FindIndex(existing => CoversFinding(existing, candidate));
             if (coveringIndex >= 0)
             {
-                if (GetSeverityRank(candidate.Severity) < GetSeverityRank(restored[coveringIndex].Severity))
-                {
-                    restored[coveringIndex] = candidate;
-                }
+                restored[coveringIndex] = ChoosePreferredFinding(restored[coveringIndex], candidate);
 
                 continue;
             }
@@ -1666,7 +2465,81 @@ public sealed class ReviewRunExecutor(
             restored.Add(candidate);
         }
 
-        return restored;
+        return DeduplicateFindings(restored);
+    }
+
+    private static IReadOnlyList<ReviewFinding> DeduplicateFindings(IReadOnlyList<ReviewFinding> findings)
+    {
+        if (findings.Count < 2)
+        {
+            return findings;
+        }
+
+        var deduplicated = new List<ReviewFinding>();
+        foreach (var candidate in findings)
+        {
+            var duplicateIndex = deduplicated.FindIndex(existing => CoversFinding(existing, candidate));
+            if (duplicateIndex >= 0)
+            {
+                deduplicated[duplicateIndex] = ChoosePreferredFinding(deduplicated[duplicateIndex], candidate);
+                continue;
+            }
+
+            deduplicated.Add(candidate);
+        }
+
+        return deduplicated;
+    }
+
+    private static ReviewFinding ChoosePreferredFinding(ReviewFinding existing, ReviewFinding candidate)
+    {
+        var existingRank = GetSeverityRank(existing.Severity);
+        var candidateRank = GetSeverityRank(candidate.Severity);
+        if (candidateRank < existingRank)
+        {
+            return candidate;
+        }
+
+        if (existingRank < candidateRank)
+        {
+            return existing;
+        }
+
+        var existingScore = ComputeFindingSpecificityScore(existing);
+        var candidateScore = ComputeFindingSpecificityScore(candidate);
+        return candidateScore > existingScore
+            ? candidate
+            : existing;
+    }
+
+    private static int ComputeFindingSpecificityScore(ReviewFinding finding)
+    {
+        var score = 0;
+        if (finding.StartLine > 0)
+        {
+            score += 10;
+        }
+
+        if (!string.IsNullOrWhiteSpace(finding.ExistingCode))
+        {
+            score += Math.Min(20, finding.ExistingCode.Length / 25);
+        }
+
+        var text = BuildFindingText(finding);
+        if (text.Contains("return null", StringComparison.OrdinalIgnoreCase))
+        {
+            score += 12;
+        }
+
+        if (text.Contains("validateonstart", StringComparison.OrdinalIgnoreCase) ||
+            text.Contains("getsection", StringComparison.OrdinalIgnoreCase) ||
+            text.Contains("isbasic", StringComparison.OrdinalIgnoreCase) ||
+            text.Contains("isbcallowed", StringComparison.OrdinalIgnoreCase))
+        {
+            score += 4;
+        }
+
+        return score;
     }
 
     private static int GetSeverityRank(FindingSeverity severity)
@@ -1683,26 +2556,341 @@ public sealed class ReviewRunExecutor(
 
     private static bool CoversFinding(ReviewFinding existing, ReviewFinding candidate)
     {
-        if (!PathsMatch(existing.File, candidate.File))
+        var samePath = PathsMatch(existing.File, candidate.File);
+        var existingKind = ClassifyFinding(existing);
+        var candidateKind = ClassifyFinding(candidate);
+        var sameKnownKind = existingKind != FindingFailureKind.Unknown &&
+                            existingKind == candidateKind;
+
+        if (!samePath)
         {
-            return false;
+            return sameKnownKind &&
+                   AllowsCrossFileCoverage(existingKind) &&
+                   HaveSharedSemanticAnchor(existing, candidate);
         }
 
         if (LineRangesAreClose(existing, candidate))
         {
+            if (sameKnownKind)
+            {
+                return true;
+            }
+
+            if (existingKind != FindingFailureKind.Unknown &&
+                candidateKind != FindingFailureKind.Unknown)
+            {
+                return false;
+            }
+
+            return HaveMeaningfulExactCodeMatch(existing.ExistingCode, candidate.ExistingCode) ||
+                   ComputeTextSimilarity(existing, candidate) >= 0.42d;
+        }
+
+        if (sameKnownKind && HaveSharedSemanticAnchor(existing, candidate))
+        {
             return true;
         }
 
-        var existingText = $"{existing.Title} {existing.Description} {existing.Suggestion}";
+        var existingText = BuildFindingText(existing);
         var candidateTerms = ExtractSignificantTerms($"{candidate.Title} {candidate.Description}");
         if (candidateTerms.Count == 0)
         {
             return false;
         }
 
+        if (existingKind != FindingFailureKind.Unknown &&
+            candidateKind != FindingFailureKind.Unknown &&
+            existingKind != candidateKind)
+        {
+            return false;
+        }
+
         var matches = candidateTerms.Count(term =>
             existingText.Contains(term, StringComparison.OrdinalIgnoreCase));
-        return matches >= Math.Min(3, candidateTerms.Count);
+        return matches >= Math.Min(4, candidateTerms.Count) &&
+               ComputeTextSimilarity(existing, candidate) >= 0.36d;
+    }
+
+    private static bool AllowsCrossFileCoverage(FindingFailureKind kind)
+    {
+        return kind is FindingFailureKind.NonNullableContractReturnsNull or
+            FindingFailureKind.OptionsBindingSection or
+            FindingFailureKind.RestoreBuildFailure;
+    }
+
+    private static FindingFailureKind ClassifyFinding(ReviewFinding finding)
+    {
+        var text = BuildFindingText(finding);
+        if (ContainsAll(text, "nonnull", "null") ||
+            ContainsAll(text, "non-null", "null") ||
+            ContainsAll(text, "ненул", "null") ||
+            ContainsAll(text, "nullability", "null") ||
+            ContainsAll(text, "nullable", "null") ||
+            ContainsAll(text, "nullable", "return null"))
+        {
+            return FindingFailureKind.NonNullableContractReturnsNull;
+        }
+
+        if (ContainsAny(text, "validateonstart", "startup-валидац", "валидации при старт", "без startup") ||
+            ContainsAll(text, "options", "validation"))
+        {
+            return FindingFailureKind.OptionsValidation;
+        }
+
+        if (ContainsAny(text, "getsection", "sectionname", "section name", "секции конфиг", "секция конфига", "options привязаны") ||
+            ContainsAll(text, "options", "section"))
+        {
+            return FindingFailureKind.OptionsBindingSection;
+        }
+
+        if (ContainsAll(text, "join", "duplicate") ||
+            ContainsAll(text, "join", "дубли") ||
+            ContainsAll(text, "join", "размнож"))
+        {
+            return FindingFailureKind.SqlRowMultiplication;
+        }
+
+        if (ContainsAll(text, "groupby", "first") ||
+            ContainsAny(text, "недетерминированный выбор", "недетерминированно"))
+        {
+            return FindingFailureKind.GroupByFirstWithoutOrder;
+        }
+
+        if (ContainsAny(text, "isbasic", "isbcallowed", "бизнес-фильтр", "разрешённые регионы", "разрешенные регионы"))
+        {
+            return FindingFailureKind.SqlBusinessFilter;
+        }
+
+        if (ContainsAny(text, "seedordertable", "seed-данн", "seed-данные", "seed данные"))
+        {
+            return FindingFailureKind.TestMissingSeedMember;
+        }
+
+        if (ContainsAny(text, "pagesize", "page size"))
+        {
+            return FindingFailureKind.UnboundedPageSize;
+        }
+
+        if (ContainsAny(text, "secret", "password", "token", "signing key", "секрет"))
+        {
+            return FindingFailureKind.SecretLikeConfig;
+        }
+
+        if (ContainsAll(text, "executeupdate", "transaction") ||
+            ContainsAll(text, "bulk", "транзакц"))
+        {
+            return FindingFailureKind.NonAtomicBulkUpdate;
+        }
+
+        if (ContainsAll(text, "kafka", "publish") ||
+            ContainsAny(text, "pubsub", "видимости"))
+        {
+            return FindingFailureKind.KafkaCachePublishFiltering;
+        }
+
+        if (ContainsAny(text, "dotnet restore", "dotnet build", "nu110"))
+        {
+            return FindingFailureKind.RestoreBuildFailure;
+        }
+
+        return FindingFailureKind.Unknown;
+    }
+
+    private static bool HaveSharedSemanticAnchor(ReviewFinding left, ReviewFinding right)
+    {
+        if (PathsMatch(left.File, right.File) && LineRangesAreClose(left, right))
+        {
+            return true;
+        }
+
+        var leftAnchors = ExtractSemanticAnchors(left);
+        var rightAnchors = ExtractSemanticAnchors(right);
+        return leftAnchors.Count > 0 &&
+               rightAnchors.Count > 0 &&
+               leftAnchors.Overlaps(rightAnchors);
+    }
+
+    private static HashSet<string> ExtractSemanticAnchors(ReviewFinding finding)
+    {
+        var text = BuildFindingText(finding);
+        return Regex.Matches(text, @"[A-Za-z_][A-Za-z0-9_]{3,}")
+            .Select(match => match.Value)
+            .Where(IsMeaningfulAnchor)
+            .Select(value => value.ToLowerInvariant())
+            .ToHashSet(StringComparer.Ordinal);
+    }
+
+    private static bool IsMeaningfulAnchor(string value)
+    {
+        if (value.Length < 4)
+        {
+            return false;
+        }
+
+        if (GenericAnchorWords.Contains(value))
+        {
+            return false;
+        }
+
+        return value.Any(char.IsUpper) ||
+               value.Any(char.IsDigit) ||
+               value.Contains('_', StringComparison.Ordinal) ||
+               value.StartsWith("is", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static double ComputeTextSimilarity(ReviewFinding left, ReviewFinding right)
+    {
+        var leftTerms = ExtractSignificantTerms(BuildFindingText(left)).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var rightTerms = ExtractSignificantTerms(BuildFindingText(right)).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        if (leftTerms.Count == 0 || rightTerms.Count == 0)
+        {
+            return 0d;
+        }
+
+        var intersection = leftTerms.Intersect(rightTerms, StringComparer.OrdinalIgnoreCase).Count();
+        return intersection == 0
+            ? 0d
+            : (2d * intersection) / (leftTerms.Count + rightTerms.Count);
+    }
+
+    private static bool HaveMeaningfulExactCodeMatch(string left, string right)
+    {
+        var normalizedLeft = NormalizeMatchValue(left);
+        var normalizedRight = NormalizeMatchValue(right);
+        if (normalizedLeft.Length < 12 || normalizedRight.Length < 12)
+        {
+            return false;
+        }
+
+        return normalizedLeft.Equals(normalizedRight, StringComparison.Ordinal) ||
+               normalizedLeft.Contains(normalizedRight, StringComparison.Ordinal) ||
+               normalizedRight.Contains(normalizedLeft, StringComparison.Ordinal);
+    }
+
+    private static string NormalizeMatchValue(string value)
+    {
+        return new string(value.Where(character => !char.IsWhiteSpace(character)).ToArray())
+            .Trim()
+            .ToLowerInvariant();
+    }
+
+    private static string BuildFindingText(ReviewFinding finding)
+    {
+        return $"{finding.File} {finding.LineHint} {finding.Title} {finding.Description} {finding.ExistingCode} {finding.Suggestion}";
+    }
+
+    private IReadOnlyList<ReviewFinding> SuppressContradictedScoutFindings(
+        IReadOnlyList<ReviewFinding> candidates,
+        string diffText,
+        Guid runId)
+    {
+        if (candidates.Count == 0)
+        {
+            return candidates;
+        }
+
+        var supported = new List<ReviewFinding>(candidates.Count);
+        foreach (var candidate in candidates)
+        {
+            if (IsContradictedMissingRegionEnrichmentFinding(candidate, diffText))
+            {
+                logger.LogInformation(
+                    "Suppressed scout finding contradicted by diff evidence for run {RunId}: file={File}, title={Title}",
+                    runId,
+                    candidate.File,
+                    candidate.Title);
+                continue;
+            }
+
+            supported.Add(candidate);
+        }
+
+        return supported;
+    }
+
+    private static bool IsContradictedMissingRegionEnrichmentFinding(ReviewFinding finding, string diffText)
+    {
+        var text = BuildFindingText(finding);
+        if (!ContainsAny(text, "enrichwithregiondata"))
+        {
+            return false;
+        }
+
+        if (!ContainsAny(
+                text,
+                "not added",
+                "does not call",
+                "not call",
+                "не вызван",
+                "не вызывает",
+                "не был добавлен вызов",
+                "не добавлен вызов",
+                "отсутствует вызов"))
+        {
+            return false;
+        }
+
+        if (!ContainsAny(text, "excel") ||
+            !ContainsAny(text, "OrderForExcelFileDbModel", "GetOrderListForExcel"))
+        {
+            return false;
+        }
+
+        return ContainsAny(diffText, "GetOrderListForExcel", "OrderForExcelFileDbModel") &&
+               ContainsAny(
+                   diffText,
+                   "+        orders.EnrichWithRegionData(_regionCacheRepository);",
+                   "+        orders.EnrichWithRegionData(regionCacheRepository);");
+    }
+
+    private static bool ContainsAny(string text, params string[] needles)
+    {
+        return needles.Any(needle => text.Contains(needle, StringComparison.OrdinalIgnoreCase));
+    }
+
+    private static bool ContainsAll(string text, params string[] needles)
+    {
+        return needles.All(needle => text.Contains(needle, StringComparison.OrdinalIgnoreCase));
+    }
+
+    private static readonly HashSet<string> GenericAnchorWords = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "code",
+        "config",
+        "configuration",
+        "contract",
+        "description",
+        "existing",
+        "finding",
+        "getsection",
+        "implementation",
+        "interface",
+        "options",
+        "public",
+        "return",
+        "section",
+        "service",
+        "string",
+        "suggestion",
+        "validate",
+        "validateonstart"
+    };
+
+    private enum FindingFailureKind
+    {
+        Unknown,
+        NonNullableContractReturnsNull,
+        OptionsBindingSection,
+        OptionsValidation,
+        SqlBusinessFilter,
+        SqlRowMultiplication,
+        GroupByFirstWithoutOrder,
+        TestMissingSeedMember,
+        UnboundedPageSize,
+        SecretLikeConfig,
+        NonAtomicBulkUpdate,
+        KafkaCachePublishFiltering,
+        RestoreBuildFailure
     }
 
     private static bool LineRangesAreClose(ReviewFinding existing, ReviewFinding candidate)
@@ -1730,6 +2918,7 @@ public sealed class ReviewRunExecutor(
 
     private async Task<(IReadOnlyList<ReviewFinding> Findings, IReadOnlyList<ReviewOpportunityItem> Opportunities)>
         RunFinalModelNormalizationAsync(
+            ReviewRun run,
             IReadOnlyList<ReviewFinding> findings,
             IReadOnlyList<ReviewOpportunityItem> opportunities,
             CancellationToken cancellationToken)
@@ -1745,7 +2934,7 @@ public sealed class ReviewRunExecutor(
             [],
             cancellationToken);
 
-        var response = await llmCompletionService.CompleteAsync(
+        var response = await CompleteWithProgressHeartbeatAsync(
             selection.Profile,
             new LlmChatRequest
             {
@@ -1755,6 +2944,10 @@ public sealed class ReviewRunExecutor(
                 SystemPrompt = reviewPromptFactory.BuildFinalNormalizationSystemPrompt(),
                 UserPrompt = reviewPromptFactory.BuildFinalNormalizationUserPrompt(findings, opportunities)
             },
+            run,
+            ReviewPipelineStage.FindingsNormalization,
+            76,
+            "Финальная нормализация findings: модель отвечает",
             cancellationToken);
 
         var parsed = chunkReviewResponseParser.ParseChunkResponse(response);
@@ -2048,6 +3241,36 @@ public sealed class ReviewRunExecutor(
         }
     }
 
+    private void LogFullContextToolRequestDecision(
+        ReviewRun run,
+        int iteration,
+        ChunkReviewAgentEnvelope envelope)
+    {
+        logger.LogInformation(
+            "Full-context tool decision for run {RunId}, iteration {Iteration}: NeedMoreContext={NeedMoreContext}, ToolRequestsCount={ToolRequestsCount}",
+            run.Id,
+            iteration,
+            envelope.NeedMoreContext,
+            envelope.ToolRequests.Count);
+
+        for (var index = 0; index < envelope.ToolRequests.Count; index++)
+        {
+            var request = envelope.ToolRequests[index];
+            logger.LogInformation(
+                "Full-context tool request {RequestIndex} for run {RunId}, iteration {Iteration}: Tool={ToolName}, Query={Query}, FilePath={FilePath}, PathScope={PathScope}, StartLine={StartLine}, MaxLines={MaxLines}, Reason={Reason}",
+                index + 1,
+                run.Id,
+                iteration,
+                request.ToolName,
+                string.IsNullOrWhiteSpace(request.Query) ? "<none>" : TrimForPrompt(request.Query, 160),
+                string.IsNullOrWhiteSpace(request.FilePath) ? "<none>" : request.FilePath,
+                string.IsNullOrWhiteSpace(request.PathScope) ? "<none>" : request.PathScope,
+                request.StartLine,
+                request.MaxLines,
+                string.IsNullOrWhiteSpace(request.Reason) ? "<none>" : TrimForPrompt(request.Reason, 220));
+        }
+    }
+
     private void LogPrimaryToolResponses(
         ReviewRun run,
         int chunkIndex,
@@ -2067,6 +3290,37 @@ public sealed class ReviewRunExecutor(
                 index + 1,
                 run.Id,
                 chunkIndex + 1,
+                response.ToolName,
+                response.FilePath,
+                response.Source,
+                response.StartLine,
+                response.EndLine,
+                BuildPreview(response.Content));
+        }
+    }
+
+    private void LogFullContextToolResponses(
+        ReviewRun run,
+        int iteration,
+        IReadOnlyList<ReviewWorkspaceToolResponse> toolResponses,
+        string responseSource)
+    {
+        logger.LogInformation(
+            "Full-context tool responses for run {RunId}, iteration {Iteration}, source {ResponseSource}: ToolResponsesCount={ToolResponsesCount}",
+            run.Id,
+            iteration,
+            responseSource,
+            toolResponses.Count);
+
+        for (var index = 0; index < toolResponses.Count; index++)
+        {
+            var response = toolResponses[index];
+            logger.LogInformation(
+                "Full-context tool response {ResponseIndex} for run {RunId}, iteration {Iteration}, source {ResponseSource}: Tool={ToolName}, FilePath={FilePath}, Source={Source}, Lines={StartLine}-{EndLine}, Preview={Preview}",
+                index + 1,
+                run.Id,
+                iteration,
+                responseSource,
                 response.ToolName,
                 response.FilePath,
                 response.Source,
@@ -2180,6 +3434,203 @@ public sealed class ReviewRunExecutor(
         await reviewProgressStore.PublishAsync(update, cancellationToken);
     }
 
+    private async Task ReusePreviousReviewResultAsync(
+        ReviewRun run,
+        ReviewRun previousRun,
+        CancellationToken cancellationToken)
+    {
+        var reusedComparison = findingsComparisonService.CompareUnchangedDiff(
+            previousRun.Id,
+            previousRun.Findings,
+            previousRun.Findings);
+        var reusedArtifacts = new ReviewArtifacts
+        {
+            DiffText = previousRun.Artifacts.DiffText,
+            PreparedChunks = previousRun.Artifacts.PreparedChunks,
+            ChangedFiles = previousRun.Artifacts.ChangedFiles,
+            ChangeDescription = previousRun.Artifacts.ChangeDescription,
+            ChangeDescriptionStructured = previousRun.Artifacts.ChangeDescriptionStructured,
+            ChangeDiagramMermaid = previousRun.Artifacts.ChangeDiagramMermaid,
+            MarkdownReport = previousRun.Artifacts.MarkdownReport,
+            SummaryComment = previousRun.Artifacts.SummaryComment,
+            ReviewDiscussionMessages = previousRun.Artifacts.ReviewDiscussionMessages,
+            InlineComments = previousRun.Artifacts.InlineComments,
+            ReviewedFiles = previousRun.Artifacts.ReviewedFiles,
+            PrimaryOpportunities = previousRun.Artifacts.PrimaryOpportunities,
+            FindingsComparison = reusedComparison,
+            SemanticCodeContext = previousRun.Artifacts.SemanticCodeContext,
+            ExternalReview = previousRun.Artifacts.ExternalReview
+        };
+
+        run.UpdateArtifacts(reusedArtifacts);
+        run.UpdateFindings(previousRun.Findings);
+        await reviewRunRepository.UpdateAsync(run, cancellationToken);
+        await PersistAndPublishAsync(
+            run,
+            "Новых изменений с прошлого завершённого ревью не найдено. Используем сохранённый результат.",
+            ReviewPipelineStage.FinalSynthesis,
+            95,
+            cancellationToken);
+
+        run.Complete(reusedArtifacts, previousRun.Findings, false);
+        var reusedCompletedUpdate = new ReviewProgressUpdate(
+            run.Id,
+            run.Status,
+            run.CurrentStage,
+            run.ProgressPercent,
+            run.CurrentMessage,
+            DateTimeOffset.UtcNow,
+            true);
+        run.RecordProgress(reusedCompletedUpdate);
+        await reviewRunRepository.UpdateAsync(run, cancellationToken);
+        await TryIndexSemanticArtifactsAsync(run, cancellationToken);
+        await reviewProgressStore.PublishAsync(reusedCompletedUpdate, cancellationToken);
+        reviewProgressStore.Complete(run.Id);
+    }
+
+    private async Task<IncrementalReviewScope> BuildIncrementalReviewScopeAsync(
+        ReviewRun? previousRun,
+        PreprocessedDiff fullPreprocessed,
+        ReviewExecutionRequest request,
+        ReviewRun run,
+        CodeGraph? roslynGraph,
+        string? roslynWorkspaceRoot,
+        ReviewPipelineOptions pipelineOptions,
+        CancellationToken cancellationToken)
+    {
+        if (!pipelineOptions.UseIncrementalReviewMode ||
+            request.ForceRerun ||
+            previousRun is null ||
+            previousRun.Status != ReviewRunStatus.Completed ||
+            string.IsNullOrWhiteSpace(previousRun.Artifacts.DiffText))
+        {
+            return IncrementalReviewScope.Full(fullPreprocessed);
+        }
+
+        var deltaDiff = BuildIncrementalDiffText(
+            previousRun.Artifacts.DiffText,
+            fullPreprocessed.FilteredDiffText,
+            out var stats);
+        if (string.IsNullOrWhiteSpace(deltaDiff))
+        {
+            return IncrementalReviewScope.Full(fullPreprocessed);
+        }
+
+        var deltaPreprocessed = diffPreprocessor.Process(deltaDiff);
+        if (deltaPreprocessed.ChangedFiles.Count == 0)
+        {
+            return IncrementalReviewScope.Full(fullPreprocessed);
+        }
+
+        if (roslynGraph is not null && !string.IsNullOrWhiteSpace(roslynWorkspaceRoot))
+        {
+            deltaPreprocessed = await graphAwareChunker.AugmentWithGraphChunksAsync(
+                deltaPreprocessed,
+                roslynGraph,
+                roslynWorkspaceRoot,
+                pipelineOptions,
+                cancellationToken);
+        }
+
+        logger.LogInformation(
+            "Incremental review mode enabled for run {RunId}: baseline={BaselineRunId}, currentFiles={CurrentFiles}, baselineFiles={BaselineFiles}, deltaFiles={DeltaFiles}, deltaChars={DeltaChars}",
+            run.Id,
+            previousRun.Id,
+            stats.CurrentSections,
+            stats.PreviousSections,
+            stats.DeltaSections,
+            deltaDiff.Length);
+
+        return new IncrementalReviewScope(
+            deltaPreprocessed,
+            true,
+            stats.CurrentSections,
+            stats.PreviousSections,
+            stats.DeltaSections);
+    }
+
+    private static string BuildIncrementalDiffText(
+        string previousDiffText,
+        string currentDiffText,
+        out IncrementalDiffStats stats)
+    {
+        var previousSections = ParseDiffSections(previousDiffText);
+        var currentSections = ParseDiffSections(currentDiffText);
+        stats = new IncrementalDiffStats(
+            currentSections.Count,
+            previousSections.Count,
+            currentSections.Count);
+
+        if (previousSections.Count == 0 || currentSections.Count == 0)
+        {
+            return currentDiffText;
+        }
+
+        var previousByFile = previousSections
+            .GroupBy(section => NormalizePath(section.FilePath))
+            .ToDictionary(
+                group => group.Key,
+                group => group.Select(section => NormalizeDiffText(section.Patch)).ToHashSet(StringComparer.Ordinal),
+                StringComparer.Ordinal);
+
+        var deltaSections = currentSections
+            .Where(section =>
+            {
+                var file = NormalizePath(section.FilePath);
+                return !previousByFile.TryGetValue(file, out var previousPatches) ||
+                       !previousPatches.Contains(NormalizeDiffText(section.Patch));
+            })
+            .ToArray();
+
+        stats = stats with { DeltaSections = deltaSections.Length };
+        return string.Concat(deltaSections.Select(section => EnsureTrailingNewLine(section.Patch)));
+    }
+
+    private static string NormalizeDiffText(string value)
+        => value.Replace("\r\n", "\n", StringComparison.Ordinal).Trim();
+
+    private static string EnsureTrailingNewLine(string value)
+        => value.EndsWith('\n') ? value : value + "\n";
+
+    private static IReadOnlyList<ReviewFinding> FilterIncrementalCandidateFindings(
+        IReadOnlyList<ReviewFinding> candidates,
+        ReviewRun previousRun,
+        PreprocessedDiff reviewPreprocessed)
+    {
+        if (candidates.Count == 0)
+        {
+            return candidates;
+        }
+
+        var deltaFiles = reviewPreprocessed.ChangedFiles
+            .Select(NormalizePath)
+            .ToHashSet(StringComparer.Ordinal);
+
+        return candidates
+            .Where(candidate => deltaFiles.Count == 0 || deltaFiles.Contains(NormalizePath(candidate.File)))
+            .Where(candidate => previousRun.Findings.All(previous => !CoversFinding(previous, candidate)))
+            .ToArray();
+    }
+
+    private static FindingsComparisonSnapshot BuildIncrementalFindingsComparison(
+        ReviewRun previousRun,
+        IReadOnlyList<ReviewFinding> newFindings)
+    {
+        return new FindingsComparisonSnapshot
+        {
+            PreviousRunId = previousRun.Id,
+            PreviousFindingsCount = previousRun.Findings.Count,
+            CurrentFindingsCount = newFindings.Count,
+            NewFindingsCount = newFindings.Count,
+            StillRelevantFindingsCount = previousRun.Findings.Count,
+            ResolvedFindingsCount = 0,
+            IsDiffUnchanged = false,
+            NewFindings = newFindings,
+            StillRelevantFindings = previousRun.Findings,
+            ResolvedFindings = []
+        };
+    }
+
     private static bool HasNoChangesSincePreviousReview(ReviewRun previousRun, PreprocessedDiff preprocessed)
     {
         if (previousRun.Status != ReviewRunStatus.Completed)
@@ -2199,6 +3650,22 @@ public sealed class ReviewRunExecutor(
 
         return previousRun.Artifacts.ChangedFiles.SequenceEqual(preprocessed.ChangedFiles, StringComparer.Ordinal);
     }
+
+    private sealed record IncrementalReviewScope(
+        PreprocessedDiff ReviewPreprocessed,
+        bool IsIncremental,
+        int CurrentSections,
+        int PreviousSections,
+        int DeltaSections)
+    {
+        public static IncrementalReviewScope Full(PreprocessedDiff preprocessed)
+            => new(preprocessed, false, preprocessed.ChangedFiles.Count, 0, preprocessed.ChangedFiles.Count);
+    }
+
+    private sealed record IncrementalDiffStats(
+        int CurrentSections,
+        int PreviousSections,
+        int DeltaSections);
 
     private async Task<IReadOnlyList<ReviewedFileArtifact>> BuildReviewedFilesAsync(
         DiffAcquisitionResult diffResult,

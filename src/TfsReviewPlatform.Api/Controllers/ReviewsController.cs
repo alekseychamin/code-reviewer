@@ -120,6 +120,15 @@ public sealed class ReviewsController(
         }
     }
 
+    [HttpGet("history/services")]
+    [ProducesResponseType<ReviewHistoryDto>(StatusCodes.Status200OK)]
+    public async Task<ActionResult<ReviewHistoryDto>> SearchServiceHistory(
+        [FromQuery] string? query,
+        CancellationToken cancellationToken)
+    {
+        return Ok(await reviewOrchestrator.SearchServiceReviewHistoryAsync(query ?? string.Empty, cancellationToken));
+    }
+
     [HttpGet("history/branch-comparisons")]
     [ProducesResponseType<ReviewHistoryDto>(StatusCodes.Status200OK)]
     public async Task<ActionResult<ReviewHistoryDto>> GetBranchHistory(

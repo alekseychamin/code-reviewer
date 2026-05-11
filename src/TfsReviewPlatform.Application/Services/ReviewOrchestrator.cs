@@ -170,6 +170,24 @@ public sealed class ReviewOrchestrator(
         return runs.ToHistoryDto(baselineRunId);
     }
 
+    public async Task<ReviewHistoryDto> SearchServiceReviewHistoryAsync(string query, CancellationToken cancellationToken)
+    {
+        var normalizedQuery = query.Trim();
+        if (string.IsNullOrWhiteSpace(normalizedQuery))
+        {
+            return new ReviewHistoryDto();
+        }
+
+        var runs = await reviewRunRepository.SearchByServiceAsync(normalizedQuery, 30, cancellationToken);
+        var baselineRunId = runs
+            .Where(run => run.Status == ReviewRunStatus.Completed)
+            .OrderByDescending(run => run.CreatedAt)
+            .Select(run => (Guid?)run.Id)
+            .FirstOrDefault();
+
+        return runs.ToHistoryDto(baselineRunId);
+    }
+
     public async Task DeletePullRequestHistoryAsync(string pullRequestUrl, CancellationToken cancellationToken)
     {
         if (string.IsNullOrWhiteSpace(pullRequestUrl))

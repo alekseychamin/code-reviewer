@@ -3,6 +3,7 @@ using Microsoft.Extensions.Configuration;
 using System.Net;
 using TfsReviewPlatform.Application.Abstractions;
 using TfsReviewPlatform.Integrations.AzureDevOps;
+using TfsReviewPlatform.Integrations.ExternalReview;
 using TfsReviewPlatform.Integrations.Git;
 using TfsReviewPlatform.Integrations.GitHub;
 using TfsReviewPlatform.Integrations.GitLab;
@@ -38,6 +39,12 @@ public static class IntegrationServiceCollectionExtensions
             client.DefaultRequestHeaders.UserAgent.ParseAdd("tfs-review-platform");
             client.DefaultRequestHeaders.Accept.ParseAdd("application/json");
         });
+        services.AddHttpClient(HttpClientNames.PrAgent, client =>
+        {
+            client.Timeout = TimeSpan.FromMinutes(10);
+            client.DefaultRequestHeaders.UserAgent.ParseAdd("tfs-review-platform");
+            client.DefaultRequestHeaders.Accept.ParseAdd("application/json");
+        });
         services
             .AddHttpClient(HttpClientNames.OpenAiCompatibleLlm, client =>
             {
@@ -65,6 +72,7 @@ public static class IntegrationServiceCollectionExtensions
         services.AddSingleton<IBranchRepositoryLookupService, GitBranchRepositoryLookupService>();
         services.AddSingleton<IRepositoryFileContentService, GitRepositoryFileContentService>();
         services.AddSingleton<IReviewWorkspaceToolExecutor, GitReviewWorkspaceToolExecutor>();
+        services.AddSingleton<IExternalReviewEngine, PrAgentExternalReviewEngine>();
         services.AddSingleton<IBranchComparisonDiffService, BranchComparisonDiffService>();
         services.AddSingleton<IPullRequestDiffProvider, AzureDevOpsPullRequestDiffProvider>();
         services.AddSingleton<IPullRequestDiffProvider, GitHubPullRequestDiffProvider>();

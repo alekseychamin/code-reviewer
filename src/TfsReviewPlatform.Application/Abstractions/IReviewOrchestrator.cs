@@ -17,6 +17,8 @@ public interface IReviewOrchestrator
 
     Task<ReviewHistoryDto> GetPullRequestHistoryAsync(string pullRequestUrl, CancellationToken cancellationToken);
 
+    Task<ReviewHistoryDto> SearchServiceReviewHistoryAsync(string query, CancellationToken cancellationToken);
+
     Task DeletePullRequestHistoryAsync(string pullRequestUrl, CancellationToken cancellationToken);
 
     Task DeleteReviewRunAsync(Guid runId, CancellationToken cancellationToken);

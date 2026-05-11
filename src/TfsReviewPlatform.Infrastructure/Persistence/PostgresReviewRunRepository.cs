@@ -81,6 +81,51 @@ public sealed class PostgresReviewRunRepository(string connectionString) : IRevi
         return results;
     }
 
+    public async Task<IReadOnlyList<ReviewRun>> SearchByServiceAsync(
+        string query,
+        int limit,
+        CancellationToken cancellationToken)
+    {
+        await EnsureInitializedAsync(cancellationToken);
+
+        var normalizedQuery = query.Trim();
+        if (string.IsNullOrWhiteSpace(normalizedQuery))
+        {
+            return [];
+        }
+
+        await using var connection = new NpgsqlConnection(connectionString);
+        await connection.OpenAsync(cancellationToken);
+
+        await using var command = connection.CreateCommand();
+        command.CommandText = """
+            select snapshot
+            from review_runs
+            where service_name ilike @pattern escape '\'
+               or repository_name ilike @pattern escape '\'
+               or title ilike @pattern escape '\'
+               or pull_request_url ilike @pattern escape '\'
+               or source_branch ilike @pattern escape '\'
+               or target_branch ilike @pattern escape '\'
+            order by created_at desc
+            limit @limit;
+            """;
+        command.Parameters.AddWithValue("pattern", BuildLikePattern(normalizedQuery));
+        command.Parameters.AddWithValue("limit", limit);
+
+        var results = new List<ReviewRun>();
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            if (!reader.IsDBNull(0))
+            {
+                results.Add(DeserializeRun(reader.GetString(0)));
+            }
+        }
+
+        return results;
+    }
+
     public async Task DeleteForTargetAsync(
         ReviewTargetDescriptor target,
         CancellationToken cancellationToken)
@@ -347,6 +392,19 @@ public sealed class PostgresReviewRunRepository(string connectionString) : IRevi
     private static string NormalizeTargetPart(string? value)
     {
         return (value ?? string.Empty).Trim();
+    }
+
+    private static string BuildLikePattern(string value)
+    {
+        return $"%{EscapeLike(value)}%";
+    }
+
+    private static string EscapeLike(string value)
+    {
+        return value
+            .Replace("\\", "\\\\")
+            .Replace("%", "\\%")
+            .Replace("_", "\\_");
     }
 
     private sealed class ReviewRunSnapshot

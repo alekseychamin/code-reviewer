@@ -30,5 +30,7 @@ public sealed class ReviewArtifacts
 
     public SemanticCodeContextArtifact SemanticCodeContext { get; init; } = SemanticCodeContextArtifact.Empty;
 
+    public ExternalReviewArtifact ExternalReview { get; init; } = ExternalReviewArtifact.Empty;
+
     public IReadOnlyList<ReviewProgressUpdate> ProgressUpdates { get; init; } = [];
 }

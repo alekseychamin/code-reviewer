@@ -67,10 +67,7 @@ public sealed class GitReviewWorkspaceToolExecutor(
         foreach (var request in normalizedRequests)
         {
             var response = await ExecuteRequestAsync(tools, request, cancellationToken);
-            if (response is not null)
-            {
-                responses.Add(response);
-            }
+            responses.Add(response ?? BuildNoResultResponse(request));
         }
 
         return responses;
@@ -107,6 +104,31 @@ public sealed class GitReviewWorkspaceToolExecutor(
                 cancellationToken),
             _ => null
         };
+    }
+
+    private static ReviewWorkspaceToolResponse BuildNoResultResponse(ReviewWorkspaceToolRequest request)
+    {
+        var details = new List<string>
+        {
+            "Workspace tool completed but returned no repository matches."
+        };
+        if (!string.IsNullOrWhiteSpace(request.Query))
+        {
+            details.Add($"query={request.Query}");
+        }
+        if (!string.IsNullOrWhiteSpace(request.FilePath))
+        {
+            details.Add($"file_path={request.FilePath}");
+        }
+        if (!string.IsNullOrWhiteSpace(request.PathScope))
+        {
+            details.Add($"path_scope={request.PathScope}");
+        }
+
+        return new ReviewWorkspaceToolResponse(
+            request.ToolName,
+            "workspace-no-result",
+            string.Join(" ", details));
     }
 
     private async Task<IReadOnlyList<string>> ListBranchFilesAsync(

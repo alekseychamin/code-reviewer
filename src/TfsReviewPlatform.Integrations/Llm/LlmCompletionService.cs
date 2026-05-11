@@ -17,6 +17,7 @@ public sealed class LlmCompletionService(
     ILogger<LlmCompletionService> logger) : ILlmCompletionService
 {
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
+    private static readonly TimeSpan ResponseBodyTimeout = TimeSpan.FromMinutes(10);
     private const int MaxAttempts = 3;
 
     public async Task<string> CompleteAsync(
@@ -66,8 +67,8 @@ public sealed class LlmCompletionService(
         message.Headers.ConnectionClose = true;
 
         using var response = await SendWithRetriesAsync(client, message, profile, request, cancellationToken);
-        using var document = JsonDocument.Parse(
-            await response.Content.ReadAsStringAsync(cancellationToken));
+        var responseBody = await ReadResponseBodyAsync(response, profile, request, cancellationToken);
+        using var document = JsonDocument.Parse(responseBody);
         return document.RootElement.GetProperty("choices")[0].GetProperty("message").GetProperty("content").GetString()
                ?? string.Empty;
     }
@@ -104,8 +105,8 @@ public sealed class LlmCompletionService(
             try
             {
                 using var response = await SendWithRetriesAsync(client, message, profile, request, cancellationToken);
-                using var document = JsonDocument.Parse(
-                    await response.Content.ReadAsStringAsync(cancellationToken));
+                var responseBody = await ReadResponseBodyAsync(response, profile, request, cancellationToken);
+                using var document = JsonDocument.Parse(responseBody);
                 return document.RootElement.GetProperty("message").GetProperty("content").GetString() ?? string.Empty;
             }
             catch (HttpRequestException exception) when (ShouldTryAlternateOllamaEndpoint(exception, baseUrl, profile.BaseUrl))
@@ -154,7 +155,7 @@ public sealed class LlmCompletionService(
 
                 if (!IsTransientStatusCode(response.StatusCode) || attempt == MaxAttempts)
                 {
-                    var responseBody = await response.Content.ReadAsStringAsync(cancellationToken);
+                    var responseBody = await ReadResponseBodyAsync(response, profile, request, cancellationToken);
                     throw new HttpRequestException(
                         $"LLM request failed with status code {(int)response.StatusCode} ({response.StatusCode}) for provider '{profile.Name}'. Response: {TrimForLog(responseBody)}");
                 }
@@ -195,6 +196,26 @@ public sealed class LlmCompletionService(
 
         throw new HttpRequestException(
             $"LLM request failed after {MaxAttempts} attempts for provider '{profile.Name}'.");
+    }
+
+    private static async Task<string> ReadResponseBodyAsync(
+        HttpResponseMessage response,
+        ProviderProfile profile,
+        LlmChatRequest request,
+        CancellationToken cancellationToken)
+    {
+        using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        timeoutCts.CancelAfter(ResponseBodyTimeout);
+
+        try
+        {
+            return await response.Content.ReadAsStringAsync(timeoutCts.Token);
+        }
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+        {
+            throw new TimeoutException(
+                $"Timed out reading LLM response body after {ResponseBodyTimeout.TotalMinutes:0.#} minutes for provider '{profile.Name}' and model '{request.Model ?? profile.DefaultModel}'.");
+        }
     }
 
     private static async Task<HttpRequestMessage> CloneRequestAsync(

@@ -14,6 +14,7 @@ import {
   fetchProviderProfiles,
   getBranchReviewHistory,
   getPullRequestReviewHistory,
+  getServiceReviewHistory,
   getReviewRun,
   publishInlineComment,
   publishReport,
@@ -107,6 +108,11 @@ export default function App() {
   const [branchHistoryLoading, setBranchHistoryLoading] = useState(false);
   const [branchHistoryError, setBranchHistoryError] = useState<string | null>(null);
   const [branchHistoryDeleting, setBranchHistoryDeleting] = useState(false);
+  const [serviceHistoryQuery, setServiceHistoryQuery] = useState('');
+  const [serviceHistory, setServiceHistory] = useState<ReviewHistory | null>(null);
+  const [serviceHistoryLoading, setServiceHistoryLoading] = useState(false);
+  const [serviceHistoryError, setServiceHistoryError] = useState<string | null>(null);
+  const [serviceHistorySelectedRunId, setServiceHistorySelectedRunId] = useState<string | undefined>();
   const [selectedBaselineRunId, setSelectedBaselineRunId] = useState<string | undefined>();
   const [branchSelection, setBranchSelection] = useState<BranchHistorySelection>({
     repositoryName: '',
@@ -116,7 +122,10 @@ export default function App() {
   const [reviewMode, setReviewMode] = useState<ReviewMode>('pullRequest');
   const historyRequestIdRef = useRef(0);
   const branchHistoryRequestIdRef = useRef(0);
-  const displayedRun = shouldHideRun(currentRun, reviewMode, pullRequestUrl, branchSelection) ? null : currentRun;
+  const serviceHistoryRequestIdRef = useRef(0);
+  const displayedRun = currentRun?.id === serviceHistorySelectedRunId
+    ? currentRun
+    : shouldHideRun(currentRun, reviewMode, pullRequestUrl, branchSelection) ? null : currentRun;
   const progressRun = shouldHideRun(activeRun, reviewMode, pullRequestUrl, branchSelection) ? null : activeRun;
   const liveProgressRun = progressRun?.status === 'Running' || progressRun?.status === 'Pending'
     ? progressRun
@@ -138,6 +147,7 @@ export default function App() {
         }
 
         setSelectedBaselineRunId(undefined);
+        setServiceHistorySelectedRunId(undefined);
         return { repositoryName, sourceBranch, targetBranch };
       });
     },
@@ -165,6 +175,7 @@ export default function App() {
         setPullRequestHistoryError(reason instanceof Error ? reason.message : String(reason));
       }
 
+      await refreshServiceHistory();
       return;
     }
 
@@ -176,6 +187,22 @@ export default function App() {
       } catch (reason) {
         setBranchHistoryError(reason instanceof Error ? reason.message : String(reason));
       }
+    }
+
+    await refreshServiceHistory();
+  }
+
+  async function refreshServiceHistory(query = serviceHistoryQuery.trim()): Promise<void> {
+    if (!query) {
+      return;
+    }
+
+    try {
+      const history = await getServiceReviewHistory(query);
+      setServiceHistory(history);
+      setServiceHistoryError(null);
+    } catch (reason) {
+      setServiceHistoryError(reason instanceof Error ? reason.message : String(reason));
     }
   }
 
@@ -197,7 +224,8 @@ export default function App() {
     const normalizedUrl = pullRequestUrl.trim();
     if (!normalizedUrl) {
       historyRequestIdRef.current += 1;
-        setSelectedBaselineRunId(undefined);
+      setSelectedBaselineRunId(undefined);
+      setServiceHistorySelectedRunId(undefined);
       setPullRequestHistory(null);
       setPullRequestHistoryError(null);
       setPullRequestHistoryLoading(false);
@@ -223,6 +251,7 @@ export default function App() {
 
     setPullRequestHistory(null);
     setSelectedBaselineRunId(undefined);
+    setServiceHistorySelectedRunId(undefined);
     setPullRequestHistoryError(null);
     setPullRequestHistoryLoading(false);
     setCurrentRun((existing) => {
@@ -306,6 +335,7 @@ export default function App() {
     if (!normalizedRepositoryName || !normalizedSourceBranch || !normalizedTargetBranch) {
       branchHistoryRequestIdRef.current += 1;
       setSelectedBaselineRunId(undefined);
+      setServiceHistorySelectedRunId(undefined);
       setBranchHistory(null);
       setBranchHistoryError(null);
       setBranchHistoryLoading(false);
@@ -331,6 +361,7 @@ export default function App() {
 
     setBranchHistory(null);
     setSelectedBaselineRunId(undefined);
+    setServiceHistorySelectedRunId(undefined);
     setBranchHistoryError(null);
     setBranchHistoryLoading(false);
     setCurrentRun((existing) => {
@@ -425,6 +456,57 @@ export default function App() {
   }, [reviewMode, branchSelection, pullRequestUrl]);
 
   useEffect(() => {
+    const normalizedQuery = serviceHistoryQuery.trim();
+    serviceHistoryRequestIdRef.current += 1;
+    const requestId = serviceHistoryRequestIdRef.current;
+
+    if (!normalizedQuery) {
+      setServiceHistory(null);
+      setServiceHistoryError(null);
+      setServiceHistoryLoading(false);
+      setServiceHistorySelectedRunId(undefined);
+      return;
+    }
+
+    setServiceHistoryError(null);
+    setServiceHistoryLoading(false);
+    setServiceHistory(null);
+
+    const timeoutId = window.setTimeout(() => {
+      if (serviceHistoryRequestIdRef.current !== requestId) {
+        return;
+      }
+
+      setServiceHistoryLoading(true);
+      void getServiceReviewHistory(normalizedQuery)
+        .then((history) => {
+          if (serviceHistoryRequestIdRef.current !== requestId) {
+            return;
+          }
+
+          setServiceHistory(history);
+        })
+        .catch((reason) => {
+          if (serviceHistoryRequestIdRef.current !== requestId) {
+            return;
+          }
+
+          setServiceHistory(null);
+          setServiceHistoryError(reason instanceof Error ? reason.message : String(reason));
+        })
+        .finally(() => {
+          if (serviceHistoryRequestIdRef.current === requestId) {
+            setServiceHistoryLoading(false);
+          }
+        });
+    }, 300);
+
+    return () => {
+      window.clearTimeout(timeoutId);
+    };
+  }, [serviceHistoryQuery]);
+
+  useEffect(() => {
     if (!activeRun) {
       return;
     }
@@ -516,6 +598,7 @@ export default function App() {
   async function handleStartPullRequestReview(payload: PullRequestReviewPayload): Promise<void> {
     setError(null);
     setEvents([]);
+    setServiceHistorySelectedRunId(undefined);
     const run = await startPullRequestReview({
       ...payload,
       baselineRunId: payload.baselineRunId || selectedBaselineRunId
@@ -528,6 +611,7 @@ export default function App() {
   async function handleStartBranchReview(payload: BranchReviewPayload): Promise<void> {
     setError(null);
     setEvents([]);
+    setServiceHistorySelectedRunId(undefined);
     const run = await startBranchReview({
       ...payload,
       baselineRunId: payload.baselineRunId || selectedBaselineRunId
@@ -539,8 +623,20 @@ export default function App() {
 
   async function handleSelectHistoryRun(runId: string): Promise<void> {
     setError(null);
+    setServiceHistorySelectedRunId(undefined);
     const run = await getReviewRun(runId);
     setCurrentRun(run);
+    if (run.status === 'Running' || run.status === 'Pending') {
+      setActiveRun(run);
+      setEvents((existing) => (activeRun?.id === run.id ? existing : []));
+    }
+  }
+
+  async function handleSelectServiceHistoryRun(runId: string): Promise<void> {
+    setError(null);
+    const run = await getReviewRun(runId);
+    setCurrentRun(run);
+    setServiceHistorySelectedRunId(run.id);
     if (run.status === 'Running' || run.status === 'Pending') {
       setActiveRun(run);
       setEvents((existing) => (activeRun?.id === run.id ? existing : []));
@@ -567,7 +663,16 @@ export default function App() {
             }
           : existing
       );
+      setServiceHistory((existing) =>
+        existing
+          ? {
+              baselineRunId: existing.baselineRunId === runId ? undefined : existing.baselineRunId,
+              items: existing.items.filter((item) => item.id !== runId)
+            }
+          : existing
+      );
       setSelectedBaselineRunId((existing) => (existing === runId ? undefined : existing));
+      setServiceHistorySelectedRunId((existing) => (existing === runId ? undefined : existing));
       setCurrentRun((existing) => (existing?.id === runId ? null : existing));
       setActiveRun((existing) => (existing?.id === runId ? null : existing));
       setEvents((existing) => (activeRun?.id === runId ? [] : existing));
@@ -663,6 +768,21 @@ export default function App() {
     try {
       await deletePullRequestReviewHistory(normalizedUrl);
       setPullRequestHistory({ baselineRunId: undefined, items: [] });
+      setServiceHistory((existing) =>
+        existing
+          ? {
+              baselineRunId: existing.items.some((item) =>
+                item.id === existing.baselineRunId &&
+                item.targetKind === 'PullRequest' &&
+                item.pullRequestUrl?.trim() === normalizedUrl)
+                ? undefined
+                : existing.baselineRunId,
+              items: existing.items.filter((item) =>
+                item.targetKind !== 'PullRequest' ||
+                item.pullRequestUrl?.trim() !== normalizedUrl)
+            }
+          : existing
+      );
       setSelectedBaselineRunId(undefined);
       setPullRequestHistoryError(null);
       setEvents([]);
@@ -696,6 +816,7 @@ export default function App() {
   function handlePullRequestUrlChange(url: string): void {
     setPullRequestUrl(url);
     setSelectedBaselineRunId(undefined);
+    setServiceHistorySelectedRunId(undefined);
   }
 
   function handleSelectBaselineRun(runId: string): void {
@@ -705,6 +826,7 @@ export default function App() {
   function handleModeChange(mode: ReviewMode): void {
     setReviewMode(mode);
     setSelectedBaselineRunId(undefined);
+    setServiceHistorySelectedRunId(undefined);
   }
 
   async function handleDeleteBranchHistory(
@@ -724,6 +846,25 @@ export default function App() {
     try {
       await deleteBranchReviewHistory(normalizedRepositoryName, normalizedSourceBranch, normalizedTargetBranch);
       setBranchHistory({ baselineRunId: undefined, items: [] });
+      setServiceHistory((existing) =>
+        existing
+          ? {
+              baselineRunId: existing.items.some((item) =>
+                item.id === existing.baselineRunId &&
+                item.targetKind === 'BranchComparison' &&
+                item.repositoryName?.trim() === normalizedRepositoryName &&
+                item.sourceBranch?.trim() === normalizedSourceBranch &&
+                item.targetBranch?.trim() === normalizedTargetBranch)
+                ? undefined
+                : existing.baselineRunId,
+              items: existing.items.filter((item) =>
+                item.targetKind !== 'BranchComparison' ||
+                item.repositoryName?.trim() !== normalizedRepositoryName ||
+                item.sourceBranch?.trim() !== normalizedSourceBranch ||
+                item.targetBranch?.trim() !== normalizedTargetBranch)
+            }
+          : existing
+      );
       setSelectedBaselineRunId(undefined);
       setBranchHistoryError(null);
       setEvents([]);
@@ -788,10 +929,16 @@ export default function App() {
           pullRequestHistoryError={pullRequestHistoryError}
           pullRequestHistoryLoading={pullRequestHistoryLoading}
           profiles={profiles}
+          serviceHistory={serviceHistory}
+          serviceHistoryError={serviceHistoryError}
+          serviceHistoryLoading={serviceHistoryLoading}
+          serviceHistoryQuery={serviceHistoryQuery}
           onDeletePullRequestHistory={handleDeletePullRequestHistory}
           onSelectHistoryRun={handleSelectHistoryRun}
+          onSelectServiceHistoryRun={handleSelectServiceHistoryRun}
           onModeChange={handleModeChange}
           onPullRequestUrlChange={handlePullRequestUrlChange}
+          onServiceHistoryQueryChange={setServiceHistoryQuery}
           onSelectBaselineRun={handleSelectBaselineRun}
           onStartPullRequestReview={handleStartPullRequestReview}
           onStartBranchReview={handleStartBranchReview}

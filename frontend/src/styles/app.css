@@ -318,6 +318,16 @@ select {
   gap: 6px;
 }
 
+.service-history-panel .history-list {
+  max-height: 360px;
+  overflow-y: auto;
+  padding-right: 2px;
+}
+
+.service-history-search {
+  margin: 0;
+}
+
 .history-item {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
@@ -529,6 +539,7 @@ button.primary {
   border-radius: 20px;
   background: rgba(255, 255, 255, 0.78);
   border: 1px solid rgba(29, 36, 51, 0.06);
+  min-width: 0;
 }
 
 .semantic-context {
@@ -536,19 +547,92 @@ button.primary {
   gap: 10px;
 }
 
+.external-review-status {
+  display: inline-flex;
+  align-items: center;
+  min-height: 28px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  background: rgba(100, 116, 139, 0.12);
+  color: var(--muted);
+  font-size: 0.86rem;
+  font-weight: 700;
+}
+
+.external-review-status.ready {
+  background: rgba(15, 123, 108, 0.12);
+  color: var(--brand-strong);
+}
+
+.external-review-status.failed,
+.external-review-status.timed_out {
+  background: rgba(180, 35, 24, 0.12);
+  color: var(--critical);
+}
+
+.external-review-card {
+  gap: 12px;
+}
+
+.external-review-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 14px;
+  color: var(--muted);
+  font-size: 0.92rem;
+}
+
+.external-review-command-list {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+}
+
+.external-review-command {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+  padding-top: 10px;
+  border-top: 1px solid rgba(29, 36, 51, 0.08);
+}
+
+.external-review-command-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.external-review-command-header h4 {
+  margin: 0;
+  font-size: 0.98rem;
+}
+
+.command-ok {
+  color: var(--brand-strong);
+  font-weight: 700;
+}
+
+.command-failed {
+  color: var(--critical);
+  font-weight: 700;
+}
+
 .semantic-context-grid {
   display: grid;
   gap: 8px;
-  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
 }
 
 .semantic-context-metric {
   display: grid;
   gap: 4px;
   padding: 10px;
-  border-radius: 12px;
+  border-radius: 8px;
   background: rgba(29, 36, 51, 0.04);
   border: 1px solid rgba(29, 36, 51, 0.06);
+  min-width: 0;
 }
 
 .semantic-context-metric span,
@@ -559,10 +643,11 @@ button.primary {
 
 .semantic-context-metric strong {
   color: var(--ink);
+  overflow-wrap: anywhere;
 }
 
 .semantic-context-flags,
-.semantic-context-snippets {
+.semantic-context-diagnostics {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
@@ -570,33 +655,84 @@ button.primary {
 
 .semantic-context-message {
   margin: 0;
+  line-height: 1.45;
 }
 
-.semantic-snippet {
+.semantic-context-snippets {
   display: grid;
-  gap: 6px;
-  min-width: min(100%, 320px);
-  flex: 1 1 320px;
-  padding: 10px;
-  border-radius: 12px;
-  background: rgba(255, 255, 255, 0.72);
-  border: 1px solid rgba(29, 36, 51, 0.06);
+  gap: 8px;
+  min-width: 0;
+  max-height: 460px;
+  overflow: auto;
+  padding-right: 4px;
 }
 
-.semantic-snippet-header {
+.semantic-context-snippets-header {
   display: flex;
+  align-items: center;
   justify-content: space-between;
   gap: 8px;
-  align-items: flex-start;
+  color: var(--muted);
+  font-size: 0.88rem;
 }
 
-.semantic-snippet-header strong {
+.semantic-context-snippets-header strong {
+  color: var(--ink);
+}
+
+.semantic-snippet-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 6px 12px;
+  align-items: start;
+  padding: 10px 0;
+  border-top: 1px solid rgba(29, 36, 51, 0.08);
   min-width: 0;
+}
+
+.semantic-snippet-main {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.semantic-snippet-main strong,
+.semantic-snippet-main span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.semantic-snippet-main span,
+.semantic-snippet-meta,
+.semantic-snippet-row p {
+  color: var(--muted);
+}
+
+.semantic-snippet-meta {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 6px;
+  font-size: 0.78rem;
+  min-width: 0;
+}
+
+.semantic-snippet-row p {
+  grid-column: 1 / -1;
+  margin: 0;
   overflow-wrap: anywhere;
 }
 
-.semantic-snippet p {
-  margin: 0;
+@media (max-width: 760px) {
+  .semantic-snippet-row {
+    grid-template-columns: 1fr;
+  }
+
+  .semantic-snippet-meta {
+    justify-content: flex-start;
+  }
 }
 
 .span-2 {
@@ -1447,6 +1583,11 @@ button.primary {
 .secondary-chip.source-followup {
   background: rgba(20, 115, 230, 0.12);
   color: #1d5bd1;
+}
+
+.secondary-chip.source-external {
+  background: rgba(22, 133, 86, 0.12);
+  color: #0f7a51;
 }
 
 .thread-snippet {

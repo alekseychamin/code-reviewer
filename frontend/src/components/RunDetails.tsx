@@ -4,6 +4,7 @@ import { MermaidDiagram } from './MermaidDiagram';
 import { ReviewedFilesWorkspace, ThreadMessageBody } from './ReviewedFilesWorkspace';
 import type {
   ChangeDescriptionStructuredContent,
+  ExternalReview,
   InlineDiscussionOpportunityItem,
   ReviewOpportunityItem,
   ReviewRun
@@ -40,6 +41,7 @@ export function RunDetails({
   const [isDiscussionCollapsed, setIsDiscussionCollapsed] = useState(true);
   const [isPrimaryOpportunitiesCollapsed, setIsPrimaryOpportunitiesCollapsed] = useState(true);
   const [isOpportunitiesCollapsed, setIsOpportunitiesCollapsed] = useState(true);
+  const [isExternalReviewCollapsed, setIsExternalReviewCollapsed] = useState(true);
   const [isReportCollapsed, setIsReportCollapsed] = useState(true);
   const [discussionDraft, setDiscussionDraft] = useState('');
   const [discussionBusy, setDiscussionBusy] = useState(false);
@@ -49,6 +51,11 @@ export function RunDetails({
   const publishTargetLabel = getPublishTargetLabel(run?.pullRequestUrl);
   const primaryOpportunities = run ? collectPrimaryOpportunities(run) : [];
   const followUpOpportunities = run ? collectFollowUpOpportunities(run) : [];
+  const hasExternalReview = Boolean(
+    run?.externalReview?.enabled ||
+    run?.externalReview?.attempted ||
+    run?.externalReview?.commands?.length
+  );
   const isReviewRunning = run?.status === 'Running' || run?.status === 'Pending';
   const canRegenerateArtifacts = Boolean(run?.hasDiffArtifact) && !isReviewRunning;
 
@@ -59,6 +66,7 @@ export function RunDetails({
     setIsDiscussionCollapsed(true);
     setIsPrimaryOpportunitiesCollapsed(true);
     setIsOpportunitiesCollapsed(true);
+    setIsExternalReviewCollapsed(true);
     setIsReportCollapsed(true);
     setDiscussionDraft('');
     setDiscussionBusy(false);
@@ -265,6 +273,32 @@ export function RunDetails({
         </article>
       </div>
 
+      {hasExternalReview && run.externalReview ? (
+        <div className="subsection">
+          <div className="subsection-header">
+            <div>
+              <h3>{run.externalReview.engineName || 'Внешний ревьюер'}</h3>
+              <p>Быстрый sidecar-обзор, который не смешивается автоматически с основными findings.</p>
+            </div>
+            <div className="result-toolbar">
+              <span className={`external-review-status ${run.externalReview.status || 'not_attempted'}`}>
+                {formatExternalReviewStatus(run.externalReview)}
+              </span>
+              <button
+                aria-expanded={!isExternalReviewCollapsed}
+                className="secondary-button"
+                disabled={!run.externalReview.commands.length}
+                onClick={() => setIsExternalReviewCollapsed((value) => !value)}
+                type="button"
+              >
+                {isExternalReviewCollapsed ? 'Развернуть PR-Agent' : 'Свернуть PR-Agent'}
+              </button>
+            </div>
+          </div>
+          {!isExternalReviewCollapsed ? <ExternalReviewBlock review={run.externalReview} /> : null}
+        </div>
+      ) : null}
+
       <div className="subsection">
         <h3>Замечания по файлам</h3>
         <ReviewedFilesWorkspace
@@ -421,6 +455,67 @@ export function RunDetails({
   );
 }
 
+function ExternalReviewBlock({ review }: { review: ExternalReview }) {
+  const completedAt = review.completedAt ? formatTimestamp(review.completedAt) : '';
+
+  return (
+    <article className="result-card external-review-card">
+      <div className="external-review-summary">
+        <span>{review.message || formatExternalReviewStatus(review)}</span>
+        {review.elapsedMilliseconds > 0 ? <span>{formatDuration(review.elapsedMilliseconds)}</span> : null}
+        {completedAt ? <span>{completedAt}</span> : null}
+      </div>
+
+      {review.commands.length ? (
+        <div className="external-review-command-list">
+          {review.commands.map((command) => (
+            <section className="external-review-command" key={command.command}>
+              <div className="external-review-command-header">
+                <h4>/{command.command}</h4>
+                <span className={command.succeeded ? 'command-ok' : 'command-failed'}>
+                  {command.succeeded ? 'готов' : 'ошибка'}
+                  {command.elapsedMilliseconds > 0 ? ` · ${formatDuration(command.elapsedMilliseconds)}` : ''}
+                </span>
+              </div>
+              {command.errorMessage ? <div className="thread-error">{command.errorMessage}</div> : null}
+              <MarkdownBlock
+                content={command.artifact}
+                emptyText="PR-Agent не вернул markdown для этой команды."
+              />
+            </section>
+          ))}
+        </div>
+      ) : (
+        <div className="empty-state compact">PR-Agent результат пока недоступен.</div>
+      )}
+    </article>
+  );
+}
+
+function formatExternalReviewStatus(review: ExternalReview): string {
+  if (!review.enabled) {
+    return 'выключен';
+  }
+
+  if (review.timedOut || review.status === 'timed_out') {
+    return 'timeout';
+  }
+
+  if (review.succeeded || review.status === 'ready') {
+    return 'готов';
+  }
+
+  if (review.status === 'running') {
+    return 'в работе';
+  }
+
+  if (review.attempted) {
+    return review.status === 'failed' ? 'ошибка' : 'частично';
+  }
+
+  return 'ожидает';
+}
+
 function OpportunitiesOverview({ items, run }: { items: CollectedOpportunity[]; run: ReviewRun }) {
   const groups = buildOpportunityGroups(items, run);
 
@@ -486,23 +581,15 @@ function SemanticCodeContextBlock({ run }: { run: ReviewRun }) {
   }
 
   const metrics = [
-    { label: 'Сниппеты в промпте', value: context.snippetCount },
-    { label: 'Кандидаты поиска', value: context.candidateCount },
-    { label: 'Запросы', value: context.queryCount },
-    { label: 'Source files', value: context.sourceFilesSelected },
-    { label: 'Target files', value: context.targetFilesSelected },
-    { label: 'Target added skipped', value: context.targetFilesSkippedAdded, optional: true },
-    { label: 'Target baseline files', value: context.targetBaselineFilesSelected, optional: true },
-    { label: 'Source deleted skipped', value: context.sourceFilesSkippedDeleted, optional: true },
-    { label: 'Source chunks indexed', value: context.sourceChunksIndexed },
-    { label: 'Target chunks indexed', value: context.targetChunksIndexed },
-    { label: 'Target missing', value: context.targetFilesMissing, optional: true },
-    { label: 'Target too large', value: context.targetFilesTooLarge, optional: true },
-    { label: 'Target empty', value: context.targetFilesEmpty, optional: true },
-    { label: 'Target without chunks', value: context.targetFilesWithoutChunks, optional: true },
-    { label: 'Target read failed', value: context.targetFilesReadFailed, optional: true },
-    { label: 'Время', value: formatDuration(context.elapsedMilliseconds) }
-  ].filter((metric) => !metric.optional || metric.value !== 0);
+    { label: 'В промпте', value: `${context.snippetCount} снипп.` },
+    { label: 'Кандидаты', value: context.candidateCount },
+    { label: 'Поисковые запросы', value: context.queryCount },
+    { label: 'Время сбора', value: formatDuration(context.elapsedMilliseconds) },
+    { label: 'Source индекс', value: `${context.sourceFilesSelected} файлов / ${context.sourceChunksIndexed} чанков` },
+    { label: 'Target индекс', value: `${context.targetFilesSelected} файлов / ${context.targetChunksIndexed} чанков` }
+  ];
+  const diagnostics = buildSemanticDiagnostics(context);
+  const message = getReadableSemanticContextMessage(context.message);
 
   return (
     <div className="semantic-context">
@@ -517,14 +604,14 @@ function SemanticCodeContextBlock({ run }: { run: ReviewRun }) {
 
       <div className="semantic-context-flags">
         <span className={`secondary-chip ${context.cacheReuseEnabled ? 'success' : 'muted'}`}>
-          cache reuse {context.cacheReuseEnabled ? 'on' : 'off'}
+          cache reuse {context.cacheReuseEnabled ? 'включён' : 'выключен'}
         </span>
         <span className={`secondary-chip ${context.sourceCacheHit ? 'success' : 'muted'}`}>
-          source {context.sourceCacheHit ? 'cache hit' : 'indexed'}
+          source {context.sourceCacheHit ? 'из кэша' : 'проиндексирован'}
         </span>
         {context.targetCommitSha ? (
           <span className={`secondary-chip ${context.targetCacheHit ? 'success' : 'muted'}`}>
-            target {context.targetCacheHit ? 'cache hit' : 'indexed'}
+            target {context.targetCacheHit ? 'из кэша' : 'проиндексирован'}
           </span>
         ) : null}
         {context.sourceCommitSha ? (
@@ -535,27 +622,101 @@ function SemanticCodeContextBlock({ run }: { run: ReviewRun }) {
         ) : null}
       </div>
 
-      {context.message ? <p className="semantic-context-message">{context.message}</p> : null}
-
-      {context.snippets.length ? (
-        <div className="semantic-context-snippets">
-          {context.snippets.map((snippet, index) => (
-            <article className="semantic-snippet" key={`${snippet.revisionKind}-${snippet.filePath}-${snippet.startLine}-${index}`}>
-              <div className="semantic-snippet-header">
-                <strong>{snippet.filePath}</strong>
-                <span className="secondary-chip muted">
-                  {snippet.revisionKind}@{shortSha(snippet.commitSha)} · {snippet.startLine}-{snippet.endLine} · {snippet.score.toFixed(3)}
-                </span>
-              </div>
-              {snippet.query ? <p>{snippet.query}</p> : null}
-            </article>
+      {diagnostics.length ? (
+        <div className="semantic-context-diagnostics">
+          {diagnostics.map((item) => (
+            <span className={`secondary-chip ${item.level}`} key={item.label}>
+              {item.label}: {item.value}
+            </span>
           ))}
         </div>
+      ) : null}
+
+      {message ? <p className="semantic-context-message">{message}</p> : null}
+
+      {context.snippets.length ? (
+        <section className="semantic-context-snippets" aria-label="Сниппеты semantic context">
+          <div className="semantic-context-snippets-header">
+            <strong>Сниппеты, переданные модели</strong>
+            <span>{context.snippets.length} из {context.candidateCount} кандидатов</span>
+          </div>
+          {context.snippets.map((snippet, index) => (
+            <article className="semantic-snippet-row" key={`${snippet.revisionKind}-${snippet.filePath}-${snippet.startLine}-${index}`}>
+              <div className="semantic-snippet-main">
+                <strong title={snippet.filePath}>{getFileName(snippet.filePath)}</strong>
+                <span title={snippet.filePath}>{getParentPath(snippet.filePath)}</span>
+              </div>
+              <div className="semantic-snippet-meta">
+                <span className="secondary-chip muted">{getRevisionKindLabel(snippet.revisionKind)} {shortSha(snippet.commitSha)}</span>
+                <span>строки {snippet.startLine}-{snippet.endLine}</span>
+                <span>score {snippet.score.toFixed(3)}</span>
+              </div>
+              {snippet.query ? <p title={snippet.query}>{snippet.query}</p> : null}
+            </article>
+          ))}
+        </section>
       ) : (
         <div className="empty-state compact">В промпт не попали дополнительные semantic snippets.</div>
       )}
     </div>
   );
+}
+
+function buildSemanticDiagnostics(context: ReviewRun['semanticCodeContext']): Array<{ label: string; value: number; level: 'success' | 'muted' | '' }> {
+  return [
+    { label: 'Added в target пропущены', value: context.targetFilesSkippedAdded, level: 'muted' as const },
+    { label: 'Baseline target файлов', value: context.targetBaselineFilesSelected, level: 'muted' as const },
+    { label: 'Deleted из source пропущены', value: context.sourceFilesSkippedDeleted, level: 'muted' as const },
+    { label: 'Target не найдено', value: context.targetFilesMissing, level: '' as const },
+    { label: 'Target слишком большие', value: context.targetFilesTooLarge, level: '' as const },
+    { label: 'Target пустые', value: context.targetFilesEmpty, level: '' as const },
+    { label: 'Target без чанков', value: context.targetFilesWithoutChunks, level: '' as const },
+    { label: 'Target read failed', value: context.targetFilesReadFailed, level: '' as const },
+    { label: 'Source read failed', value: context.sourceFilesReadFailed, level: '' as const }
+  ].filter((item) => item.value > 0);
+}
+
+function getReadableSemanticContextMessage(message: string): string {
+  if (!message) {
+    return '';
+  }
+
+  let result = message
+    .replace('Semantic code context was added to the review prompt.', 'Semantic context добавлен в промпт ревью.')
+    .replace('Semantic search completed but returned no snippets.', 'Semantic search завершился, но не нашёл сниппеты для промпта.')
+    .replace(/Target changed-file context skipped (\d+) added files because they do not exist at the target revision\./, 'Target-контекст пропустил $1 новых файлов: их ещё нет в target-ветке.')
+    .replace(/Target baseline context used (\d+) files from the target revision\./, 'Для target дополнительно взяли $1 baseline-файлов.')
+    .replace('Target baseline context was not needed.', 'Baseline target-контекст не понадобился.')
+    .replace('Target baseline context had no readable baseline files.', 'Для target не нашлось читаемых baseline-файлов.');
+
+  return result.trim();
+}
+
+function getFileName(filePath: string): string {
+  const normalized = filePath.replace(/\\/g, '/');
+  const parts = normalized.split('/').filter(Boolean);
+  return parts[parts.length - 1] || filePath;
+}
+
+function getParentPath(filePath: string): string {
+  const normalized = filePath.replace(/\\/g, '/');
+  const parts = normalized.split('/').filter(Boolean);
+  if (parts.length <= 1) {
+    return '';
+  }
+
+  return parts.slice(0, -1).join('/');
+}
+
+function getRevisionKindLabel(revisionKind: string): string {
+  switch (revisionKind.toLowerCase()) {
+    case 'source':
+      return 'source';
+    case 'target':
+      return 'target';
+    default:
+      return revisionKind;
+  }
 }
 
 type CollectedOpportunity = {
@@ -619,6 +780,15 @@ function formatDuration(milliseconds: number): string {
   }
 
   return `${(milliseconds / 1000).toFixed(1)} с`;
+}
+
+function formatTimestamp(value: string): string {
+  return new Intl.DateTimeFormat('ru-RU', {
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    month: '2-digit'
+  }).format(new Date(value));
 }
 
 function shortSha(value?: string): string {

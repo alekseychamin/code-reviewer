@@ -179,11 +179,34 @@ export interface ReviewRun {
   changedFiles: string[];
   findings: ReviewFinding[];
   primaryOpportunities: ReviewOpportunityItem[];
+  externalReview: ExternalReview;
   semanticCodeContext: SemanticCodeContext;
   reviewDiscussionMessages: ReviewCommentMessage[];
   inlineComments: InlineComment[];
   reviewedFiles: ReviewedFile[];
   progressUpdates: ReviewProgressEvent[];
+}
+
+export interface ExternalReview {
+  enabled: boolean;
+  attempted: boolean;
+  succeeded: boolean;
+  timedOut: boolean;
+  engineName: string;
+  status: string;
+  message: string;
+  elapsedMilliseconds: number;
+  startedAt?: string;
+  completedAt?: string;
+  commands: ExternalReviewCommand[];
+}
+
+export interface ExternalReviewCommand {
+  command: string;
+  succeeded: boolean;
+  elapsedMilliseconds: number;
+  artifact: string;
+  errorMessage: string;
 }
 
 export interface ReviewHistory {
@@ -194,7 +217,12 @@ export interface ReviewHistory {
 export interface ReviewHistoryItem {
   id: string;
   status: ReviewRunStatus;
+  targetKind: ReviewTargetKind;
   title: string;
+  pullRequestUrl?: string;
+  repositoryName?: string;
+  sourceBranch?: string;
+  targetBranch?: string;
   serviceName: string;
   authorName?: string;
   providerProfileId?: string;

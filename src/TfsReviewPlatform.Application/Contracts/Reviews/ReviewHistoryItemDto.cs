@@ -8,7 +8,17 @@ public sealed class ReviewHistoryItemDto
 
     public ReviewRunStatus Status { get; init; }
 
+    public ReviewTargetKind TargetKind { get; init; }
+
     public string Title { get; init; } = string.Empty;
+
+    public string? PullRequestUrl { get; init; }
+
+    public string? RepositoryName { get; init; }
+
+    public string? SourceBranch { get; init; }
+
+    public string? TargetBranch { get; init; }
 
     public string ServiceName { get; init; } = string.Empty;
 

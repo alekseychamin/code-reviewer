@@ -44,7 +44,23 @@ services:
       - ReviewPipeline__SinglePassFullContextMaxCharacters=${REVIEW_SINGLE_PASS_MAX_CHARS:-0}
       - ReviewPipeline__IncludeRoslynGraphInFullContextPayload=${REVIEW_INCLUDE_ROSLYN_GRAPH_IN_FULL_CONTEXT:-true}
       - ReviewPipeline__FullContextMaxToolIterations=${REVIEW_FULL_CONTEXT_MAX_TOOL_ITERATIONS:-2}
+      - ReviewPipeline__EnableDeterministicCoverageCritic=${REVIEW_DETERMINISTIC_COVERAGE_CRITIC:-true}
       - ReviewPipeline__EnableFinalModelNormalizationPass=${REVIEW_FINAL_MODEL_NORMALIZATION:-true}
+      - ReviewPipeline__UseExternalReviewScoutMode=${REVIEW_USE_EXTERNAL_SCOUT_MODE:-false}
+      - ReviewPipeline__UseIncrementalReviewMode=${REVIEW_INCREMENTAL_MODE:-true}
+      - ReviewPipeline__ExternalReviewScoutMaxCriticCharacters=${REVIEW_EXTERNAL_SCOUT_MAX_CRITIC_CHARS:-26000}
+      - ReviewPipeline__MaxConcurrentExternalReviewScoutCritics=${REVIEW_EXTERNAL_SCOUT_MAX_CONCURRENCY:-3}
+      - ExternalReview__Enabled=${EXTERNAL_REVIEW_ENABLED:-false}
+      - ExternalReview__EngineName=${EXTERNAL_REVIEW_ENGINE_NAME:-PR-Agent}
+      - ExternalReview__BaseUrl=${EXTERNAL_REVIEW_BASE_URL:-http://192.168.1.63:3005}
+      - ExternalReview__Commands__0=${EXTERNAL_REVIEW_COMMAND_0:-describe}
+      - ExternalReview__Commands__1=${EXTERNAL_REVIEW_COMMAND_1:-review}
+      - ExternalReview__ResponseLanguage=${EXTERNAL_REVIEW_RESPONSE_LANGUAGE:-ru-ru}
+      - ExternalReview__TimeoutSeconds=${EXTERNAL_REVIEW_TIMEOUT_SECONDS:-360}
+      - ExternalReview__MaxWaitAtEndSeconds=${EXTERNAL_REVIEW_MAX_WAIT_AT_END_SECONDS:-10}
+      - ExternalReview__UseChangeSummary=${EXTERNAL_REVIEW_USE_CHANGE_SUMMARY:-true}
+      - ExternalReview__ChangeSummaryWaitSeconds=${EXTERNAL_REVIEW_CHANGE_SUMMARY_WAIT_SECONDS:-45}
+      - ExternalReview__UseReviewFindings=${EXTERNAL_REVIEW_USE_REVIEW_FINDINGS:-true}
     extra_hosts:
       - "host.docker.internal:host-gateway"
     ports:

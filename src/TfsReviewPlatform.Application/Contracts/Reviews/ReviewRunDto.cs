@@ -64,6 +64,8 @@ public sealed class ReviewRunDto
 
     public SemanticCodeContextDto SemanticCodeContext { get; init; } = new();
 
+    public ExternalReviewDto ExternalReview { get; init; } = new();
+
     public IReadOnlyList<ReviewCommentMessageDto> ReviewDiscussionMessages { get; init; } = [];
 
     public IReadOnlyList<InlineCommentDto> InlineComments { get; init; } = [];
@@ -71,6 +73,44 @@ public sealed class ReviewRunDto
     public IReadOnlyList<ReviewedFileDto> ReviewedFiles { get; init; } = [];
 
     public IReadOnlyList<ReviewProgressUpdateDto> ProgressUpdates { get; init; } = [];
+}
+
+public sealed class ExternalReviewDto
+{
+    public bool Enabled { get; init; }
+
+    public bool Attempted { get; init; }
+
+    public bool Succeeded { get; init; }
+
+    public bool TimedOut { get; init; }
+
+    public string EngineName { get; init; } = string.Empty;
+
+    public string Status { get; init; } = string.Empty;
+
+    public string Message { get; init; } = string.Empty;
+
+    public int ElapsedMilliseconds { get; init; }
+
+    public DateTimeOffset? StartedAt { get; init; }
+
+    public DateTimeOffset? CompletedAt { get; init; }
+
+    public IReadOnlyList<ExternalReviewCommandDto> Commands { get; init; } = [];
+}
+
+public sealed class ExternalReviewCommandDto
+{
+    public string Command { get; init; } = string.Empty;
+
+    public bool Succeeded { get; init; }
+
+    public int ElapsedMilliseconds { get; init; }
+
+    public string Artifact { get; init; } = string.Empty;
+
+    public string ErrorMessage { get; init; } = string.Empty;
 }
 
 public sealed class ReviewProgressUpdateDto

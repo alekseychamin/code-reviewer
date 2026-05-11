@@ -31,13 +31,33 @@ public sealed class ReviewPipelineOptions
 
     /// <summary>
     /// Max iterations for full-context tool loop (initial pass + up to N tool-assisted refinements).
+    /// Set to 0 to skip tool-assisted refinements after the initial full-context response.
     /// </summary>
     public int FullContextMaxToolIterations { get; init; } = 2;
+
+    /// <summary>
+    /// When true, an extra LLM pass checks whether deterministic hints are covered by the primary review.
+    /// </summary>
+    public bool EnableDeterministicCoverageCritic { get; init; } = true;
 
     /// <summary>
     /// Final normalization pass over accumulated findings/opportunities to merge duplicates and return strict JSON schema.
     /// </summary>
     public bool EnableFinalModelNormalizationPass { get; init; } = true;
+
+    /// <summary>
+    /// When true and external review is enabled, use PR-Agent as a fast scout and run focused missing-finding critics instead of the primary full/chunk review.
+    /// </summary>
+    public bool UseExternalReviewScoutMode { get; init; }
+
+    /// <summary>
+    /// When true, repeated reviews with a baseline analyze only changed diff sections while keeping baseline findings for comparison.
+    /// </summary>
+    public bool UseIncrementalReviewMode { get; init; } = true;
+
+    public int ExternalReviewScoutMaxCriticCharacters { get; init; } = 26000;
+
+    public int MaxConcurrentExternalReviewScoutCritics { get; init; } = 3;
 
     public RoslynGraphPipelineOptions Roslyn { get; init; } = new();
 }
