@@ -99,8 +99,8 @@ public sealed class ExternalReviewArtifactParserTests
                 В SQL-запросе удалены условия `rb."IsBasic"` и `rb."IsBcAllowed"`.
                 </summary>
 
-                ```sql
-                where (@orderId is null or o."OrderId" = @orderId)
+                ```c#
+                private volatile FrozenDictionary<string, RegionCacheItem> _cache;
                 ```
 
                 </details>
@@ -109,10 +109,16 @@ public sealed class ExternalReviewArtifactParserTests
 
         var result = ExternalReviewArtifactDisplayFormatter.Format(command);
 
-        Assert.Contains("### PR Reviewer Guide", result);
+        Assert.Contains("### Обзор PR-Agent", result);
+        Assert.Contains("Оценка сложности ревью: 3/5", result);
         Assert.Contains("#### Изменение логики фильтрации", result);
-        Assert.Contains("`src/GetOrderList.sql:L64-L65`", result);
-        Assert.Contains("```sql", result);
+        Assert.Contains("Файл: `src/GetOrderList.sql:L64-L65`", result);
+        Assert.Contains("```csharp", result);
+        Assert.Contains("private volatile FrozenDictionary", result);
+        Assert.DoesNotContain("```\n#", result);
+        Assert.DoesNotContain("PR Reviewer Guide", result);
+        Assert.DoesNotContain("Estimated effort", result);
+        Assert.DoesNotContain("Файл:**", result);
         Assert.DoesNotContain("<table", result);
         Assert.DoesNotContain("<details", result);
         Assert.DoesNotContain("&nbsp;", result);
@@ -146,9 +152,11 @@ public sealed class ExternalReviewArtifactParserTests
 
         var result = ExternalReviewArtifactDisplayFormatter.Format(command);
 
-        Assert.Contains("### PR Type", result);
+        Assert.Contains("### Тип изменения", result);
+        Assert.Contains("### Описание", result);
         Assert.Contains("Реализовано кэширование данных регионов", result);
-        Assert.Contains("Диаграмма применена", result);
+        Assert.Contains("Диаграмма построена", result);
+        Assert.DoesNotContain("Diagram Walkthrough", result);
         Assert.DoesNotContain("File Walkthrough", result);
         Assert.DoesNotContain("<details", result);
         Assert.DoesNotContain("flowchart LR", result);

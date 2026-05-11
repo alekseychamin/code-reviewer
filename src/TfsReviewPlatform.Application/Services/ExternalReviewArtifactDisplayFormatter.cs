@@ -19,7 +19,7 @@ public static class ExternalReviewArtifactDisplayFormatter
         RegexOptions.Compiled | RegexOptions.IgnoreCase | RegexOptions.Singleline);
 
     private static readonly Regex CodeFenceRegex = new(
-        @"```(?<language>[A-Za-z0-9_-]*)\s*(?<code>.*?)```",
+        @"```(?<language>[^\r\n`]*)\s*(?<code>.*?)```",
         RegexOptions.Compiled | RegexOptions.Singleline);
 
     private static readonly Regex HtmlTagRegex = new(
@@ -55,17 +55,17 @@ public static class ExternalReviewArtifactDisplayFormatter
         var parts = new List<string>();
         if (!string.IsNullOrWhiteSpace(prType))
         {
-            parts.Add($"### PR Type\n{prType.Trim()}");
+            parts.Add($"### Тип изменения\n{prType.Trim()}");
         }
 
         if (!string.IsNullOrWhiteSpace(description))
         {
-            parts.Add($"### Description\n{description.Trim()}");
+            parts.Add($"### Описание\n{description.Trim()}");
         }
 
         if (hasDiagram)
         {
-            parts.Add("### Diagram Walkthrough\nДиаграмма применена в основном блоке описания изменений.");
+            parts.Add("### Диаграмма\nДиаграмма построена и показана в основном блоке описания изменений.");
         }
 
         return parts.Count > 0
@@ -85,21 +85,21 @@ public static class ExternalReviewArtifactDisplayFormatter
             return CleanText(artifact);
         }
 
-        var header = new List<string> { "### PR Reviewer Guide" };
+        var header = new List<string> { "### Обзор PR-Agent" };
         var effort = ExtractEstimatedEffort(artifact);
         if (!string.IsNullOrWhiteSpace(effort))
         {
-            header.Add($"- Estimated effort: {effort}");
+            header.Add($"- Оценка сложности ревью: {effort}/5");
         }
 
         if (artifact.Contains("PR contains tests", StringComparison.OrdinalIgnoreCase))
         {
-            header.Add("- Tests: yes");
+            header.Add("- Тесты в PR: есть");
         }
 
         if (artifact.Contains("No security concerns", StringComparison.OrdinalIgnoreCase))
         {
-            header.Add("- Security concerns: none");
+            header.Add("- Риски безопасности: не обнаружены");
         }
 
         return $"{string.Join('\n', header)}\n\n{string.Join("\n\n", findings)}";
@@ -119,7 +119,7 @@ public static class ExternalReviewArtifactDisplayFormatter
         var builder = new List<string> { $"#### {title}" };
         if (!string.IsNullOrWhiteSpace(location))
         {
-            builder.Add($"**Файл:** `{location}`");
+            builder.Add($"Файл: `{location}`");
         }
 
         builder.Add(description);
@@ -205,8 +205,19 @@ public static class ExternalReviewArtifactDisplayFormatter
             return string.Empty;
         }
 
-        language = match.Groups["language"].Value.Trim();
+        language = NormalizeCodeFenceLanguage(match.Groups["language"].Value);
         return WebUtility.HtmlDecode(match.Groups["code"].Value).Trim();
+    }
+
+    private static string NormalizeCodeFenceLanguage(string value)
+    {
+        return value.Trim().ToLowerInvariant() switch
+        {
+            "c#" => "csharp",
+            "cs" => "csharp",
+            "c++" => "cpp",
+            _ => value.Trim()
+        };
     }
 
     private static string ParseLocation(string url)

@@ -461,7 +461,7 @@ function ExternalReviewBlock({ review }: { review: ExternalReview }) {
   return (
     <article className="result-card external-review-card">
       <div className="external-review-summary">
-        <span>{review.message || formatExternalReviewStatus(review)}</span>
+        <span>{formatExternalReviewMessage(review)}</span>
         {review.elapsedMilliseconds > 0 ? <span>{formatDuration(review.elapsedMilliseconds)}</span> : null}
         {completedAt ? <span>{completedAt}</span> : null}
       </div>
@@ -471,7 +471,7 @@ function ExternalReviewBlock({ review }: { review: ExternalReview }) {
           {review.commands.map((command) => (
             <section className="external-review-command" key={command.command}>
               <div className="external-review-command-header">
-                <h4>/{command.command}</h4>
+                <h4>{formatExternalReviewCommandTitle(command.command)}</h4>
                 <span className={command.succeeded ? 'command-ok' : 'command-failed'}>
                   {command.succeeded ? 'готов' : 'ошибка'}
                   {command.elapsedMilliseconds > 0 ? ` · ${formatDuration(command.elapsedMilliseconds)}` : ''}
@@ -481,6 +481,7 @@ function ExternalReviewBlock({ review }: { review: ExternalReview }) {
               <MarkdownBlock
                 content={command.artifact}
                 emptyText="PR-Agent не вернул markdown для этой команды."
+                normalize={false}
               />
             </section>
           ))}
@@ -490,6 +491,38 @@ function ExternalReviewBlock({ review }: { review: ExternalReview }) {
       )}
     </article>
   );
+}
+
+function formatExternalReviewMessage(review: ExternalReview): string {
+  if (!review.message) {
+    return formatExternalReviewStatus(review);
+  }
+
+  switch (review.message) {
+    case 'PR-Agent sidecar completed.':
+      return 'PR-Agent завершил быстрый обзор.';
+    case 'PR-Agent sidecar completed with command errors.':
+      return 'PR-Agent завершил обзор, часть команд вернулась с ошибкой.';
+    default:
+      if (review.message.startsWith('PR-Agent sidecar timed out after ')) {
+        return review.message.replace('PR-Agent sidecar timed out after ', 'PR-Agent не успел завершиться за ');
+      }
+
+      return review.message;
+  }
+}
+
+function formatExternalReviewCommandTitle(command: string): string {
+  switch (command.trim().replace(/^\/+/, '').toLowerCase()) {
+    case 'describe':
+      return 'Описание изменений';
+    case 'review':
+      return 'Обзор рисков';
+    case 'improve':
+      return 'Идеи улучшений';
+    default:
+      return `Команда ${command}`;
+  }
 }
 
 function formatExternalReviewStatus(review: ExternalReview): string {
