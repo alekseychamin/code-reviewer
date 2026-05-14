@@ -37,6 +37,7 @@ public sealed class DiffPreprocessor(IOptions<ReviewPipelineOptions> options) : 
 
         var filteredDiff = string.Concat(files.Select(file => file.Content));
         var reviewHints = BuildReviewHints(hintFiles);
+        var riskDomains = ReviewRiskDomainClassifier.Classify(hintFiles);
         var reviewContextFiles = files
             .Select(file => ShouldExcludeFromReviewContext(file.FilePath, file.Content)
                 ? string.Empty
@@ -47,17 +48,23 @@ public sealed class DiffPreprocessor(IOptions<ReviewPipelineOptions> options) : 
             ? string.Concat(reviewContextFiles)
             : filteredDiff;
         var chunkSource = reviewContextFiles.Length > 0 ? reviewContextFiles : files.Select(file => file.Content);
-        var reviewChunks = ReviewHintFormatter.AppendHintsToChunks(
+        var baseReviewChunks = ReviewRiskDomainFormatter.PrependRiskDomainsToChunks(
             BuildChunks(
                 chunkSource,
                 Math.Max(4000, options.Value.MaxPrimaryReviewChunkCharacters),
                 mergeFormattedChunks: options.Value.MergePrimaryReviewChunks),
+            riskDomains);
+        var reviewChunks = ReviewHintFormatter.AppendHintsToChunks(
+            baseReviewChunks,
             reviewHints);
-        var preparedChunks = ReviewHintFormatter.AppendHintsToChunks(
+        var basePreparedChunks = ReviewRiskDomainFormatter.PrependRiskDomainsToChunks(
             BuildChunks(
                 chunkSource,
                 Math.Max(2000, options.Value.MaxChunkCharacters),
                 mergeFormattedChunks: false),
+            riskDomains);
+        var preparedChunks = ReviewHintFormatter.AppendHintsToChunks(
+            basePreparedChunks,
             reviewHints);
 
         return new PreprocessedDiff
@@ -71,7 +78,8 @@ public sealed class DiffPreprocessor(IOptions<ReviewPipelineOptions> options) : 
                 .ToArray(),
             ReviewChunks = reviewChunks,
             Chunks = preparedChunks,
-            ReviewHints = reviewHints
+            ReviewHints = reviewHints,
+            RiskDomains = riskDomains
         };
     }
 
@@ -96,6 +104,8 @@ public sealed class DiffPreprocessor(IOptions<ReviewPipelineOptions> options) : 
             if (file.FilePath.EndsWith(".cs", StringComparison.OrdinalIgnoreCase))
             {
                 AddCSharpDataIntegrityHints(file.FilePath, diffLines, hints);
+                AddJwtUtcLocalTimeHints(file.FilePath, diffLines, hints);
+                AddTaskFactoryStartNewAsyncIoHints(file.FilePath, diffLines, files, hints);
                 AddApiPaginationLimitHints(file.FilePath, diffLines, hints);
                 AddTransactionalPersistenceHints(file.FilePath, diffLines, hints);
             }
@@ -287,7 +297,7 @@ public sealed class DiffPreprocessor(IOptions<ReviewPipelineOptions> options) : 
     {
         for (var index = 0; index < newLines.Count; index++)
         {
-            if (!Regex.IsMatch(newLines[index].Text, @"\breturn\s+null\s*;", RegexOptions.CultureInvariant))
+            if (!LooksLikeNullReturn(newLines[index].Text))
             {
                 continue;
             }
@@ -313,6 +323,14 @@ public sealed class DiffPreprocessor(IOptions<ReviewPipelineOptions> options) : 
                 SuggestedVerification = "Verify nullable annotations and update the public/interface contract to nullable when null is an expected result."
             });
         }
+    }
+
+    private static bool LooksLikeNullReturn(string text)
+    {
+        var trimmed = text.Trim();
+        return Regex.IsMatch(trimmed, @"\breturn\s+null\s*;", RegexOptions.CultureInvariant) ||
+               Regex.IsMatch(trimmed, @"\breturn\s+[^?:;]+\?\s*null\s*:", RegexOptions.CultureInvariant) ||
+               Regex.IsMatch(trimmed, @"\breturn\s+[^?:;]+\?\s*[^:;]+\s*:\s*null\s*;", RegexOptions.CultureInvariant);
     }
 
     private static bool LooksLikeNonNullableMethodSignature(string text)
@@ -469,6 +487,185 @@ public sealed class DiffPreprocessor(IOptions<ReviewPipelineOptions> options) : 
                 SuggestedVerification = $"Read {item.Seed} and the target production query to confirm the test fixture can produce the expected result."
             });
         }
+    }
+
+    private static void AddJwtUtcLocalTimeHints(
+        string filePath,
+        IReadOnlyList<DiffLine> diffLines,
+        List<ReviewHint> hints)
+    {
+        var lines = diffLines
+            .Where(line => line.Kind is '+' or ' ')
+            .ToArray();
+        if (lines.Length == 0)
+        {
+            return;
+        }
+
+        for (var index = 0; index < lines.Length; index++)
+        {
+            var line = lines[index];
+            if (!UsesLocalClock(line.Text))
+            {
+                continue;
+            }
+
+            var window = lines
+                .Skip(Math.Max(0, index - 6))
+                .Take(13)
+                .Select(candidate => candidate.Text)
+                .ToArray();
+            var windowText = string.Join('\n', window);
+            if (!LooksLikeJwtUtcTimeFlow(windowText))
+            {
+                continue;
+            }
+
+            hints.Add(new ReviewHint
+            {
+                RuleId = "JWT_UTC_COMPARED_WITH_LOCAL_TIME",
+                Category = "Auth/TokenTime",
+                FilePath = filePath,
+                StartLine = line.NewLine,
+                Message = "JWT token validity/expiration time appears to be compared with local server time. JWT ValidTo/ValidFrom/exp values are UTC; verify comparisons use UTC.",
+                Evidence = BuildNearbyEvidence(lines, line.NewLine, 8),
+                SuggestedVerification = "Replace DateTime.Now/DateTimeOffset.Now with DateTime.UtcNow/DateTimeOffset.UtcNow in token expiration and refresh logic, and add a test with a token expiring in UTC."
+            });
+        }
+    }
+
+    private static bool UsesLocalClock(string text)
+    {
+        return Regex.IsMatch(
+            text,
+            @"\bDateTime(?:Offset)?\.Now\b",
+            RegexOptions.CultureInvariant);
+    }
+
+    private static bool LooksLikeJwtUtcTimeFlow(string text)
+    {
+        if (string.IsNullOrWhiteSpace(text))
+        {
+            return false;
+        }
+
+        return ContainsAny(text, [
+            "JwtSecurityToken",
+            ".ValidTo",
+            ".ValidFrom",
+            "DateTimeOffset.FromUnixTimeSeconds",
+            "expires_in",
+            "expiresIn",
+            "exp",
+            "nbf"
+        ]);
+    }
+
+    private static void AddTaskFactoryStartNewAsyncIoHints(
+        string filePath,
+        IReadOnlyList<DiffLine> diffLines,
+        IReadOnlyList<(string FilePath, string Content)> files,
+        List<ReviewHint> hints)
+    {
+        var lines = diffLines
+            .Where(line => line.Kind is '+' or ' ')
+            .ToArray();
+        if (lines.Length == 0)
+        {
+            return;
+        }
+
+        var allText = string.Join('\n', files.Select(file => file.Content));
+        var hasAsyncIoTokenFlow = LooksLikeAsyncIoTokenFlow(allText);
+        for (var index = 0; index < lines.Length; index++)
+        {
+            var line = lines[index];
+            if (!line.Text.Contains("Task.Factory.StartNew", StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            var window = lines
+                .Skip(Math.Max(0, index - 4))
+                .Take(9)
+                .Select(candidate => candidate.Text)
+                .ToArray();
+            var windowText = string.Join('\n', window);
+            if (!LooksLikeAsyncFactoryStartNew(windowText) || !hasAsyncIoTokenFlow)
+            {
+                continue;
+            }
+
+            hints.Add(new ReviewHint
+            {
+                RuleId = "TASK_FACTORY_STARTNEW_ASYNC_IO_TOKEN_FLOW",
+                Category = "Concurrency/AsyncIO",
+                FilePath = filePath,
+                StartLine = line.NewLine,
+                Message = "Task.Factory.StartNew/Unwrap is used to invoke an async factory while the diff also shows token/HTTP refresh flow.",
+                Evidence = BuildTaskFactoryAsyncIoEvidence(files, line.Text),
+                SuggestedVerification = "Do not treat this as style-only Task.Run modernization. Verify whether async token/HTTP I/O is being scheduled as CPU-bound work, whether cancellation reaches the request, and whether fire-and-forget refresh observes exceptions."
+            });
+        }
+    }
+
+    private static bool LooksLikeAsyncFactoryStartNew(string text)
+    {
+        return text.Contains("Task.Factory.StartNew", StringComparison.Ordinal) &&
+               (text.Contains("Unwrap()", StringComparison.Ordinal) ||
+                text.Contains("Func<Task", StringComparison.Ordinal) ||
+                text.Contains("taskFactory", StringComparison.Ordinal));
+    }
+
+    private static bool LooksLikeAsyncIoTokenFlow(string text)
+    {
+        if (!ContainsAny(text, [
+                "new AsyncLazy",
+                "TokenValueFactory",
+                "RequestToken",
+                "GetToken"
+            ]))
+        {
+            return false;
+        }
+
+        return ContainsAny(text, [
+            "HttpClient",
+            ".PostAsync",
+            ".GetAsync",
+            "SendAsync",
+            "access_token",
+            "refresh_token",
+            "JwtSecurityToken",
+            "Bearer"
+        ]);
+    }
+
+    private static string BuildTaskFactoryAsyncIoEvidence(
+        IReadOnlyList<(string FilePath, string Content)> files,
+        string startNewLine)
+    {
+        var evidence = new List<string> { startNewLine.Trim() };
+        foreach (var line in files
+                     .SelectMany(file => EnumerateDiffLines(file.Content))
+                     .Where(line => line.Kind is '+' or ' ')
+                     .Where(line => ContainsAny(line.Text, [
+                         "new AsyncLazy",
+                         "TokenValueFactory",
+                         "RequestToken(CancellationToken.None)",
+                         ".PostAsync",
+                         "_ = Task.Run"
+                     ]))
+                     .Select(line => line.Text.Trim()))
+        {
+            evidence.Add(line);
+            if (evidence.Count >= 6)
+            {
+                break;
+            }
+        }
+
+        return string.Join(" | ", evidence.Distinct(StringComparer.Ordinal));
     }
 
     private static void AddOptionsBindingHints(

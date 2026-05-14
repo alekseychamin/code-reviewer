@@ -18,6 +18,8 @@ public sealed record PreprocessedDiff
 
     public IReadOnlyList<ReviewHint> ReviewHints { get; init; } = [];
 
+    public IReadOnlyList<ReviewRiskDomainInsight> RiskDomains { get; init; } = [];
+
     public CodeGraph? Graph { get; init; }
 }
 

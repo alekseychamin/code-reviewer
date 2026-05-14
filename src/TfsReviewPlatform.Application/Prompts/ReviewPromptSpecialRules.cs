@@ -28,9 +28,21 @@ public static class ReviewPromptSpecialRules
         - Prefer actionable output over silence: report plausible Risks or Defects when the changed code suggests a realistic failure mode, lifetime mismatch, inconsistent assumption, or fragile test behavior. Use Medium or Low severity when the issue is worth a glance but not catastrophic.
         - Only skip findings when there is truly no visible anchor in the chunk or Related context for the claim.
         - Every finding must include a concrete trigger scenario ("when … then …"). Brief scenarios are acceptable for Medium/Low Risks when tied to visible code.
+        - Start each substantive chunk by identifying the risk domain before judging individual lines: auth/token, DI/config/options, cache/refresh/TTL/time, HTTP client/integration, persistence/SQL, Kafka/stream, tests/fixtures, or public contract.
+        - For auth, token, cache refresh, and identity changes, trace the flow end-to-end: source identity, fallback identity, token acquisition, token cache key, refresh threshold, time basis, cancellation/timeouts, DI registration, config validation, and tests.
+        - Treat external review/PR-Agent output as descriptive context only. Re-check its claims against the changed diff and do not rely on it for finding coverage.
+        - If a diff adds a library or public capability, check the consumer path: extension method, DI registration, options, client implementation, and tests must make the capability usable.
+        - For token expiration, JWT `ValidTo`/`ValidFrom` and `exp` are UTC. `DateTime.Now`/`DateTimeOffset.Now` near token validity or refresh logic is a strong candidate finding unless the code explicitly converts to UTC.
         - Treat nullability contract mismatches as high-priority findings when the visible code can return null through a path while the method, property, or contract is declared non-nullable.
         - In repository getters, mappers, and simple accessors that return string or another non-nullable type, a visible return null path should almost always be emitted as a finding rather than an opportunity.
         - If a visible method signature is non-nullable and the shown code literally returns null, prioritize that concrete contract finding over softer discussion about retries, configurability, or maintainability in nearby files.
+        - Do not claim code returns a cached/stale value after an exception when the shown code has try/finally but no catch around the throwing call; the exception escapes and no return statement after that call executes.
+        - Do not report missing Dispose/IDisposable for SemaphoreSlim as a finding unless the diff shows AvailableWaitHandle usage or repeated creation in a loop/hot path; otherwise omit it or keep it as a low-priority opportunity only when useful.
+        - Do not report Task.Factory.StartNew scheduler/UI-thread capture as a finding in backend/server library code unless a UI SynchronizationContext, WPF, WinForms, or another concrete custom scheduler is visible in the diff/context.
+        - Treat Task.Factory.StartNew/Task.Run as suspicious when it wraps async I/O, token refresh, HTTP, database, Kafka, or other naturally asynchronous operations. These APIs should primarily be used for CPU-bound offload; report the concrete risk when the diff shows wasted thread-pool work, fire-and-forget lifetime, cancellation loss, unobserved exceptions, or scheduler ambiguity.
+        - Do not emit Task.Factory.StartNew -> Task.Run simplification/readability advice as a finding or opportunity. Report Task.Factory.StartNew only when the diff proves a concrete runtime bug, not a stylistic modernization.
+        - Do not report HttpRequestMessage.Headers.Add duplicate-header failures for custom CorrelationId-like headers unless the exact API/headers evidence proves that the added value is invalid or that the header cannot accept multiple values.
+        - Skip style/documentation-only nits such as XML <returns>, unused using, comment typos, or parameter naming unless they hide a real contract bug.
         - Treat unused operational config or state as a likely finding when a visible timeout, TTL, retry, refresh interval, or operational option is read, captured, or logged but does not materially affect behavior as its name implies.
         - Do not turn configuration hot-reload speculation into a finding. "This value is read once and would not update if config changes at runtime" is not a finding unless the shown code explicitly requires runtime config reload.
         - Prefer surfacing nullability contract mismatches and unused operational config/state over generic performance or cleanup suggestions.
@@ -79,7 +91,7 @@ public static class ReviewPromptSpecialRules
 
     public const string PrimaryReviewToolRequestRules = """
         Tool request rules (prefer narrow tools over guessing):
-        - You may request up to 3 workspace tools per chunk when cross-file context would materially improve confidence.
+        - You may request workspace tools up to the run-specific budget when cross-file context would materially improve confidence.
         - Prefer tool_requests when "Related context" does not already show the defining implementation, interface, options binding, repository method, SQL/use-case body, or critical caller that the changed code relies on.
         - For DI registration, new interface usage, provider/handler wiring, SQL or MediatR-style entry points: if the chunk references a symbol whose behavior is not visible in the diff or Related context, use at least one focused tool (typically find_usage or read_file) unless the graph snippets already contain that definition.
         - Supported tools are find_files, find_usage, grep_code, and read_file.
@@ -133,6 +145,11 @@ public static class ReviewPromptSpecialRules
         - For DI, registration, configuration, or wiring chunks, keep optional configurability and hardening ideas out of findings unless the shown code already demonstrates broken behavior or a concrete reliability defect.
         - For helpers and extension methods, do not surface == null versus is null rewrites, ThrowIfNull additions, or defensive null checks on collaborators unless the shown contract makes them materially relevant.
         - For internal helpers, provider enrichment code, DI-wired collaborators, and extension methods used inside the service graph, do not emit findings just because a collaborator parameter is not null-checked unless the shown code provides a realistic null path.
+        - Do not claim code returns a cached/stale value after an exception when the shown code has try/finally but no catch around the throwing call; the exception escapes.
+        - Do not report missing Dispose/IDisposable for SemaphoreSlim or Task.Factory.StartNew UI-thread capture as findings unless the concrete triggering runtime context is visible.
+        - Treat Task.Factory.StartNew/Task.Run around async I/O/token refresh/HTTP/database/Kafka as a concurrency signal; report only a concrete risk such as fire-and-forget lifetime, cancellation loss, unobserved exception, wasted thread-pool scheduling, or scheduler ambiguity.
+        - Do not emit Task.Factory.StartNew -> Task.Run simplification/readability advice as a finding or opportunity.
+        - Skip XML docs, unused using, comment typos, and parameter naming nits unless they hide a real contract bug.
         - If a JOIN or direct lookup disappears because enrichment moved to cache-backed or follow-up logic, do not emit a finding that merely says "cache might be empty" without a concrete broken execution path in the shown code.
         - Do not claim that `??=` with a nullable cache getter can erase already populated values. That specific overwrite scenario is incorrect unless the target is explicitly reset elsewhere in the shown code.
         - If a SQL result now carries only region codes because names are enriched later from cache or follow-up logic, do not treat the missing name columns as a finding unless the shown consumer still expects the names directly from SQL.

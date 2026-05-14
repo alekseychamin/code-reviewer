@@ -38,11 +38,13 @@ services:
       - Qdrant__CodeContextMaxQueries=${QDRANT_CODE_CONTEXT_MAX_QUERIES:-8}
       - Qdrant__CodeContextTopKPerQuery=${QDRANT_CODE_CONTEXT_TOP_K_PER_QUERY:-3}
       - Qdrant__CodeContextMaxSnippets=${QDRANT_CODE_CONTEXT_MAX_SNIPPETS:-10}
+      - ReviewPipeline__Roslyn__Enabled=${REVIEW_ROSLYN_ENABLED:-true}
       - ReviewPipeline__Roslyn__RestoreTimeoutSeconds=${REVIEW_ROSLYN_RESTORE_TIMEOUT_SECONDS:-900}
       - ReviewPipeline__Roslyn__IncludeReferenceEdges=${REVIEW_ROSLYN_INCLUDE_REFERENCE_EDGES:-false}
       - ReviewPipeline__SinglePassFullDiffAndGraphPrimaryReview=${REVIEW_SINGLE_PASS_FULL_CONTEXT:-false}
       - ReviewPipeline__SinglePassFullContextMaxCharacters=${REVIEW_SINGLE_PASS_MAX_CHARS:-0}
       - ReviewPipeline__IncludeRoslynGraphInFullContextPayload=${REVIEW_INCLUDE_ROSLYN_GRAPH_IN_FULL_CONTEXT:-true}
+      - ReviewPipeline__MaxChunkToolRequests=${REVIEW_MAX_CHUNK_TOOL_REQUESTS:-1}
       - ReviewPipeline__FullContextMaxToolIterations=${REVIEW_FULL_CONTEXT_MAX_TOOL_ITERATIONS:-2}
       - ReviewPipeline__EnableDeterministicCoverageCritic=${REVIEW_DETERMINISTIC_COVERAGE_CRITIC:-true}
       - ReviewPipeline__EnableFinalModelNormalizationPass=${REVIEW_FINAL_MODEL_NORMALIZATION:-true}
@@ -53,14 +55,15 @@ services:
       - ExternalReview__Enabled=${EXTERNAL_REVIEW_ENABLED:-false}
       - ExternalReview__EngineName=${EXTERNAL_REVIEW_ENGINE_NAME:-PR-Agent}
       - ExternalReview__BaseUrl=${EXTERNAL_REVIEW_BASE_URL:-http://192.168.1.63:3005}
+      - ExternalReview__InputMode=${EXTERNAL_REVIEW_INPUT_MODE:-PullRequestUrl}
       - ExternalReview__Commands__0=${EXTERNAL_REVIEW_COMMAND_0:-describe}
-      - ExternalReview__Commands__1=${EXTERNAL_REVIEW_COMMAND_1:-review}
+      - ExternalReview__Commands__1=${EXTERNAL_REVIEW_COMMAND_1:-}
       - ExternalReview__ResponseLanguage=${EXTERNAL_REVIEW_RESPONSE_LANGUAGE:-ru-ru}
       - ExternalReview__TimeoutSeconds=${EXTERNAL_REVIEW_TIMEOUT_SECONDS:-360}
       - ExternalReview__MaxWaitAtEndSeconds=${EXTERNAL_REVIEW_MAX_WAIT_AT_END_SECONDS:-10}
       - ExternalReview__UseChangeSummary=${EXTERNAL_REVIEW_USE_CHANGE_SUMMARY:-true}
       - ExternalReview__ChangeSummaryWaitSeconds=${EXTERNAL_REVIEW_CHANGE_SUMMARY_WAIT_SECONDS:-45}
-      - ExternalReview__UseReviewFindings=${EXTERNAL_REVIEW_USE_REVIEW_FINDINGS:-true}
+      - ExternalReview__UseReviewFindings=${EXTERNAL_REVIEW_USE_REVIEW_FINDINGS:-false}
     extra_hosts:
       - "host.docker.internal:host-gateway"
     ports:

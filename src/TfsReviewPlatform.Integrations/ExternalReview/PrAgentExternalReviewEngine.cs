@@ -17,6 +17,7 @@ public sealed class PrAgentExternalReviewEngine(
 {
     public async Task<ExternalReviewArtifact> RunAsync(
         ReviewRun run,
+        ExternalReviewInput? input,
         CancellationToken cancellationToken)
     {
         var opts = options.Value;
@@ -50,6 +51,20 @@ public sealed class PrAgentExternalReviewEngine(
             };
         }
 
+        var inputMode = opts.InputMode;
+        if (inputMode == ExternalReviewInputMode.Diff &&
+            string.IsNullOrWhiteSpace(input?.DiffText))
+        {
+            return new ExternalReviewArtifact
+            {
+                Enabled = true,
+                Attempted = false,
+                EngineName = opts.EngineName,
+                Status = "skipped",
+                Message = "ExternalReview:InputMode=Diff requires prepared diff text."
+            };
+        }
+
         var startedAt = DateTimeOffset.UtcNow;
         var stopwatch = Stopwatch.StartNew();
         using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
@@ -58,10 +73,7 @@ public sealed class PrAgentExternalReviewEngine(
         try
         {
             var client = httpClientFactory.CreateClient(HttpClientNames.PrAgent);
-            var request = new PrAgentRunRequest(
-                run.Target.PullRequestUrl!,
-                NormalizeCommands(opts.Commands),
-                opts.ResponseLanguage);
+            var request = BuildRequest(run, input, opts);
             var response = await client.PostAsJsonAsync(
                 $"{opts.BaseUrl.TrimEnd('/')}/api/run",
                 request,
@@ -136,14 +148,88 @@ public sealed class PrAgentExternalReviewEngine(
             .Distinct(StringComparer.Ordinal)
             .ToArray();
         return normalized.Length == 0
-            ? ["describe", "review"]
+            ? ["describe"]
             : normalized;
     }
 
-    private sealed record PrAgentRunRequest(
-        [property: JsonPropertyName("pr_url")] string PrUrl,
-        [property: JsonPropertyName("commands")] IReadOnlyList<string> Commands,
-        [property: JsonPropertyName("response_language")] string ResponseLanguage);
+    private static PrAgentRunRequest BuildRequest(
+        ReviewRun run,
+        ExternalReviewInput? input,
+        ExternalReviewOptions options)
+    {
+        var useDiff = options.InputMode == ExternalReviewInputMode.Diff;
+        var changedFiles = input?.ChangedFiles.Where(file => !string.IsNullOrWhiteSpace(file)).ToArray();
+        return new PrAgentRunRequest
+        {
+            PrUrl = run.Target.PullRequestUrl!,
+            Commands = NormalizeCommands(options.Commands),
+            ResponseLanguage = options.ResponseLanguage,
+            InputMode = useDiff ? "diff" : "pull_request_url",
+            Title = FirstNonBlank(input?.PullRequestTitle, run.PullRequestTitle, run.DisplayTitle),
+            Repository = FirstNonBlank(input?.RepositoryName, run.Target.RepositoryName, run.ServiceName),
+            ServiceName = FirstNonBlank(input?.ServiceName, run.ServiceName),
+            SourceRef = FirstNonBlank(input?.SourceRef, run.Target.SourceBranch),
+            TargetRef = FirstNonBlank(input?.TargetRef, run.Target.TargetBranch),
+            ChangedFiles = changedFiles is { Length: > 0 } ? changedFiles : null,
+            Diff = useDiff ? input?.DiffText : null
+        };
+    }
+
+    private static string? FirstNonBlank(params string?[] values)
+    {
+        foreach (var value in values)
+        {
+            if (!string.IsNullOrWhiteSpace(value))
+            {
+                return value.Trim();
+            }
+        }
+
+        return null;
+    }
+
+    private sealed class PrAgentRunRequest
+    {
+        [JsonPropertyName("pr_url")]
+        public required string PrUrl { get; init; }
+
+        [JsonPropertyName("commands")]
+        public required IReadOnlyList<string> Commands { get; init; }
+
+        [JsonPropertyName("response_language")]
+        public required string ResponseLanguage { get; init; }
+
+        [JsonPropertyName("input_mode")]
+        public required string InputMode { get; init; }
+
+        [JsonPropertyName("title")]
+        [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+        public string? Title { get; init; }
+
+        [JsonPropertyName("repository")]
+        [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+        public string? Repository { get; init; }
+
+        [JsonPropertyName("service_name")]
+        [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+        public string? ServiceName { get; init; }
+
+        [JsonPropertyName("source_ref")]
+        [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+        public string? SourceRef { get; init; }
+
+        [JsonPropertyName("target_ref")]
+        [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+        public string? TargetRef { get; init; }
+
+        [JsonPropertyName("changed_files")]
+        [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+        public IReadOnlyList<string>? ChangedFiles { get; init; }
+
+        [JsonPropertyName("diff")]
+        [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+        public string? Diff { get; init; }
+    }
 
     private sealed class PrAgentRunResponse
     {

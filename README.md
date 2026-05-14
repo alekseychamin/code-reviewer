@@ -89,6 +89,12 @@ Required backend tokens:
 - `GITHUB_TOKEN` for GitHub PR access and publishing
 - `GITLAB_TOKEN` for GitLab merge request access and publishing
 
+Optional PR-Agent sidecar:
+
+- Set `EXTERNAL_REVIEW_ENABLED=true` to run the PR-Agent sidecar.
+- Set `EXTERNAL_REVIEW_INPUT_MODE=Diff` when the sidecar should receive prepared diff text from this backend instead of fetching the PR itself. This keeps platform PAT tokens in the backend.
+- `EXTERNAL_REVIEW_INPUT_MODE=PullRequestUrl` preserves the previous URL-only request shape.
+
 Supported URL examples:
 
 - Azure DevOps / TFS: `https://tfs.example.local/tfs/Main/Project/_git/Repo/pullrequest/42`

@@ -10,7 +10,12 @@ public sealed class ReviewPipelineOptions
 
     public bool MergePrimaryReviewChunks { get; init; } = false;
 
-    public int MaxConcurrentChunkReviews { get; init; } = 3;
+    public int MaxConcurrentChunkReviews { get; init; } = 5;
+
+    /// <summary>
+    /// Maximum workspace tool requests allowed for one primary chunk review. Set to 0 to disable chunk tool-loop refinements.
+    /// </summary>
+    public int MaxChunkToolRequests { get; init; } = 1;
 
     public int MaxChangeSummaryCharacters { get; init; } = 12000;
 

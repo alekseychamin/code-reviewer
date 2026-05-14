@@ -7,6 +7,314 @@ namespace TfsReviewPlatform.Tests;
 public sealed class FindingNormalizationDeduplicationTests
 {
     [Fact]
+    public void SuppressLowPrecisionFindings_RemovesKnownSpeculativeNoise()
+    {
+        var findings = new[]
+        {
+            CreateFinding(
+                "Auth/ServiceToken/EsbTokenService.cs",
+                19,
+                FindingCategory.Reliability,
+                FindingSeverity.Medium,
+                "Утечка ресурса: SemaphoreSlim не освобождается",
+                "Класс хранит SemaphoreSlim, но не реализует IDisposable.",
+                "private readonly SemaphoreSlim _semaphore = new(1, 1);"),
+            CreateFinding(
+                "Auth/Helpers/AsyncLazy.cs",
+                9,
+                FindingCategory.Reliability,
+                FindingSeverity.Medium,
+                "Выполнение фабрики может захватить UI-поток",
+                "Task.Factory.StartNew без TaskScheduler.Default может захватить UI-поток.",
+                "base(() => Task.Factory.StartNew(valueFactory))"),
+            CreateFinding(
+                "Auth/ServiceToken/EsbTokenService.cs",
+                33,
+                FindingCategory.Reliability,
+                FindingSeverity.Medium,
+                "Возврат устаревшего токена при сбое обновления",
+                "Если GetTokenAsync выбрасывает исключение, метод вернёт кэшированный токен.",
+                "try\n{\n    var token = await _esbAuthClient.GetTokenAsync(cancellationToken);\n    return _accessToken;\n}\nfinally\n{\n    _semaphore.Release();\n}"),
+            CreateFinding(
+                "Auth/Helpers/AsyncLazy.cs",
+                11,
+                FindingCategory.CodeStyle,
+                FindingSeverity.Low,
+                "Упростить Task.Factory.StartNew через Task.Run",
+                "Task.Run выглядит современнее и читабельнее.",
+                "base(() => Task.Factory.StartNew(valueFactory))"),
+            CreateFinding(
+                "Auth/BaseServiceTokenService.cs",
+                54,
+                FindingCategory.Reliability,
+                FindingSeverity.High,
+                "Сравнение времени жизни JWT-токена с локальным временем вместо UTC",
+                "JWT ValidTo всегда в UTC, но код сравнивает его с DateTime.Now.",
+                "if (_tokenObject.ValidTo < DateTime.Now.AddMinutes(1))")
+        };
+
+        var result = ReviewRunExecutor.SuppressLowPrecisionFindings(findings);
+
+        var finding = Assert.Single(result);
+        Assert.Contains("JWT", finding.Title, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void SuppressLowSignalOpportunities_RemovesStyleAndDocumentationNits()
+    {
+        var opportunities = new[]
+        {
+            new ReviewOpportunityItem(
+                "Auth/Abstractions/IEsbTokenService.cs",
+                "GetAccessTokenAsync",
+                "Добавить описание возвращаемого значения",
+                "Отсутствует xml-тег <returns>.",
+                "Добавить <returns>Access token</returns>.",
+                9),
+            new ReviewOpportunityItem(
+                "Auth/Models/EsbAuthTokenModel.cs",
+                "EsbAuthTokenModel",
+                "Неиспользуемый импорт System.Text.Json.Serialization",
+                "Директива using не используется.",
+                "Удалить using.",
+                1),
+            new ReviewOpportunityItem(
+                "Auth/Helpers/AsyncLazy.cs",
+                "AsyncLazy",
+                "Упрощение фабрики с помощью Task.Run",
+                "Конструктор использует Task.Factory.StartNew(valueFactory), можно заменить на Task.Run(valueFactory).",
+                "Заменить Task.Factory.StartNew(valueFactory) на Task.Run(valueFactory).",
+                9),
+            new ReviewOpportunityItem(
+                "Auth/ServiceToken/BaseServiceTokenService.cs",
+                "GetToken",
+                "Удержание семафора на время запроса токена",
+                "SemaphoreSlim захвачен на время потенциально длительного RequestToken.",
+                "Защищать семафором только замену lazy-значения.",
+                29)
+        };
+
+        var result = ReviewRunExecutor.SuppressLowSignalOpportunities(opportunities);
+
+        var opportunity = Assert.Single(result);
+        Assert.Contains("семафора", opportunity.Title, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void SuppressLowPrecisionFindings_KeepsTaskFactoryStartNewAsyncIoConcern()
+    {
+        var findings = new[]
+        {
+            CreateFinding(
+                "Auth/Helpers/AsyncLazy.cs",
+                11,
+                FindingCategory.Reliability,
+                FindingSeverity.Medium,
+                "Task.Factory.StartNew используется вокруг async I/O обновления токена",
+                "Фабрика запускает асинхронный token refresh через Task.Factory.StartNew, хотя это не CPU-bound работа; при fire-and-forget обновлении исключение может остаться необработанным.",
+                "base(() => Task.Factory.StartNew(() => taskFactory()).Unwrap())")
+        };
+
+        var result = ReviewRunExecutor.SuppressLowPrecisionFindings(findings);
+
+        Assert.Single(result);
+    }
+
+    [Fact]
+    public void SuppressLowSignalOpportunities_KeepsTaskFactoryStartNewAsyncIoConcern()
+    {
+        var opportunities = new[]
+        {
+            new ReviewOpportunityItem(
+                "Auth/Helpers/AsyncLazy.cs",
+                "AsyncLazy",
+                "Проверить Task.Factory.StartNew вокруг async I/O фабрики",
+                "Фабрика может запускать token refresh/HTTP I/O, а не CPU-bound работу, поэтому стоит убрать thread-pool offload и явно наблюдать ошибки фонового refresh.",
+                "Оставить асинхронный путь асинхронным или добавить контролируемую обработку fire-and-forget задачи.",
+                11)
+        };
+
+        var result = ReviewRunExecutor.SuppressLowSignalOpportunities(opportunities);
+
+        Assert.Single(result);
+    }
+
+    [Fact]
+    public void SuppressLowSignalOpportunities_RemovesReviewPolishNoise()
+    {
+        var opportunities = new[]
+        {
+            new ReviewOpportunityItem(
+                "Auth/HttpClientsAuthHandler.cs",
+                "SendAsync",
+                "Безопасное добавление заголовка CorrelationId",
+                "Использование TryAddWithoutValidation предотвратит неожиданные исключения при конфликте заголовков.",
+                "Заменить request.Headers.Add на TryAddWithoutValidation.",
+                31),
+            new ReviewOpportunityItem(
+                "Auth/HttpEsbClientsAuthHandler.cs",
+                "constructor",
+                "Использование IOptionsSnapshot для поддержки горячей перезагрузки конфигурации",
+                "IOptions.Value фиксирует настройки на момент создания обработчика.",
+                "Заменить IOptions на IOptionsSnapshot.",
+                14),
+            new ReviewOpportunityItem(
+                "Auth/BaseServiceTokenService.cs",
+                "GetToken",
+                "Добавить ConfigureAwait(false) для библиотечного кода",
+                "Await без ConfigureAwait(false) может привести к захвату контекста синхронизации.",
+                "Добавить ConfigureAwait(false).",
+                29),
+            new ReviewOpportunityItem(
+                "Auth/EsbTokenService.cs",
+                "_semaphore",
+                "Реализовать IDisposable для освобождения SemaphoreSlim",
+                "SemaphoreSlim не освобождается при завершении работы сервиса.",
+                "Добавить Dispose и вызвать _semaphore.Dispose().",
+                18),
+            new ReviewOpportunityItem(
+                "Auth/BaseServiceTokenService.cs",
+                "GetNotExpired",
+                "Вынести создание AsyncLazy в отдельный метод",
+                "Создание AsyncLazy дублируется в двух местах.",
+                "Создать вспомогательный метод ResetTokenLazy().",
+                57),
+            new ReviewOpportunityItem(
+                "Auth/Models/IdentityTokenModel.cs",
+                "IdentityTokenModel",
+                "Улучшить поддержку nullable-аннотаций для модели токена",
+                "Модель не содержит явных nullable-аннотаций, что затрудняет статический анализ.",
+                "Активировать <Nullable>enable</Nullable>.",
+                5),
+            new ReviewOpportunityItem(
+                "Auth/Options/EsbClientAuthOptions.cs",
+                "EsbClientAuthOptions",
+                "Добавить валидацию опций на старте приложения",
+                "Обязательные ключи секции Auth:Esb могут отсутствовать.",
+                "Добавить ValidateOnStart для опций.",
+                9)
+        };
+
+        var result = ReviewRunExecutor.SuppressLowSignalOpportunities(opportunities);
+
+        var opportunity = Assert.Single(result);
+        Assert.Contains("валидацию опций", opportunity.Title, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void SuppressLowSignalOpportunities_RemovesLatestAuthReviewNoise()
+    {
+        var opportunities = new[]
+        {
+            new ReviewOpportunityItem(
+                "Auth/Abstractions/IIdentityServiceTokenService.cs",
+                "interface IIdentityServiceTokenService",
+                "Пустой интерфейс без специфичных членов",
+                "Интерфейс наследует IServiceTokenService, но не добавляет новых методов или свойств.",
+                "Добавить специфичный метод или рассмотреть объединение.",
+                4),
+            new ReviewOpportunityItem(
+                "Auth/HttpClientsAuthHandler.cs",
+                "Поле delta",
+                "Интервал опережения для обновления токена сделать конфигурируемым",
+                "Хардкод TimeSpan.FromSeconds(60) снижает гибкость настройки.",
+                "Добавить класс опций TokenRefreshBuffer.",
+                11),
+            new ReviewOpportunityItem(
+                "Auth/HttpClientsServiceOnlyAuthHandler.cs",
+                "AuthorizeUsingServiceUserAsync",
+                "Обработка отсутствия сервисного токена",
+                "При null токене запрос будет отправлен без заголовка авторизации.",
+                "Добавить логирование или выброс исключения.",
+                40),
+            new ReviewOpportunityItem(
+                "Auth/HttpEsbClientsAuthHandler.cs",
+                "SendAsync",
+                "Добавить проверку токена на null",
+                "AuthenticationHeaderValue из null вызовет ArgumentNullException.",
+                "Проверить accessToken на null.",
+                30),
+            new ReviewOpportunityItem(
+                "Auth/HttpEsbClientsAuthHandler.cs",
+                "SendAsync",
+                "Кэширование токена доступа",
+                "На каждый HTTP-запрос вызывается GetAccessTokenAsync.",
+                "Внедрить кэширование токена внутри обработчика.",
+                30),
+            new ReviewOpportunityItem(
+                "Auth/IdentityServiceTokenService.cs",
+                "RequestToken",
+                "Жёстко заданный путь токен-эндпоинта",
+                "URL-путь /connect/token жёстко зашит в коде.",
+                "Вынести путь в IdentityClientOptions.",
+                42),
+            new ReviewOpportunityItem(
+                "Auth/IdentityServiceTokenService.cs",
+                "RequestToken",
+                "Создание HttpClient без предварительной настройки BaseAddress",
+                "Можно зарегистрировать именованный HttpClient с BaseAddress и Polly.",
+                "Зарегистрировать именованный HttpClient в DI.",
+                43),
+            new ReviewOpportunityItem(
+                "Auth/BaseServiceTokenService.cs",
+                "GetNotExpired",
+                "Вынести пороговые интервалы в константы или конфигурацию",
+                "Значения 1 и 15 минут зашиты в коде.",
+                "Определить константы ImmediateRefreshThreshold.",
+                54),
+            new ReviewOpportunityItem(
+                "Auth/BaseServiceTokenService.cs",
+                "GetNotExpired",
+                "Упростить сравнение времени с помощью операторов сравнения DateTime",
+                "Использование AddMinutes и < понятно, но можно улучшить читаемость.",
+                "Применить DateTime.UtcNow + TimeSpan.FromMinutes(1) > ValidTo.",
+                54),
+            new ReviewOpportunityItem(
+                "Auth/BaseServiceTokenService.cs",
+                "TokenValueFactory",
+                "Обработать ошибку парсинга JwtSecurityToken",
+                "Конструктор JwtSecurityToken может выбросить исключение при некорректном формате токена.",
+                "Обернуть создание JwtSecurityToken в try/catch и залогировать ошибку.",
+                45)
+        };
+
+        var result = ReviewRunExecutor.SuppressLowSignalOpportunities(opportunities);
+
+        var opportunity = Assert.Single(result);
+        Assert.Contains("JwtSecurityToken", opportunity.Title, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void RestoreDroppedDistinctFindings_DeduplicatesTaskFactoryStartNewAsyncIoVariants()
+    {
+        var normalizedFindings = new[]
+        {
+            CreateFinding(
+                "Auth/Helpers/AsyncLazy.cs",
+                13,
+                FindingCategory.Performance,
+                FindingSeverity.Medium,
+                "Избыточное создание потоков для асинхронных операций",
+                "Конструктор Func<Task<T>> вызывает Task.Factory.StartNew с Unwrap. В контексте получения токенов это ведёт к бесполезной трате ресурсов: асинхронный запрос и так неблокирующий.",
+                "base(() => Task.Factory.StartNew(() => taskFactory()).Unwrap())"),
+            CreateFinding(
+                "Auth/Helpers/AsyncLazy.cs",
+                10,
+                FindingCategory.Reliability,
+                FindingSeverity.Medium,
+                "Task.Factory.StartNew используется для async I/O refresh токена",
+                "StartNew используется для async factory token refresh через HTTP; это не CPU-bound offload, а вместе с fire-and-forget refresh может потерять cancellation и unobserved exception.",
+                "base(() => Task.Factory.StartNew(() => taskFactory()).Unwrap())")
+        };
+
+        var result = ReviewRunExecutor.RestoreDroppedDistinctFindings([], normalizedFindings);
+
+        var finding = Assert.Single(result);
+        Assert.Contains("async I/O", finding.Title, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(FindingCategory.Reliability, finding.Category);
+    }
+
+    [Fact]
     public void RestoreDroppedDistinctFindings_DeduplicatesSameNullabilityContractAcrossInterfaceAndImplementation()
     {
         var normalizedFindings = new[]

@@ -134,7 +134,8 @@ public sealed class GraphAwareChunker(
             return preprocessed with { Graph = graph };
         }
 
-        var reviewChunks = ReviewHintFormatter.AppendHintsToChunks(chunks, preprocessed.ReviewHints);
+        var domainChunks = ReviewRiskDomainFormatter.PrependRiskDomainsToChunks(chunks, preprocessed.RiskDomains);
+        var reviewChunks = ReviewHintFormatter.AppendHintsToChunks(domainChunks, preprocessed.ReviewHints);
 
         return preprocessed with
         {

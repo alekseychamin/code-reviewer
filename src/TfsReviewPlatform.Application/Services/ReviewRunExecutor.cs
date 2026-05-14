@@ -176,7 +176,19 @@ public sealed class ReviewRunExecutor(
                     cancellationToken);
             }
 
-            externalReviewTask = StartExternalReviewAsync(run, cancellationToken);
+            externalReviewTask = StartExternalReviewAsync(
+                run,
+                new ExternalReviewInput
+                {
+                    DiffText = preprocessed.FilteredDiffText,
+                    ChangedFiles = preprocessed.ChangedFiles,
+                    RepositoryName = diffResult.RepositoryName,
+                    ServiceName = diffResult.ServiceName,
+                    PullRequestTitle = diffResult.PullRequestTitle,
+                    SourceRef = diffResult.SourceRef,
+                    TargetRef = diffResult.TargetRef
+                },
+                cancellationToken);
             if (externalReviewTask is not null)
             {
                 run.UpdateArtifacts(CopyArtifactsWithSemanticCodeContext(
@@ -365,6 +377,28 @@ public sealed class ReviewRunExecutor(
                     opportunities.Count,
                     findingsBeforeNormalization.Length,
                     findings.Count - normalized.Findings.Count);
+            }
+
+            var precisionFilteredFindings = SuppressLowPrecisionFindings(findings);
+            if (precisionFilteredFindings.Count != findings.Count)
+            {
+                logger.LogInformation(
+                    "Suppressed low-precision findings for run {RunId}: before={Before}, after={After}",
+                    run.Id,
+                    findings.Count,
+                    precisionFilteredFindings.Count);
+                findings = precisionFilteredFindings.ToList();
+            }
+
+            var precisionFilteredOpportunities = SuppressLowSignalOpportunities(opportunities);
+            if (precisionFilteredOpportunities.Count != opportunities.Count)
+            {
+                logger.LogInformation(
+                    "Suppressed low-signal opportunities for run {RunId}: before={Before}, after={After}",
+                    run.Id,
+                    opportunities.Count,
+                    precisionFilteredOpportunities.Count);
+                opportunities = precisionFilteredOpportunities.ToList();
             }
 
             var deduplicatedFindings = DeduplicateFindings(findings);
@@ -670,7 +704,7 @@ public sealed class ReviewRunExecutor(
             "Review pipeline configuration for run {RunId}: ProviderProfileId={ProviderProfileId}, ForceRerun={ForceRerun}, " +
             "MaxChunkCharacters={MaxChunkCharacters}, MaxPrimaryReviewChunkCharacters={MaxPrimaryReviewChunkCharacters}, " +
             "MergePrimaryReviewChunks={MergePrimaryReviewChunks}, MaxConcurrentChunkReviews={MaxConcurrentChunkReviews}, " +
-            "MaxChangeSummaryCharacters={MaxChangeSummaryCharacters}, RoslynEnabled={RoslynEnabled}, " +
+            "MaxChangeSummaryCharacters={MaxChangeSummaryCharacters}, MaxChunkToolRequests={MaxChunkToolRequests}, RoslynEnabled={RoslynEnabled}, " +
             "SinglePassFullDiffAndGraphPrimaryReview={SinglePassPrimary}, SinglePassFullContextMaxCharacters={SinglePassMax}, " +
             "IncludeRoslynGraphInFullContextPayload={IncludeGraph}, FullContextMaxToolIterations={FullContextMaxToolIterations}, " +
             "EnableDeterministicCoverageCritic={EnableDeterministicCoverageCritic}, EnableFinalModelNormalizationPass={EnableFinalNormalization}, " +
@@ -683,6 +717,7 @@ public sealed class ReviewRunExecutor(
             o.MergePrimaryReviewChunks,
             o.MaxConcurrentChunkReviews,
             o.MaxChangeSummaryCharacters,
+            o.MaxChunkToolRequests,
             o.Roslyn.Enabled,
             o.SinglePassFullDiffAndGraphPrimaryReview,
             o.SinglePassFullContextMaxCharacters,
@@ -695,6 +730,7 @@ public sealed class ReviewRunExecutor(
 
     private Task<ExternalReviewArtifact>? StartExternalReviewAsync(
         ReviewRun run,
+        ExternalReviewInput input,
         CancellationToken cancellationToken)
     {
         var opts = externalReviewOptions.Value;
@@ -704,13 +740,15 @@ public sealed class ReviewRunExecutor(
         }
 
         logger.LogInformation(
-            "Starting external review sidecar for run {RunId}: engine={EngineName}, commands={Commands}, baseUrl={BaseUrl}",
+            "Starting external review sidecar for run {RunId}: engine={EngineName}, commands={Commands}, baseUrl={BaseUrl}, inputMode={InputMode}, diffChars={DiffChars}",
             run.Id,
             opts.EngineName,
             string.Join(",", opts.Commands),
-            opts.BaseUrl);
+            opts.BaseUrl,
+            opts.InputMode,
+            input.DiffText.Length);
 
-        var task = externalReviewEngine.RunAsync(run, cancellationToken);
+        var task = externalReviewEngine.RunAsync(run, input, cancellationToken);
         _ = task.ContinueWith(
             completedTask =>
             {
@@ -1708,7 +1746,9 @@ public sealed class ReviewRunExecutor(
             68,
             cancellationToken);
 
-        var hintsBlock = ReviewHintFormatter.BuildAllHintsBlock(preprocessed.ReviewHints);
+        var hintsBlock = JoinNonEmptyBlocks(
+            ReviewRiskDomainFormatter.BuildAllRiskDomainsBlock(preprocessed.RiskDomains),
+            ReviewHintFormatter.BuildAllHintsBlock(preprocessed.ReviewHints));
         var contextBlock = BuildDeterministicContextBlock(deterministicContext);
         var response = await CompleteWithProgressHeartbeatAsync(
             selection.Profile,
@@ -2068,6 +2108,13 @@ public sealed class ReviewRunExecutor(
         IReadOnlyList<ReviewWorkspaceToolResponse> semanticCodeContext)
     {
         var sb = new StringBuilder();
+        var riskDomainsBlock = ReviewRiskDomainFormatter.BuildAllRiskDomainsBlock(preprocessed.RiskDomains);
+        if (!string.IsNullOrWhiteSpace(riskDomainsBlock))
+        {
+            sb.AppendLine(riskDomainsBlock);
+            sb.AppendLine();
+        }
+
         sb.AppendLine("=== DIFF ===");
         sb.AppendLine(preprocessed.FilteredDiffText.Trim());
         sb.AppendLine();
@@ -2179,6 +2226,13 @@ public sealed class ReviewRunExecutor(
         return builder.ToString().TrimEnd();
     }
 
+    private static string JoinNonEmptyBlocks(params string[] blocks)
+    {
+        return string.Join(
+            "\n\n",
+            blocks.Where(block => !string.IsNullOrWhiteSpace(block)).Select(block => block.Trim()));
+    }
+
     internal static IReadOnlyList<ReviewFinding> BuildConfirmedDeterministicFindings(
         IReadOnlyList<ReviewHint> hints,
         IReadOnlyList<ReviewFinding> existingFindings)
@@ -2204,6 +2258,8 @@ public sealed class ReviewRunExecutor(
             "NON_NULLABLE_CONTRACT_RETURNS_NULL" => BuildNonNullableContractReturnsNullFinding(hint),
             "API_UNBOUNDED_PAGE_SIZE" => BuildUnboundedPageSizeFinding(hint),
             "EF_BULK_UPDATE_THEN_INSERT_WITHOUT_TRANSACTION" => BuildNonAtomicBulkUpdateFinding(hint),
+            "JWT_UTC_COMPARED_WITH_LOCAL_TIME" => BuildJwtUtcComparedWithLocalTimeFinding(hint),
+            "TASK_FACTORY_STARTNEW_ASYNC_IO_TOKEN_FLOW" => BuildTaskFactoryStartNewAsyncIoTokenFlowFinding(hint),
             "CONFIG_SECRET_LIKE_VALUE" => BuildSecretLikeConfigFinding(hint),
             _ => null
         };
@@ -2397,9 +2453,9 @@ public sealed class ReviewRunExecutor(
             FindingSeverity.Medium,
             ReviewFindingSource.InitialReview,
             "Ненулевой контракт возвращает null",
-            "Метод с non-nullable сигнатурой рядом с `return null` вводит вызывающий код в заблуждение: потребители могут считать значение обязательным, а при неизвестном регионе получить null в модель или словить NRE после последующей обработки.",
+            "Метод с non-nullable сигнатурой рядом с `return null` вводит вызывающий код в заблуждение: потребители могут считать значение обязательным, а при отсутствии результата получить null в модель, HTTP-заголовок или другой downstream-контракт и словить NRE/некорректный запрос после последующей обработки.",
             hint.Evidence,
-            "Сделать возвращаемый тип nullable в интерфейсе и реализации либо возвращать безопасное значение/ошибку, если отсутствие региона является исключительным состоянием.",
+            "Сделать возвращаемый тип nullable в интерфейсе и реализации либо не возвращать null: вернуть безопасное значение или явную ошибку, если отсутствие результата является исключительным состоянием.",
             hint.StartLine,
             hint.StartLine);
     }
@@ -2416,6 +2472,38 @@ public sealed class ReviewRunExecutor(
             "В изменённом методе есть `ExecuteUpdateAsync`, после которого видна вставка/`SaveChangesAsync`, но не видна явная транзакция. Если вторая операция упадёт после успешного bulk update, данные могут остаться в промежуточном состоянии.",
             hint.Evidence,
             "Обернуть связанные bulk update и insert/save в одну транзакцию или изменить алгоритм так, чтобы операция была атомарной и идемпотентно восстанавливалась после частичного сбоя.",
+            hint.StartLine,
+            hint.StartLine);
+    }
+
+    private static ReviewFinding BuildJwtUtcComparedWithLocalTimeFinding(ReviewHint hint)
+    {
+        return new ReviewFinding(
+            hint.FilePath,
+            hint.StartLine > 0 ? $"line {hint.StartLine}" : "JWT token time",
+            FindingCategory.Reliability,
+            FindingSeverity.Medium,
+            ReviewFindingSource.InitialReview,
+            "Refresh JWT-токена сравнивает UTC-время с локальным временем",
+            "JWT-поля `ValidTo`/`ValidFrom` и claim `exp` интерпретируются как UTC, а изменённая логика refresh сравнивает их с `DateTime.Now`/`DateTimeOffset.Now`. На сервере с локальной timezone не UTC это сдвигает момент обновления токена: сервис может слишком рано дёргать identity либо, наоборот, продолжать использовать почти истёкший токен.",
+            hint.Evidence,
+            "Сравнивать JWT-время с `DateTime.UtcNow`/`DateTimeOffset.UtcNow` и покрыть refresh тестом с токеном, у которого `ValidTo` задан в UTC.",
+            hint.StartLine,
+            hint.StartLine);
+    }
+
+    private static ReviewFinding BuildTaskFactoryStartNewAsyncIoTokenFlowFinding(ReviewHint hint)
+    {
+        return new ReviewFinding(
+            hint.FilePath,
+            hint.StartLine > 0 ? $"line {hint.StartLine}" : "Task.Factory.StartNew",
+            FindingCategory.Reliability,
+            FindingSeverity.Medium,
+            ReviewFindingSource.InitialReview,
+            "Task.Factory.StartNew используется для async I/O refresh токена",
+            "В diff виден `Task.Factory.StartNew(...).Unwrap()` для async factory, а тот же flow используется для получения/refresh токена через HTTP. `StartNew`/`Task.Run` здесь не CPU-bound offload: он добавляет лишнее планирование в thread pool, может потерять cancellation/lifetime семантику и вместе с fire-and-forget refresh оставляет исключения обновления токена без явного наблюдения.",
+            hint.Evidence,
+            "Для async factory передавать фабрику напрямую (`base(taskFactory)`) или сделать отдельный async path без `StartNew`. Для фонового refresh явно наблюдать задачу и логировать/обрабатывать fault, а cancellation token протащить до HTTP-запроса токена.",
             hint.StartLine,
             hint.StartLine);
     }
@@ -2539,6 +2627,12 @@ public sealed class ReviewRunExecutor(
             score += 4;
         }
 
+        if (ClassifyFinding(finding) == FindingFailureKind.TaskFactoryStartNewAsyncIo &&
+            ContainsAny(text, "fire-and-forget", "cancellation", "unobserved", "refresh токена", "refresh токен"))
+        {
+            score += 12;
+        }
+
         return score;
     }
 
@@ -2618,6 +2712,259 @@ public sealed class ReviewRunExecutor(
             FindingFailureKind.RestoreBuildFailure;
     }
 
+    internal static IReadOnlyList<ReviewFinding> SuppressLowPrecisionFindings(IReadOnlyList<ReviewFinding> findings)
+    {
+        if (findings.Count == 0)
+        {
+            return findings;
+        }
+
+        return findings
+            .Where(finding => !IsLowPrecisionFinding(finding))
+            .ToArray();
+    }
+
+    internal static IReadOnlyList<ReviewOpportunityItem> SuppressLowSignalOpportunities(IReadOnlyList<ReviewOpportunityItem> opportunities)
+    {
+        if (opportunities.Count == 0)
+        {
+            return opportunities;
+        }
+
+        return opportunities
+            .Where(opportunity => !IsLowSignalOpportunity(opportunity))
+            .ToArray();
+    }
+
+    private static bool IsLowPrecisionFinding(ReviewFinding finding)
+    {
+        return IsSemaphoreSlimDisposeOnlyFinding(finding) ||
+               IsUiSchedulerSpeculationFinding(finding) ||
+               IsTaskFactoryStartNewCleanupFinding(finding) ||
+               IsReturnAfterExceptionWithoutCatchFinding(finding) ||
+               IsHeaderDuplicateSpeculationFinding(finding) ||
+               IsStyleOrDocumentationOnlyFinding(finding);
+    }
+
+    private static bool IsSemaphoreSlimDisposeOnlyFinding(ReviewFinding finding)
+    {
+        var text = BuildFindingText(finding);
+        return ContainsAny(text, "semaphoreslim") &&
+               ContainsAny(text, "dispose", "idisposable", "освобожда", "утечка ресурса") &&
+               !ContainsAny(text, "availablewaithandle", "loop", "цикл", "каждую итерац", "многократн");
+    }
+
+    private static bool IsUiSchedulerSpeculationFinding(ReviewFinding finding)
+    {
+        var text = BuildFindingText(finding);
+        return ContainsAny(text, "task.factory.startnew", "taskscheduler") &&
+               ContainsAny(text, "ui-поток", "ui поток", "synchronizationcontext", "wpf", "winforms") &&
+               ContainsAny(text, "может", "если", "контекст", "захват");
+    }
+
+    private static bool IsTaskFactoryStartNewCleanupFinding(ReviewFinding finding)
+    {
+        var text = BuildFindingText(finding);
+        return LooksLikeTaskFactoryStartNewCleanup(text);
+    }
+
+    private static bool IsReturnAfterExceptionWithoutCatchFinding(ReviewFinding finding)
+    {
+        var text = BuildFindingText(finding);
+        if (!ContainsAny(text, "исключ", "exception", "сбое", "failure") ||
+            !ContainsAny(text, "возврат", "возвращ", "return") ||
+            !ContainsAny(text, "устаревш", "cached", "кэширован"))
+        {
+            return false;
+        }
+
+        var code = finding.ExistingCode;
+        return code.Contains("try", StringComparison.OrdinalIgnoreCase) &&
+               code.Contains("finally", StringComparison.OrdinalIgnoreCase) &&
+               !code.Contains("catch", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool IsHeaderDuplicateSpeculationFinding(ReviewFinding finding)
+    {
+        var text = BuildFindingText(finding);
+        return ContainsAny(text, "headers.add", "request.headers.add", "повторном добавлении", "уже присутствует") &&
+               ContainsAny(text, "correlationid", "custom header", "crmheadernames") &&
+               ContainsAny(text, "invalidoperationexception", "исключ");
+    }
+
+    private static bool IsStyleOrDocumentationOnlyFinding(ReviewFinding finding)
+    {
+        var text = BuildFindingText(finding);
+        return ContainsAny(
+            text,
+            "<returns>",
+            "xml-тег",
+            "xml tag",
+            "неиспользуемый импорт",
+            "unused using",
+            "опечатк",
+            "комментар",
+            "переименовать параметр",
+            "назван");
+    }
+
+    private static bool IsLowSignalOpportunity(ReviewOpportunityItem opportunity)
+    {
+        var text = $"{opportunity.File} {opportunity.LineHint} {opportunity.Title} {opportunity.Description} {opportunity.Suggestion}";
+        if (LooksLikeTaskFactoryStartNewAsyncIoConcern(text))
+        {
+            return false;
+        }
+
+        return LooksLikeTaskFactoryStartNewCleanup(text) ||
+               IsLowSignalHeaderOpportunity(text) ||
+               IsMarkerInterfaceOnlyOpportunity(text) ||
+               IsConfigurableConstantOnlyOpportunity(text) ||
+               IsDuplicateNullTokenOpportunity(text) ||
+               IsAlreadyCachedTokenOpportunity(text) ||
+               IsHotReloadOnlyOpportunity(text) ||
+               IsConfigureAwaitOnlyOpportunity(text) ||
+               IsEndpointConfigurationOnlyOpportunity(text) ||
+               IsNamedHttpClientOnlyOpportunity(text) ||
+               IsSemaphoreSlimDisposeOnlyOpportunity(text) ||
+               IsHelperExtractionOnlyOpportunity(text) ||
+               IsNullableAnnotationOnlyOpportunity(text) ||
+               IsDateTimeReadabilityOnlyOpportunity(text) ||
+               IsFutureSerializerCompatibilityOpportunity(text) ||
+               ContainsAny(
+            text,
+            "<returns>",
+            "xml-тег",
+            "xml tag",
+            "неиспользуемый импорт",
+            "unused using",
+            "опечатк",
+            "комментар",
+            "переименовать параметр",
+            "неоднозначное имя параметра");
+    }
+
+    private static bool LooksLikeTaskFactoryStartNewAsyncIoConcern(string text)
+    {
+        return ContainsAny(text, "task.factory.startnew", "startnew") &&
+               ContainsAny(
+                   text,
+                   "async i/o",
+                   "token refresh",
+                   "refresh токен",
+                   "refresh токена",
+                   "http",
+                   "cancellation",
+                   "fire-and-forget",
+                   "unobserved",
+                   "exception",
+                   "исключ",
+                   "cpu-bound");
+    }
+
+    private static bool LooksLikeTaskFactoryStartNewCleanup(string text)
+    {
+        return ContainsAny(text, "task.factory.startnew") &&
+               !LooksLikeTaskFactoryStartNewAsyncIoConcern(text) &&
+               ContainsAny(
+                   text,
+                   "task.run",
+                   "base(taskfactory)",
+                   "упрощ",
+                   "избыточ",
+                   "лишн",
+                   "современн",
+                   "читаем",
+                   "идиомат",
+                   "поддерживаем",
+                   "достаточно передать");
+    }
+
+    private static bool IsLowSignalHeaderOpportunity(string text)
+    {
+        return ContainsAny(text, "tryaddwithoutvalidation", "безопасное добавление", "конфликте заголовков") &&
+               ContainsAny(text, "correlationid", "headers.add", "request.headers.add");
+    }
+
+    private static bool IsMarkerInterfaceOnlyOpportunity(string text)
+    {
+        return ContainsAny(text, "пустой интерфейс", "marker-interface", "маркерн") &&
+               ContainsAny(text, "не добавляет", "без специфичных", "объединение", "наследует");
+    }
+
+    private static bool IsConfigurableConstantOnlyOpportunity(string text)
+    {
+        return ContainsAny(text, "конфигурируем", "конфигурац", "опции", "options") &&
+               ContainsAny(text, "интервал", "порог", "threshold", "timespan", "hardcode", "хардкод", "1 и 15 минут", "60 секунд") &&
+               !ContainsAny(text, "отсутств", "required", "validateonstart", "валидац", "null", "секрет", "secret");
+    }
+
+    private static bool IsDuplicateNullTokenOpportunity(string text)
+    {
+        return ContainsAny(text, "null токен", "null-токен", "токен на null", "токена на null", "accesstoken на null", "accessToken на null", "отсутствия сервисного токена", "отсутствие сервисного токена") &&
+               ContainsAny(text, "authorization", "authenticationheadervalue", "заголов", "без токена", "без заголовка");
+    }
+
+    private static bool IsAlreadyCachedTokenOpportunity(string text)
+    {
+        return ContainsAny(text, "кэширование токена", "кеширование токена", "кэшировать токен", "кешировать токен") &&
+               !ContainsAny(text, "ключ", "tenant", "scope", "user", "инвалидац", "ttl");
+    }
+
+    private static bool IsHotReloadOnlyOpportunity(string text)
+    {
+        return ContainsAny(text, "ioptionssnapshot", "ioptionsmonitor", "горяч", "hot reload", "перезагрузк") &&
+               ContainsAny(text, "конфигурац", "options", "settings");
+    }
+
+    private static bool IsConfigureAwaitOnlyOpportunity(string text)
+    {
+        return ContainsAny(text, "configureawait(false)", "захвату контекста синхронизации", "synchronizationcontext");
+    }
+
+    private static bool IsEndpointConfigurationOnlyOpportunity(string text)
+    {
+        return ContainsAny(text, "жёстко заданный путь", "жестко заданный путь", "hardcoded endpoint", "токен-эндпоинт", "connect/token") &&
+               ContainsAny(text, "опции", "options", "конфигурац", "переопредел");
+    }
+
+    private static bool IsNamedHttpClientOnlyOpportunity(string text)
+    {
+        return ContainsAny(text, "именованный httpclient", "типизированный клиент", "named httpclient", "baseaddress") &&
+               ContainsAny(text, "централизован", "предварительной настройки", "переопределяет baseaddress", "polly");
+    }
+
+    private static bool IsSemaphoreSlimDisposeOnlyOpportunity(string text)
+    {
+        return ContainsAny(text, "semaphoreslim") &&
+               ContainsAny(text, "dispose", "idisposable", "освобожд", "утилизац") &&
+               !ContainsAny(text, "availablewaithandle", "loop", "цикл", "каждую итерац", "многократн");
+    }
+
+    private static bool IsHelperExtractionOnlyOpportunity(string text)
+    {
+        return ContainsAny(text, "вынести", "helper", "вспомогательн", "дублируется", "дублирование", "расхождениям") &&
+               ContainsAny(text, "метод", "asynclazy", "создание");
+    }
+
+    private static bool IsNullableAnnotationOnlyOpportunity(string text)
+    {
+        return ContainsAny(text, "nullable-аннотац", "nullable annotations", "<nullable>enable", "статический анализ") &&
+               !ContainsAny(text, "return null", "возвращает null", "authorization", "bearer", "http-заголов");
+    }
+
+    private static bool IsDateTimeReadabilityOnlyOpportunity(string text)
+    {
+        return ContainsAny(text, "упростить сравнение времени", "читаемость", "аналогичный стиль") &&
+               ContainsAny(text, "datetime", "timespan", "addminutes");
+    }
+
+    private static bool IsFutureSerializerCompatibilityOpportunity(string text)
+    {
+        return ContainsAny(text, "system.text.json", "jsonpropertyname") &&
+               ContainsAny(text, "в будущем", "совместимост", "если потребуется", "newtonsoft");
+    }
+
     private static FindingFailureKind ClassifyFinding(ReviewFinding finding)
     {
         var text = BuildFindingText(finding);
@@ -2669,6 +3016,32 @@ public sealed class ReviewRunExecutor(
         if (ContainsAny(text, "pagesize", "page size"))
         {
             return FindingFailureKind.UnboundedPageSize;
+        }
+
+        if ((ContainsAny(text, "jwt", "validto", "validfrom", "datetime.now", "datetimeoffset.now", "exp") ||
+             ContainsAny(text, "токен", "jwt-токена")) &&
+            ContainsAny(text, "utc", "локальн", "local time", "datetime.now", "datetimeoffset.now"))
+        {
+            return FindingFailureKind.JwtUtcComparedWithLocalTime;
+        }
+
+        if (ContainsAny(text, "task.factory.startnew", "startnew") &&
+            ContainsAny(
+                text,
+                "async i/o",
+                "token refresh",
+                "refresh токен",
+                "refresh токена",
+                "получения токен",
+                "асинхронн",
+                "http",
+                "неблокир",
+                "thread pool",
+                "thread-pool",
+                "пул",
+                "cpu-bound"))
+        {
+            return FindingFailureKind.TaskFactoryStartNewAsyncIo;
         }
 
         if (ContainsAny(text, "secret", "password", "token", "signing key", "секрет"))
@@ -2887,6 +3260,8 @@ public sealed class ReviewRunExecutor(
         GroupByFirstWithoutOrder,
         TestMissingSeedMember,
         UnboundedPageSize,
+        JwtUtcComparedWithLocalTime,
+        TaskFactoryStartNewAsyncIo,
         SecretLikeConfig,
         NonAtomicBulkUpdate,
         KafkaCachePublishFiltering,
@@ -2975,6 +3350,7 @@ public sealed class ReviewRunExecutor(
             1,
             totalIterations);
         var completedChunks = 0;
+        var additionalRules = BuildPrimaryChunkReviewAdditionalRules();
 
         if (chunks.Count == 0)
         {
@@ -3004,7 +3380,7 @@ public sealed class ReviewRunExecutor(
                             ExpectJson = true,
                             SystemPrompt = reviewPromptFactory.BuildChunkReviewSystemPrompt(
                                 description,
-                                ReviewPromptSpecialRules.PrimaryReviewToolRequestRules),
+                                additionalRules),
                             UserPrompt = reviewPromptFactory.BuildUserPrompt(
                                 ReviewPipelineStage.ChunkReview,
                                 BuildInitialChunkReviewPayload(chunks[index]))
@@ -3054,6 +3430,30 @@ public sealed class ReviewRunExecutor(
         CancellationToken cancellationToken)
     {
         var envelope = ParseChunkReviewAgentEnvelope(initialResponse);
+        var maxToolRequests = Math.Clamp(reviewPipelineOptions.Value.MaxChunkToolRequests, 0, 3);
+        if (maxToolRequests == 0 && envelope.ToolRequests.Count > 0)
+        {
+            logger.LogInformation(
+                "Primary chunk tool loop is disabled for run {RunId}, chunk {ChunkIndex}: requested={RequestedToolRequests}",
+                run.Id,
+                chunkIndex + 1,
+                envelope.ToolRequests.Count);
+            envelope = envelope with { NeedMoreContext = false, ToolRequests = [] };
+        }
+        else if (envelope.ToolRequests.Count > maxToolRequests)
+        {
+            logger.LogInformation(
+                "Primary chunk tool requests capped for run {RunId}, chunk {ChunkIndex}: requested={RequestedToolRequests}, allowed={AllowedToolRequests}",
+                run.Id,
+                chunkIndex + 1,
+                envelope.ToolRequests.Count,
+                maxToolRequests);
+            envelope = envelope with
+            {
+                ToolRequests = envelope.ToolRequests.Take(maxToolRequests).ToArray()
+            };
+        }
+
         LogPrimaryToolRequestDecision(run, chunkIndex, chunk, envelope);
         if (!envelope.NeedMoreContext || envelope.ToolRequests.Count == 0)
         {
@@ -3095,6 +3495,26 @@ public sealed class ReviewRunExecutor(
                 UserPrompt = reviewPromptFactory.BuildUserPrompt(ReviewPipelineStage.ChunkReview, finalPayload)
             },
             cancellationToken);
+    }
+
+    private string BuildPrimaryChunkReviewAdditionalRules()
+    {
+        var maxToolRequests = Math.Clamp(reviewPipelineOptions.Value.MaxChunkToolRequests, 0, 3);
+        if (maxToolRequests == 0)
+        {
+            return """
+                Tool request rules for this run:
+                - Chunk tool-loop is disabled for latency. Return need_more_context=false and tool_requests=[].
+                - If missing cross-file context prevents a confident finding, omit that candidate or keep it as a cautious opportunity only when grounded in the changed lines.
+                """;
+        }
+
+        return ReviewPromptSpecialRules.PrimaryReviewToolRequestRules + "\n" + $"""
+            Run-specific tool budget:
+            - Request at most {maxToolRequests} workspace tool(s) for this chunk.
+            - If several lookups look useful, choose only the single highest-confidence blocker first.
+            - Do not request tools for optional hardening ideas or low-signal opportunities.
+            """;
     }
 
     private static ChunkReviewAgentEnvelope ParseChunkReviewAgentEnvelope(string raw)

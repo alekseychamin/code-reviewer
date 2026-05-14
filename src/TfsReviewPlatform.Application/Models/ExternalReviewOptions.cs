@@ -10,6 +10,8 @@ public sealed class ExternalReviewOptions
 
     public string BaseUrl { get; init; } = string.Empty;
 
+    public ExternalReviewInputMode InputMode { get; init; } = ExternalReviewInputMode.PullRequestUrl;
+
     public IReadOnlyList<string> Commands { get; init; } = [];
 
     public string ResponseLanguage { get; init; } = "ru-ru";
@@ -22,5 +24,11 @@ public sealed class ExternalReviewOptions
 
     public int ChangeSummaryWaitSeconds { get; init; } = 45;
 
-    public bool UseReviewFindings { get; init; } = true;
+    public bool UseReviewFindings { get; init; }
+}
+
+public enum ExternalReviewInputMode
+{
+    PullRequestUrl = 0,
+    Diff = 1
 }

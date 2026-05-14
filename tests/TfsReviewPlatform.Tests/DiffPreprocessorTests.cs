@@ -875,4 +875,296 @@ public sealed class DiffPreprocessorTests
         Assert.Contains("***", secretHint.Evidence, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public void Process_GeneratesJwtUtcLocalTimeHint_WhenJwtValidToIsComparedWithDateTimeNow()
+    {
+        var sut = new DiffPreprocessor(Microsoft.Extensions.Options.Options.Create(new ReviewPipelineOptions
+        {
+            MaxChunkCharacters = 4000
+        }));
+
+        var diff = """
+            diff --git a/src/App/Auth/BaseServiceTokenService.cs b/src/App/Auth/BaseServiceTokenService.cs
+            --- /dev/null
+            +++ b/src/App/Auth/BaseServiceTokenService.cs
+            @@ -0,0 +1,16 @@
+            +using System.IdentityModel.Tokens.Jwt;
+            +
+            +public sealed class BaseServiceTokenService
+            +{
+            +    private JwtSecurityToken? _tokenObject;
+            +
+            +    public bool ShouldRefresh()
+            +    {
+            +        return _tokenObject is null ||
+            +            _tokenObject.ValidTo < DateTime.Now.AddMinutes(1);
+            +    }
+            +}
+            """;
+
+        var result = sut.Process(diff);
+
+        var hint = Assert.Single(result.ReviewHints, hint => hint.RuleId == "JWT_UTC_COMPARED_WITH_LOCAL_TIME");
+        Assert.Equal("src/App/Auth/BaseServiceTokenService.cs", hint.FilePath);
+        Assert.Contains("ValidTo", hint.Evidence, StringComparison.Ordinal);
+        Assert.Contains("DateTime.Now", hint.Evidence, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Process_DoesNotGenerateJwtUtcLocalTimeHint_WhenJwtValidToIsComparedWithDateTimeUtcNow()
+    {
+        var sut = new DiffPreprocessor(Microsoft.Extensions.Options.Options.Create(new ReviewPipelineOptions
+        {
+            MaxChunkCharacters = 4000
+        }));
+
+        var diff = """
+            diff --git a/src/App/Auth/BaseServiceTokenService.cs b/src/App/Auth/BaseServiceTokenService.cs
+            --- /dev/null
+            +++ b/src/App/Auth/BaseServiceTokenService.cs
+            @@ -0,0 +1,16 @@
+            +using System.IdentityModel.Tokens.Jwt;
+            +
+            +public sealed class BaseServiceTokenService
+            +{
+            +    private JwtSecurityToken? _tokenObject;
+            +
+            +    public bool ShouldRefresh()
+            +    {
+            +        return _tokenObject is null ||
+            +            _tokenObject.ValidTo < DateTime.UtcNow.AddMinutes(1);
+            +    }
+            +}
+            """;
+
+        var result = sut.Process(diff);
+
+        Assert.DoesNotContain(result.ReviewHints, hint => hint.RuleId == "JWT_UTC_COMPARED_WITH_LOCAL_TIME");
+    }
+
+    [Fact]
+    public void Process_GeneratesNonNullableContractHint_ForConditionalNullReturnInTaskGeneric()
+    {
+        var sut = new DiffPreprocessor(Microsoft.Extensions.Options.Options.Create(new ReviewPipelineOptions
+        {
+            MaxChunkCharacters = 4000
+        }));
+
+        var diff = """
+            diff --git a/src/Auth/HttpClientsServiceOnlyAuthHandler.cs b/src/Auth/HttpClientsServiceOnlyAuthHandler.cs
+            --- /dev/null
+            +++ b/src/Auth/HttpClientsServiceOnlyAuthHandler.cs
+            @@ -0,0 +1,18 @@
+            +using System.Net.Http.Headers;
+            +using System.Threading;
+            +using System.Threading.Tasks;
+            +
+            +public sealed class HttpClientsServiceOnlyAuthHandler
+            +{
+            +    private async Task<AuthenticationHeaderValue> AuthorizeUsingServiceUserAsync(CancellationToken cancellationToken)
+            +    {
+            +        var serviceToken = await GetToken(cancellationToken);
+            +
+            +        return serviceToken == null ? null : new AuthenticationHeaderValue("Bearer", serviceToken);
+            +    }
+            +
+            +    private Task<string?> GetToken(CancellationToken cancellationToken) => Task.FromResult<string?>(null);
+            +}
+            """;
+
+        var result = sut.Process(diff);
+
+        var hint = Assert.Single(result.ReviewHints, hint => hint.RuleId == "NON_NULLABLE_CONTRACT_RETURNS_NULL");
+        Assert.Equal("src/Auth/HttpClientsServiceOnlyAuthHandler.cs", hint.FilePath);
+        Assert.Contains("Task<AuthenticationHeaderValue>", hint.Evidence, StringComparison.Ordinal);
+        Assert.Contains("return serviceToken == null ? null", hint.Evidence, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Process_DoesNotGenerateNonNullableContractHint_ForNullableTaskGeneric()
+    {
+        var sut = new DiffPreprocessor(Microsoft.Extensions.Options.Options.Create(new ReviewPipelineOptions
+        {
+            MaxChunkCharacters = 4000
+        }));
+
+        var diff = """
+            diff --git a/src/Auth/HttpClientsServiceOnlyAuthHandler.cs b/src/Auth/HttpClientsServiceOnlyAuthHandler.cs
+            --- /dev/null
+            +++ b/src/Auth/HttpClientsServiceOnlyAuthHandler.cs
+            @@ -0,0 +1,13 @@
+            +using System.Net.Http.Headers;
+            +using System.Threading;
+            +using System.Threading.Tasks;
+            +
+            +public sealed class HttpClientsServiceOnlyAuthHandler
+            +{
+            +    private async Task<AuthenticationHeaderValue?> AuthorizeUsingServiceUserAsync(CancellationToken cancellationToken)
+            +    {
+            +        var serviceToken = await GetToken(cancellationToken);
+            +        return serviceToken == null ? null : new AuthenticationHeaderValue("Bearer", serviceToken);
+            +    }
+            +}
+            """;
+
+        var result = sut.Process(diff);
+
+        Assert.DoesNotContain(result.ReviewHints, hint => hint.RuleId == "NON_NULLABLE_CONTRACT_RETURNS_NULL");
+    }
+
+    [Fact]
+    public void Process_GeneratesTaskFactoryStartNewAsyncIoHint_WhenAsyncLazyBacksTokenHttpRefresh()
+    {
+        var sut = new DiffPreprocessor(Microsoft.Extensions.Options.Options.Create(new ReviewPipelineOptions
+        {
+            MaxChunkCharacters = 4000
+        }));
+
+        var diff = """
+            diff --git a/src/Auth/Helpers/AsyncLazy.cs b/src/Auth/Helpers/AsyncLazy.cs
+            --- /dev/null
+            +++ b/src/Auth/Helpers/AsyncLazy.cs
+            @@ -0,0 +1,12 @@
+            +using System;
+            +using System.Threading.Tasks;
+            +
+            +public sealed class AsyncLazy<T> : Lazy<Task<T>>
+            +{
+            +    public AsyncLazy(Func<Task<T>> taskFactory) :
+            +        base(() => Task.Factory.StartNew(() => taskFactory()).Unwrap())
+            +    { }
+            +}
+            diff --git a/src/Auth/BaseServiceTokenService.cs b/src/Auth/BaseServiceTokenService.cs
+            --- /dev/null
+            +++ b/src/Auth/BaseServiceTokenService.cs
+            @@ -0,0 +1,18 @@
+            +using System.Threading;
+            +using System.Threading.Tasks;
+            +
+            +public abstract class BaseServiceTokenService
+            +{
+            +    private AsyncLazy<string> _tokenAsyncLazy;
+            +    protected BaseServiceTokenService()
+            +    {
+            +        _tokenAsyncLazy = new AsyncLazy<string>(TokenValueFactory);
+            +    }
+            +    protected abstract Task<string> RequestToken(CancellationToken cancellationToken);
+            +    private async Task<string> TokenValueFactory()
+            +    {
+            +        return await RequestToken(CancellationToken.None);
+            +    }
+            +}
+            diff --git a/src/Auth/IdentityServiceTokenService.cs b/src/Auth/IdentityServiceTokenService.cs
+            --- /dev/null
+            +++ b/src/Auth/IdentityServiceTokenService.cs
+            @@ -0,0 +1,14 @@
+            +using System.Net.Http;
+            +using System.Threading;
+            +using System.Threading.Tasks;
+            +
+            +public sealed class IdentityServiceTokenService : BaseServiceTokenService
+            +{
+            +    private readonly HttpClient _httpClient = new();
+            +    protected override async Task<string> RequestToken(CancellationToken cancellationToken)
+            +    {
+            +        using var response = await _httpClient.PostAsync("/connect/token", null, cancellationToken);
+            +        return await response.Content.ReadAsStringAsync();
+            +    }
+            +}
+            """;
+
+        var result = sut.Process(diff);
+
+        var hint = Assert.Single(result.ReviewHints, hint =>
+            hint.RuleId == "TASK_FACTORY_STARTNEW_ASYNC_IO_TOKEN_FLOW");
+        Assert.Equal("src/Auth/Helpers/AsyncLazy.cs", hint.FilePath);
+        Assert.Contains("Task.Factory.StartNew", hint.Evidence, StringComparison.Ordinal);
+        Assert.Contains("RequestToken(CancellationToken.None)", hint.Evidence, StringComparison.Ordinal);
+        Assert.Contains(".PostAsync", hint.Evidence, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Process_PrependsRiskDomainClassification_ToReviewChunks()
+    {
+        var sut = new DiffPreprocessor(Microsoft.Extensions.Options.Options.Create(new ReviewPipelineOptions
+        {
+            MaxChunkCharacters = 4000,
+            MaxPrimaryReviewChunkCharacters = 4000
+        }));
+
+        var diff = """
+            diff --git a/src/Auth/BaseServiceTokenService.cs b/src/Auth/BaseServiceTokenService.cs
+            --- /dev/null
+            +++ b/src/Auth/BaseServiceTokenService.cs
+            @@ -0,0 +1,16 @@
+            +using System.IdentityModel.Tokens.Jwt;
+            +
+            +public sealed class BaseServiceTokenService
+            +{
+            +    private JwtSecurityToken? _tokenObject;
+            +
+            +    public bool ShouldRefresh()
+            +    {
+            +        return _tokenObject is null ||
+            +            _tokenObject.ValidTo < DateTime.Now.AddMinutes(1);
+            +    }
+            +}
+            """;
+
+        var result = sut.Process(diff);
+
+        var domain = Assert.Single(result.RiskDomains, domain =>
+            domain.Domain == ReviewRiskDomain.AuthTokenSecurity);
+        Assert.Contains(domain.Factors, factor =>
+            factor.Description.Contains("JWT", StringComparison.OrdinalIgnoreCase));
+        var chunk = Assert.Single(result.ReviewChunks);
+        Assert.StartsWith("### Risk domain classification", chunk, StringComparison.Ordinal);
+        Assert.Contains("Auth/token/security", chunk, StringComparison.Ordinal);
+        Assert.Contains("JWT", chunk, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("## File: 'src/Auth/BaseServiceTokenService.cs'", chunk, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Process_UsesCompactRiskDomainClassification_InReviewChunks()
+    {
+        var sut = new DiffPreprocessor(Microsoft.Extensions.Options.Options.Create(new ReviewPipelineOptions
+        {
+            MaxChunkCharacters = 4000,
+            MaxPrimaryReviewChunkCharacters = 4000
+        }));
+
+        var diff = """
+            diff --git a/src/Auth/AuthClient.cs b/src/Auth/AuthClient.cs
+            --- /dev/null
+            +++ b/src/Auth/AuthClient.cs
+            @@ -0,0 +1,20 @@
+            +using System.IdentityModel.Tokens.Jwt;
+            +
+            +public sealed class AuthClient
+            +{
+            +    public async Task<string> SendAsync(HttpClient client, string token, CancellationToken cancellationToken)
+            +    {
+            +        var jwt = new JwtSecurityToken(token);
+            +        var response = await client.PostAsJsonAsync("/token", token, cancellationToken);
+            +        response.EnsureSuccessStatusCode();
+            +        return jwt.ValidTo < DateTime.Now.AddMinutes(1)
+            +            ? string.Empty
+            +            : token;
+            +    }
+            +}
+            """;
+
+        var result = sut.Process(diff);
+
+        var chunk = Assert.Single(result.ReviewChunks);
+        Assert.StartsWith("### Risk domain classification", chunk, StringComparison.Ordinal);
+        Assert.Contains("Lens only", chunk, StringComparison.Ordinal);
+        Assert.Contains("Auth/token/security", chunk, StringComparison.Ordinal);
+        Assert.Contains("signals:", chunk, StringComparison.Ordinal);
+        Assert.DoesNotContain("Determining factors:", chunk, StringComparison.Ordinal);
+        Assert.DoesNotContain("Review mode:", chunk, StringComparison.Ordinal);
+        Assert.DoesNotContain("Check:", chunk, StringComparison.Ordinal);
+        Assert.True(chunk.IndexOf("## File:", StringComparison.Ordinal) < 800);
+    }
+
 }
