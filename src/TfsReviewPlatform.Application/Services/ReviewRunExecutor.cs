@@ -410,7 +410,9 @@ public sealed class ReviewRunExecutor(
                 }
             }
 
-            if (reviewPipelineOptions.Value.EnableFinalModelNormalizationPass)
+            var deepSeekPrimarySucceeded = deepSeekTuiReview is { Succeeded: true };
+            if (reviewPipelineOptions.Value.EnableFinalModelNormalizationPass &&
+                !deepSeekPrimarySucceeded)
             {
                 var findingsBeforeNormalization = findings.ToArray();
                 await PersistAndPublishAsync(
@@ -434,8 +436,16 @@ public sealed class ReviewRunExecutor(
                     findingsBeforeNormalization.Length,
                     findings.Count - normalized.Findings.Count);
             }
+            else if (reviewPipelineOptions.Value.EnableFinalModelNormalizationPass)
+            {
+                logger.LogInformation(
+                    "Skipped final model normalization for run {RunId} because DeepSeek-TUI primary review succeeded",
+                    run.Id);
+            }
 
-            var severityNormalizedFindings = NormalizeFindingSeverities(findings);
+            var severityNormalizedFindings = NormalizeFindingSeverities(
+                findings,
+                deepSeekPrimarySucceeded);
             if (!ReferenceEquals(severityNormalizedFindings, findings))
             {
                 logger.LogInformation(
@@ -467,7 +477,9 @@ public sealed class ReviewRunExecutor(
                     demotedAdded);
             }
 
-            var precisionFilteredFindings = SuppressLowPrecisionFindings(findings);
+            var precisionFilteredFindings = SuppressLowPrecisionFindings(
+                findings,
+                deepSeekPrimarySucceeded);
             if (precisionFilteredFindings.Count != findings.Count)
             {
                 logger.LogInformation(
@@ -480,7 +492,10 @@ public sealed class ReviewRunExecutor(
 
             if (reviewPipelineOptions.Value.EnableFindingEvidenceGate)
             {
-                var evidenceGatedFindings = ApplyFindingEvidenceGate(findings, reviewPreprocessed);
+                var evidenceGatedFindings = ApplyFindingEvidenceGate(
+                    findings,
+                    reviewPreprocessed,
+                    deepSeekPrimarySucceeded);
                 await PersistAndPublishAsync(
                     run,
                     $"Evidence gate: оставлено {evidenceGatedFindings.Count} из {findings.Count} findings с diff-якорем",
@@ -501,7 +516,8 @@ public sealed class ReviewRunExecutor(
 
             var contradictionFilteredFindings = SuppressContradictedByDiffFindings(
                 findings,
-                reviewPreprocessed.FilteredDiffText);
+                reviewPreprocessed.FilteredDiffText,
+                deepSeekPrimarySucceeded);
             if (contradictionFilteredFindings.Count != findings.Count)
             {
                 logger.LogInformation(
@@ -512,18 +528,28 @@ public sealed class ReviewRunExecutor(
                 findings = contradictionFilteredFindings.ToList();
             }
 
-            var precisionFilteredOpportunities = SuppressLowSignalOpportunities(opportunities);
-            if (precisionFilteredOpportunities.Count != opportunities.Count)
+            if (!deepSeekPrimarySucceeded)
+            {
+                var precisionFilteredOpportunities = SuppressLowSignalOpportunities(opportunities);
+                if (precisionFilteredOpportunities.Count != opportunities.Count)
+                {
+                    logger.LogInformation(
+                        "Suppressed low-signal opportunities for run {RunId}: before={Before}, after={After}",
+                        run.Id,
+                        opportunities.Count,
+                        precisionFilteredOpportunities.Count);
+                    opportunities = precisionFilteredOpportunities.ToList();
+                }
+            }
+            else if (opportunities.Count > 0)
             {
                 logger.LogInformation(
-                    "Suppressed low-signal opportunities for run {RunId}: before={Before}, after={After}",
+                    "Skipped low-signal opportunity suppression for run {RunId} because DeepSeek-TUI primary review succeeded: opportunities={Opportunities}",
                     run.Id,
-                    opportunities.Count,
-                    precisionFilteredOpportunities.Count);
-                opportunities = precisionFilteredOpportunities.ToList();
+                    opportunities.Count);
             }
 
-            var deduplicatedFindings = DeduplicateFindings(findings);
+            var deduplicatedFindings = DeduplicateFindings(findings, deepSeekPrimarySucceeded);
             if (deduplicatedFindings.Count != findings.Count)
             {
                 logger.LogInformation(
@@ -2810,7 +2836,9 @@ public sealed class ReviewRunExecutor(
         return DeduplicateFindings(restored);
     }
 
-    private static IReadOnlyList<ReviewFinding> DeduplicateFindings(IReadOnlyList<ReviewFinding> findings)
+    internal static IReadOnlyList<ReviewFinding> DeduplicateFindings(
+        IReadOnlyList<ReviewFinding> findings,
+        bool preserveExternalReviewFindings = false)
     {
         if (findings.Count < 2)
         {
@@ -2820,9 +2848,22 @@ public sealed class ReviewRunExecutor(
         var deduplicated = new List<ReviewFinding>();
         foreach (var candidate in findings)
         {
+            if (preserveExternalReviewFindings &&
+                candidate.Source is ReviewFindingSource.ExternalReview)
+            {
+                deduplicated.Add(candidate);
+                continue;
+            }
+
             var duplicateIndex = deduplicated.FindIndex(existing => CoversFinding(existing, candidate));
             if (duplicateIndex >= 0)
             {
+                if (preserveExternalReviewFindings &&
+                    deduplicated[duplicateIndex].Source is ReviewFindingSource.ExternalReview)
+                {
+                    continue;
+                }
+
                 deduplicated[duplicateIndex] = ChoosePreferredFinding(deduplicated[duplicateIndex], candidate);
                 continue;
             }
@@ -2974,7 +3015,8 @@ public sealed class ReviewRunExecutor(
 
     internal static IReadOnlyList<ReviewFinding> ApplyFindingEvidenceGate(
         IReadOnlyList<ReviewFinding> findings,
-        PreprocessedDiff preprocessed)
+        PreprocessedDiff preprocessed,
+        bool preserveExternalReviewFindings = false)
     {
         if (findings.Count == 0 || string.IsNullOrWhiteSpace(preprocessed.FilteredDiffText))
         {
@@ -2988,7 +3030,10 @@ public sealed class ReviewRunExecutor(
         }
 
         return findings
-            .Where(finding => HasDiffEvidence(finding, diffEvidence))
+            .Where(finding =>
+                (preserveExternalReviewFindings &&
+                 finding.Source is ReviewFindingSource.ExternalReview) ||
+                HasDiffEvidence(finding, diffEvidence))
             .ToArray();
     }
 
@@ -3206,7 +3251,9 @@ public sealed class ReviewRunExecutor(
             .ToLowerInvariant();
     }
 
-    internal static IReadOnlyList<ReviewFinding> SuppressLowPrecisionFindings(IReadOnlyList<ReviewFinding> findings)
+    internal static IReadOnlyList<ReviewFinding> SuppressLowPrecisionFindings(
+        IReadOnlyList<ReviewFinding> findings,
+        bool preserveExternalReviewFindings = false)
     {
         if (findings.Count == 0)
         {
@@ -3214,11 +3261,16 @@ public sealed class ReviewRunExecutor(
         }
 
         return findings
-            .Where(finding => !IsLowPrecisionFinding(finding))
+            .Where(finding =>
+                (preserveExternalReviewFindings &&
+                 finding.Source is ReviewFindingSource.ExternalReview) ||
+                !IsLowPrecisionFinding(finding))
             .ToArray();
     }
 
-    internal static IReadOnlyList<ReviewFinding> NormalizeFindingSeverities(IReadOnlyList<ReviewFinding> findings)
+    internal static IReadOnlyList<ReviewFinding> NormalizeFindingSeverities(
+        IReadOnlyList<ReviewFinding> findings,
+        bool preserveExternalReviewFindings = false)
     {
         if (findings.Count == 0)
         {
@@ -3229,7 +3281,11 @@ public sealed class ReviewRunExecutor(
         for (var index = 0; index < findings.Count; index++)
         {
             var finding = findings[index];
-            var normalizedFinding = NormalizeFindingSeverity(finding);
+            var shouldPreserveFinding = preserveExternalReviewFindings &&
+                                        finding.Source is ReviewFindingSource.ExternalReview;
+            var normalizedFinding = shouldPreserveFinding
+                ? finding
+                : NormalizeFindingSeverity(finding);
             if (normalizedFinding == finding && normalized is null)
             {
                 continue;
@@ -3263,7 +3319,8 @@ public sealed class ReviewRunExecutor(
 
     internal static IReadOnlyList<ReviewFinding> SuppressContradictedByDiffFindings(
         IReadOnlyList<ReviewFinding> findings,
-        string diffText)
+        string diffText,
+        bool preserveExternalReviewFindings = false)
     {
         if (findings.Count == 0 || string.IsNullOrWhiteSpace(diffText))
         {
@@ -3271,7 +3328,10 @@ public sealed class ReviewRunExecutor(
         }
 
         return findings
-            .Where(finding => !IsSingletonRegistrationSpeculationContradictedByDiff(finding, diffText))
+            .Where(finding =>
+                (preserveExternalReviewFindings &&
+                 finding.Source is ReviewFindingSource.ExternalReview) ||
+                !IsSingletonRegistrationSpeculationContradictedByDiff(finding, diffText))
             .ToArray();
     }
 

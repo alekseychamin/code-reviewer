@@ -216,6 +216,28 @@ public sealed class FindingNormalizationDeduplicationTests
     }
 
     [Fact]
+    public void SuppressLowPrecisionFindings_PreservesExternalAgentFindingWhenAgentIsPrimary()
+    {
+        var finding = CreateFinding(
+            "Domain/Extensions/RegionCacheExtensions.cs",
+            132,
+            FindingCategory.Reliability,
+            FindingSeverity.Low,
+            "Методы EnrichWithRegionData не проверяют regionCacheRepository на null",
+            "Параметр regionCacheRepository не проверяется на null. Хотя в штатном режиме DI гарантирует передачу экземпляра, агент оставил это как часть своего ревью.",
+            "order.OrderRegionName ??= regionCacheRepository.GetRegionName(order.OrderRegionCode);",
+            ReviewFindingSource.ExternalReview);
+
+        var withoutPreserve = ReviewRunExecutor.SuppressLowPrecisionFindings([finding]);
+        var withPreserve = ReviewRunExecutor.SuppressLowPrecisionFindings(
+            [finding],
+            preserveExternalReviewFindings: true);
+
+        Assert.Empty(withoutPreserve);
+        Assert.Single(withPreserve);
+    }
+
+    [Fact]
     public void SuppressLowPrecisionFindings_DemotesTestMaintainabilityOnlyFinding()
     {
         var finding = CreateFinding(
@@ -290,6 +312,28 @@ public sealed class FindingNormalizationDeduplicationTests
 
         var normalized = Assert.Single(result);
         Assert.Equal(FindingSeverity.Critical, normalized.Severity);
+    }
+
+    [Fact]
+    public void NormalizeFindingSeverities_PreservesExternalAgentSeverityWhenAgentIsPrimary()
+    {
+        var finding = CreateFinding(
+            "Tele2.Crm.CustomerRepresentService/Tele2.Crm.CustomerRepresentService.Domain/Tele2.Crm.CustomerRepresentService.Domain.csproj",
+            16,
+            FindingCategory.Architecture,
+            FindingSeverity.Critical,
+            "Moq в production-проекте Domain.csproj",
+            "Агент оценил production dependency как Critical; когда агент главный, локальная нормализация не должна менять его severity.",
+            "<PackageReference Include=\"Moq\" Version=\"4.20.72\" />",
+            ReviewFindingSource.ExternalReview);
+
+        var result = ReviewRunExecutor.NormalizeFindingSeverities(
+            [finding],
+            preserveExternalReviewFindings: true);
+
+        var normalized = Assert.Single(result);
+        Assert.Equal(FindingSeverity.Critical, normalized.Severity);
+        Assert.Equal(ReviewFindingSource.ExternalReview, normalized.Source);
     }
 
     [Fact]
@@ -655,6 +699,36 @@ public sealed class FindingNormalizationDeduplicationTests
     }
 
     [Fact]
+    public void DeduplicateFindings_PreservesExternalAgentFindingsWhenAgentIsPrimary()
+    {
+        var getOrderListFinding = CreateFinding(
+            "Infrastructure/Db/GetOrderList.sql",
+            64,
+            FindingCategory.Logic,
+            FindingSeverity.High,
+            "Удаление JOIN ReplicBranch и фильтров IsBasic/IsBcAllowed меняет бизнес-семантику",
+            "Агент проверил SQL-контекст и отдельно отметил, что основной список заказов больше не ограничивается базовыми разрешёнными филиалами.",
+            "where rb.\"IsBasic\" is true and rb.\"IsBcAllowed\" is true",
+            ReviewFindingSource.ExternalReview);
+        var liteV2Finding = CreateFinding(
+            "Infrastructure/Db/GetOrderListLiteV2.sql",
+            60,
+            FindingCategory.Logic,
+            FindingSeverity.Medium,
+            "SQL перестал фильтровать разрешённые регионы в LiteV2",
+            "Это похожий риск, но агент оставил его отдельным наблюдением по другому запросу, поэтому финальная нормализация не должна его выбрасывать.",
+            "where rb.\"IsBasic\" is true and rb.\"IsBcAllowed\" is true",
+            ReviewFindingSource.ExternalReview);
+
+        var result = ReviewRunExecutor.DeduplicateFindings(
+            [getOrderListFinding, liteV2Finding],
+            preserveExternalReviewFindings: true);
+
+        Assert.Equal(2, result.Count);
+        Assert.All(result, finding => Assert.Equal(ReviewFindingSource.ExternalReview, finding.Source));
+    }
+
+    [Fact]
     public void RestoreDroppedDistinctFindings_DeduplicatesGroupByEvenWhenSuggestionMentionsBusinessFilters()
     {
         var normalizedFindings = new[]
@@ -772,6 +846,37 @@ public sealed class FindingNormalizationDeduplicationTests
     }
 
     [Fact]
+    public void ApplyFindingEvidenceGate_PreservesExternalAgentFindingWhenAgentIsPrimary()
+    {
+        var finding = CreateFinding(
+            "Auth/OtherService.cs",
+            42,
+            FindingCategory.Reliability,
+            FindingSeverity.Medium,
+            "Агентское замечание опирается на контекст репозитория за пределами hunk",
+            "DeepSeek-TUI мог проверить соседний код через репозиторий и SocratiCode, поэтому evidence-gate не должен выбрасывать его вывод.",
+            "return cachedToken;",
+            ReviewFindingSource.ExternalReview);
+        var preprocessed = CreatePreprocessedDiff("""
+            diff --git a/Auth/BaseServiceTokenService.cs b/Auth/BaseServiceTokenService.cs
+            index 1111111..2222222 100644
+            --- a/Auth/BaseServiceTokenService.cs
+            +++ b/Auth/BaseServiceTokenService.cs
+            @@ -40,6 +40,7 @@ public string GetToken()
+            +    return token;
+            """);
+
+        var withoutPreserve = ReviewRunExecutor.ApplyFindingEvidenceGate([finding], preprocessed);
+        var withPreserve = ReviewRunExecutor.ApplyFindingEvidenceGate(
+            [finding],
+            preprocessed,
+            preserveExternalReviewFindings: true);
+
+        Assert.Empty(withoutPreserve);
+        Assert.Single(withPreserve);
+    }
+
+    [Fact]
     public void ApplyFindingEvidenceGate_RemovesUnknownFindingOnChangedFileWithoutLineOrCodeEvidence()
     {
         var finding = CreateFinding(
@@ -871,6 +976,36 @@ public sealed class FindingNormalizationDeduplicationTests
         var result = ReviewRunExecutor.SuppressContradictedByDiffFindings([finding], diff);
 
         Assert.Empty(result);
+    }
+
+    [Fact]
+    public void SuppressContradictedByDiffFindings_PreservesExternalAgentFindingWhenAgentIsPrimary()
+    {
+        var finding = CreateFinding(
+            "Auth/ServiceToken/EsbTokenService.cs",
+            13,
+            FindingCategory.Architecture,
+            FindingSeverity.Medium,
+            "Требуется регистрация как Singleton",
+            "Агент оставил замечание после чтения контекста, поэтому локальный contradiction-filter не должен переписывать итог.",
+            "public class EsbTokenService : IEsbTokenService",
+            ReviewFindingSource.ExternalReview);
+        var diff = """
+            diff --git a/Auth/Extensions/ServiceCollectionAuthExtensions.cs b/Auth/Extensions/ServiceCollectionAuthExtensions.cs
+            index 1111111..2222222 100644
+            --- a/Auth/Extensions/ServiceCollectionAuthExtensions.cs
+            +++ b/Auth/Extensions/ServiceCollectionAuthExtensions.cs
+            @@ -20,6 +20,7 @@ public static IServiceCollection AddEsbClientsAuth(...)
+            +    services.AddSingleton<IEsbTokenService, EsbTokenService>();
+            +    services.AddTransient<HttpEsbClientsAuthHandler>();
+            """;
+
+        var result = ReviewRunExecutor.SuppressContradictedByDiffFindings(
+            [finding],
+            diff,
+            preserveExternalReviewFindings: true);
+
+        Assert.Single(result);
     }
 
     private static ReviewFinding CreateFinding(
