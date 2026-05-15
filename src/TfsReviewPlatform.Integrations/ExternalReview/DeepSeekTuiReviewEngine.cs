@@ -319,7 +319,7 @@ public sealed class DeepSeekTuiReviewEngine(
 
         return new PreparedDeepSeekWorkspace(
             runDirectory,
-            repositoryWorkspace ?? runDirectory,
+            runDirectory,
             prompt);
     }
 
@@ -369,7 +369,7 @@ public sealed class DeepSeekTuiReviewEngine(
             : string.Join('\n', changedFiles.Select(file => $"- {file}"));
         var repositoryInstruction = string.IsNullOrWhiteSpace(repositoryWorkspace)
             ? "Full repository copy is not available; use diff.patch and review-input.json only."
-            : $"Full repository copy is available at `{repositoryWorkspace}`. Inspect source files when the diff alone is not enough.";
+            : $"Full repository copy is available at `{repositoryWorkspace}`. Treat it as an external context path; inspect source files only after the SocratiCode preflight says the project is indexed or updated.";
         var riskDomainsBlock = string.IsNullOrWhiteSpace(riskDomainsSummary)
             ? "No deterministic risk domain summary was provided. Infer active lenses from changed paths and diff content."
             : riskDomainsSummary.Trim();
@@ -382,6 +382,11 @@ public sealed class DeepSeekTuiReviewEngine(
             - Diff: `{{diffPath}}`
             - {{repositoryInstruction}}
 
+            Runtime layout:
+            - Your current working directory is the review run directory, not the repository.
+            - Start by reading `diff.patch` and `review-input.json` from the current directory.
+            - Do not read files from the repository path until after calling SocratiCode status/update.
+
             Changed files:
             {{files}}
 
@@ -391,11 +396,12 @@ public sealed class DeepSeekTuiReviewEngine(
             Repository navigation tools:
             - SocratiCode MCP is the preferred tool for repository-wide evidence: semantic search, symbol lookup, callers/callees, impact/blast-radius, execution flow, dependency graph, and context artifacts.
             - Do not search the repository before understanding the diff. First read `diff.patch`, classify risk domains, and write concrete hypotheses.
-            - Mandatory SocratiCode preflight for any non-trivial review: after Phase 1 hypotheses exist and before reading repository source files, call SocratiCode at least once.
+            - Mandatory SocratiCode preflight for any non-trivial review: after reading `diff.patch` and before reading any repository source file, call SocratiCode at least once.
             - DeepSeek-TUI exposes SocratiCode tools with single underscores, for example `mcp_socraticode_codebase_status`.
             - First call `mcp_socraticode_codebase_status` or `codebase_status` for `{{repositoryWorkspace ?? "<repository path unavailable>"}}`.
-            - If the project is not indexed, call `mcp_socraticode_codebase_index`/`codebase_index` and then check status before targeted search.
+            - If status says "No index found", "not indexed", or "Run codebase_index", stop repository inspection and immediately call `mcp_socraticode_codebase_index`/`codebase_index` for the same project path. Then call status again before reading repository source files.
             - If the project is already indexed, call `mcp_socraticode_codebase_update`/`codebase_update` before targeted search so the persistent repository workspace reflects the current PR checkout.
+            - Do not continue with broad `read_file`, `grep_files`, or `exec_shell` repository inspection after a "No index found" status until the index or update step has completed or failed explicitly.
             - Then use at least one targeted SocratiCode evidence tool for the highest-risk hypothesis only after naming the exact symbol/file/behavior to verify: `mcp_socraticode_codebase_search`, `mcp_socraticode_codebase_symbols`, `mcp_socraticode_codebase_symbol`, `mcp_socraticode_codebase_impact`, or `mcp_socraticode_codebase_flow` (or the same names without the `mcp_socraticode_` prefix).
             - Use SocratiCode to decide which files/symbols matter, then use direct file reads only to verify exact changed code and nearby implementation details. Do not rely only on `read_file`/`grep_files` for cross-file evidence when SocratiCode is available.
             - If SocratiCode is unavailable, stale, or fails, continue with direct file inspection and note that limitation in `review_trace`.
