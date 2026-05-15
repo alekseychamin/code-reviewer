@@ -209,7 +209,7 @@ public sealed class ExternalReviewArtifactParser : IExternalReviewArtifactParser
     private static string StripMarkdown(string value)
     {
         return string.Join(
-                ' ',
+                '\n',
                 value.Replace("\r\n", "\n", StringComparison.Ordinal)
                     .Split('\n')
                     .Select(line => line.Trim().TrimStart('-', '*').Trim())

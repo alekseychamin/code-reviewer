@@ -70,6 +70,9 @@ public sealed class ExternalReviewArtifactParserTests
 
         Assert.NotNull(result.ChangeSummary);
         Assert.Contains("Добавлен кэш регионов", result.ChangeSummary!.Description);
+        Assert.Equal(
+            "Добавлен кэш регионов\nУдалены SQL-джойны с ReplicBranch",
+            result.ChangeSummary.StructuredContent!.Summary);
         Assert.StartsWith("flowchart LR", result.ChangeSummary.DiagramMermaid);
         var finding = Assert.Single(result.Findings);
         Assert.Equal("src/GetOrderList.sql", finding.File);

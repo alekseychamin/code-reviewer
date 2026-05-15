@@ -23,6 +23,39 @@ interface RunDetailsProps {
   onAskReviewQuestion: (message: string) => Promise<void>;
 }
 
+const compactSummaryStarters = [
+  'Добав',
+  'Удал',
+  'Обнов',
+  'Измен',
+  'Реализ',
+  'Настро',
+  'Тест',
+  'Кэш',
+  'Обогащ',
+  'Рефактор',
+  'Переход',
+  'Исправ',
+  'Расшир',
+  'Поддерж',
+  'Оптимиз',
+  'Миграц',
+  'Валидац',
+  'Логирован',
+  'Сбор',
+  'Публикац',
+  'Add',
+  'Remove',
+  'Update',
+  'Change',
+  'Test'
+];
+
+const compactSummaryBoundaryPattern = new RegExp(
+  `\\s+(?=(?:${compactSummaryStarters.map(escapeRegExp).join('|')})[\\p{L}\\p{N}_-]*(?:\\s|$))`,
+  'u'
+);
+
 export function RunDetails({
   run,
   diffDownloadUrl,
@@ -58,6 +91,7 @@ export function RunDetails({
   );
   const isReviewRunning = run?.status === 'Running' || run?.status === 'Pending';
   const canRegenerateArtifacts = Boolean(run?.hasDiffArtifact) && !isReviewRunning;
+  const shouldShowSemanticContext = shouldShowSemanticContextCard(run?.semanticCodeContext);
 
   useEffect(() => {
     setIsDiagramCollapsed(true);
@@ -186,29 +220,31 @@ export function RunDetails({
       </div>
 
       <div className="results-stack">
-        <article className="result-card">
-          <div className="subsection-header">
-            <div>
-              <h3>Контекст модели</h3>
-              <p>{getSemanticContextSummary(run)}</p>
+        {shouldShowSemanticContext ? (
+          <article className="result-card">
+            <div className="subsection-header">
+              <div>
+                <h3>Контекст модели</h3>
+                <p>{getSemanticContextSummary(run)}</p>
+              </div>
+              <div className="result-toolbar">
+                <span className={`secondary-chip ${run.semanticCodeContext?.succeeded ? 'success' : 'muted'}`}>
+                  {getSemanticContextStatusLabel(run.semanticCodeContext?.status)}
+                </span>
+                <button
+                  aria-expanded={!isSemanticContextCollapsed}
+                  className="secondary-button"
+                  disabled={!run.semanticCodeContext?.enabled && !run.semanticCodeContext?.attempted}
+                  onClick={() => setIsSemanticContextCollapsed((value) => !value)}
+                  type="button"
+                >
+                  {isSemanticContextCollapsed ? 'Развернуть контекст' : 'Свернуть контекст'}
+                </button>
+              </div>
             </div>
-            <div className="result-toolbar">
-              <span className={`secondary-chip ${run.semanticCodeContext?.succeeded ? 'success' : 'muted'}`}>
-                {getSemanticContextStatusLabel(run.semanticCodeContext?.status)}
-              </span>
-              <button
-                aria-expanded={!isSemanticContextCollapsed}
-                className="secondary-button"
-                disabled={!run.semanticCodeContext?.enabled && !run.semanticCodeContext?.attempted}
-                onClick={() => setIsSemanticContextCollapsed((value) => !value)}
-                type="button"
-              >
-                {isSemanticContextCollapsed ? 'Развернуть контекст' : 'Свернуть контекст'}
-              </button>
-            </div>
-          </div>
-          {!isSemanticContextCollapsed ? <SemanticCodeContextBlock run={run} /> : null}
-        </article>
+            {!isSemanticContextCollapsed ? <SemanticCodeContextBlock run={run} /> : null}
+          </article>
+        ) : null}
 
         <article className="result-card">
           <div className="subsection-header">
@@ -763,6 +799,18 @@ type CollectedOpportunity = {
   exampleCodeLanguage: string;
 };
 
+function shouldShowSemanticContextCard(context?: ReviewRun['semanticCodeContext']): boolean {
+  if (!context) {
+    return false;
+  }
+
+  return context.enabled ||
+    context.attempted ||
+    context.snippetCount > 0 ||
+    context.candidateCount > 0 ||
+    context.queryCount > 0;
+}
+
 function getSemanticContextSummary(run: ReviewRun): string {
   const context = run.semanticCodeContext;
   if (!context?.enabled) {
@@ -1181,8 +1229,8 @@ function ChangeDescriptionBlock({
 
         {content.summary ? (
           <section className="structured-change-section">
-            <h4>Краткое описание</h4>
-            <p>{content.summary}</p>
+            <h4>Описание</h4>
+            <ChangeSummaryContent summary={content.summary} />
           </section>
         ) : null}
 
@@ -1217,6 +1265,70 @@ function ChangeDescriptionBlock({
       emptyText="Описание появится здесь после завершения первого этапа."
     />
   );
+}
+
+function ChangeSummaryContent({ summary }: { summary: string }) {
+  const items = parseChangeSummaryItems(summary);
+  if (items.length > 1) {
+    return (
+      <ul>
+        {items.map((item, index) => (
+          <li key={`summary-${index}`}>{item}</li>
+        ))}
+      </ul>
+    );
+  }
+
+  return <p>{items[0] ?? summary.trim()}</p>;
+}
+
+function parseChangeSummaryItems(summary: string): string[] {
+  const normalized = summary
+    .replace(/\r\n/g, '\n')
+    .replace(/\r/g, '\n')
+    .trim();
+  if (!normalized) {
+    return [];
+  }
+
+  const lineItems = normalized
+    .split('\n')
+    .map(cleanSummaryItem)
+    .filter(Boolean);
+  if (lineItems.length > 1) {
+    return lineItems;
+  }
+
+  const sentenceItems = normalized
+    .split(/[.;!?]\s+/)
+    .map(cleanSummaryItem)
+    .filter(Boolean);
+  if (sentenceItems.length > 1) {
+    return sentenceItems;
+  }
+
+  const compactItems = normalized
+    .split(compactSummaryBoundaryPattern)
+    .map(cleanSummaryItem)
+    .filter(Boolean);
+
+  return compactItems.length > 1
+    ? compactItems
+    : [cleanSummaryItem(normalized)];
+}
+
+function cleanSummaryItem(value: string): string {
+  return value
+    .trim()
+    .replace(/^[-*•]\s+/, '')
+    .replace(/^\d+[.)]\s+/, '')
+    .trim()
+    .replace(/[.;]$/, '')
+    .trim();
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
 function renderReviewEffort(value: number): string {
