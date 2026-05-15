@@ -89,6 +89,10 @@ internal sealed class AzureDevOpsPullRequestDiffProvider(
             tempDirectory,
             ["diff", "origin/__target__...origin/__source__"],
             cancellationToken);
+        await gitCommandRunner.RunAsync(
+            tempDirectory,
+            ["checkout", "--detach", "origin/__source__"],
+            cancellationToken);
 
         return new DiffAcquisitionResult
         {

@@ -1,4 +1,5 @@
 using TfsReviewPlatform.Application.Services;
+using TfsReviewPlatform.Application.Models;
 using TfsReviewPlatform.Domain.Entities;
 using TfsReviewPlatform.Domain.Enums;
 
@@ -118,6 +119,66 @@ public sealed class FindingNormalizationDeduplicationTests
         var result = ReviewRunExecutor.SuppressLowPrecisionFindings(findings);
 
         Assert.Single(result);
+    }
+
+    [Fact]
+    public void SuppressLowPrecisionFindings_RemovesHttpClientFactorySharedInstanceRaceMyth()
+    {
+        var findings = new[]
+        {
+            CreateFinding(
+                "Auth/Services/IdentityServiceTokenService.cs",
+                49,
+                FindingCategory.Bug,
+                FindingSeverity.Medium,
+                "Гонка данных при установке BaseAddress на общем HttpClient",
+                "IHttpClientFactory.CreateClient() возвращает общий default-экземпляр; параллельные вызовы могут перезаписать BaseAddress.",
+                "var httpClient = _httpClientFactory.CreateClient();\nhttpClient.BaseAddress = new Uri(_identityOptions.Url);")
+        };
+
+        var result = ReviewRunExecutor.SuppressLowPrecisionFindings(findings);
+
+        Assert.Empty(result);
+    }
+
+    [Fact]
+    public void SuppressLowPrecisionFindings_RemovesDefaultHttpClientFactoryPolicyFinding()
+    {
+        var findings = new[]
+        {
+            CreateFinding(
+                "Auth/Services/IdentityServiceTokenService.cs",
+                49,
+                FindingCategory.Performance,
+                FindingSeverity.Medium,
+                "Создание HttpClient без именованного клиента — обход пула соединений и политик",
+                "CreateClient() без имени обходит пул соединений и политики Polly.",
+                "var httpClient = _httpClientFactory.CreateClient();")
+        };
+
+        var result = ReviewRunExecutor.SuppressLowPrecisionFindings(findings);
+
+        Assert.Empty(result);
+    }
+
+    [Fact]
+    public void SuppressLowPrecisionFindings_RemovesLowCodeStyleFindings()
+    {
+        var findings = new[]
+        {
+            CreateFinding(
+                "Auth/Auth.csproj",
+                1,
+                FindingCategory.CodeStyle,
+                FindingSeverity.Low,
+                "Несогласованность версий между ReleaseNotes и csproj",
+                "ReleaseNotes и csproj содержат разные версии.",
+                "<Version>1.2.3</Version>")
+        };
+
+        var result = ReviewRunExecutor.SuppressLowPrecisionFindings(findings);
+
+        Assert.Empty(result);
     }
 
     [Fact]
@@ -375,7 +436,7 @@ public sealed class FindingNormalizationDeduplicationTests
     }
 
     [Fact]
-    public void RestoreDroppedDistinctFindings_KeepsSameSqlBusinessFilterIssueInDifferentQueries()
+    public void RestoreDroppedDistinctFindings_DeduplicatesSameSqlBusinessFilterIssueAcrossQueries()
     {
         var normalizedFindings = new[]
         {
@@ -399,7 +460,8 @@ public sealed class FindingNormalizationDeduplicationTests
 
         var result = ReviewRunExecutor.RestoreDroppedDistinctFindings([], normalizedFindings);
 
-        Assert.Equal(2, result.Count);
+        var finding = Assert.Single(result);
+        Assert.Contains("IsBasic", finding.Description, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
@@ -438,6 +500,138 @@ public sealed class FindingNormalizationDeduplicationTests
         Assert.Single(result);
     }
 
+    [Fact]
+    public void ApplyFindingEvidenceGate_KeepsFindingAnchoredToChangedHunkLine()
+    {
+        var finding = CreateFinding(
+            "Auth/BaseServiceTokenService.cs",
+            42,
+            FindingCategory.Security,
+            FindingSeverity.High,
+            "Refresh identity-токена сравнивает UTC JWT с локальным временем",
+            "ValidTo у JWT в UTC, а код сравнивает его с DateTime.Now.",
+            "if (_tokenObject.ValidTo < DateTime.Now.AddMinutes(1))");
+        var preprocessed = CreatePreprocessedDiff("""
+            diff --git a/Auth/BaseServiceTokenService.cs b/Auth/BaseServiceTokenService.cs
+            index 1111111..2222222 100644
+            --- a/Auth/BaseServiceTokenService.cs
+            +++ b/Auth/BaseServiceTokenService.cs
+            @@ -40,6 +40,7 @@ public string GetToken()
+                 if (_tokenObject.ValidTo < DateTime.Now.AddMinutes(1))
+                 {
+            +        _tokenLazy = CreateTokenLazy();
+                 }
+            """);
+
+        var result = ReviewRunExecutor.ApplyFindingEvidenceGate([finding], preprocessed);
+
+        Assert.Single(result);
+    }
+
+    [Fact]
+    public void ApplyFindingEvidenceGate_KeepsFindingAnchoredByExistingCodeWhenLineIsMissing()
+    {
+        var finding = CreateFinding(
+            "Auth/BaseServiceTokenService.cs",
+            0,
+            FindingCategory.Security,
+            FindingSeverity.High,
+            "Refresh identity-токена сравнивает UTC JWT с локальным временем",
+            "ValidTo у JWT в UTC, а код сравнивает его с DateTime.Now.",
+            "if (_tokenObject.ValidTo < DateTime.Now.AddMinutes(1))");
+        var preprocessed = CreatePreprocessedDiff("""
+            diff --git a/Auth/BaseServiceTokenService.cs b/Auth/BaseServiceTokenService.cs
+            index 1111111..2222222 100644
+            --- a/Auth/BaseServiceTokenService.cs
+            +++ b/Auth/BaseServiceTokenService.cs
+            @@ -40,6 +40,7 @@ public string GetToken()
+                 if (_tokenObject.ValidTo < DateTime.Now.AddMinutes(1))
+                 {
+            +        _tokenLazy = CreateTokenLazy();
+                 }
+            """);
+
+        var result = ReviewRunExecutor.ApplyFindingEvidenceGate([finding], preprocessed);
+
+        Assert.Single(result);
+    }
+
+    [Fact]
+    public void ApplyFindingEvidenceGate_RemovesFindingOutsideChangedFiles()
+    {
+        var finding = CreateFinding(
+            "Auth/OtherService.cs",
+            42,
+            FindingCategory.Reliability,
+            FindingSeverity.Medium,
+            "Модельное замечание без diff-якоря",
+            "Файл не участвует в diff, поэтому замечание нельзя проверить по этому PR.",
+            "return cachedToken;");
+        var preprocessed = CreatePreprocessedDiff("""
+            diff --git a/Auth/BaseServiceTokenService.cs b/Auth/BaseServiceTokenService.cs
+            index 1111111..2222222 100644
+            --- a/Auth/BaseServiceTokenService.cs
+            +++ b/Auth/BaseServiceTokenService.cs
+            @@ -40,6 +40,7 @@ public string GetToken()
+            +    return token;
+            """);
+
+        var result = ReviewRunExecutor.ApplyFindingEvidenceGate([finding], preprocessed);
+
+        Assert.Empty(result);
+    }
+
+    [Fact]
+    public void ApplyFindingEvidenceGate_RemovesUnknownFindingOnChangedFileWithoutLineOrCodeEvidence()
+    {
+        var finding = CreateFinding(
+            "Auth/BaseServiceTokenService.cs",
+            0,
+            FindingCategory.Architecture,
+            FindingSeverity.Medium,
+            "Сервис можно сделать чище",
+            "Общее замечание не указывает строку, код или проверяемый риск из diff.",
+            "");
+        var preprocessed = CreatePreprocessedDiff("""
+            diff --git a/Auth/BaseServiceTokenService.cs b/Auth/BaseServiceTokenService.cs
+            index 1111111..2222222 100644
+            --- a/Auth/BaseServiceTokenService.cs
+            +++ b/Auth/BaseServiceTokenService.cs
+            @@ -40,6 +40,7 @@ public string GetToken()
+            +    return token;
+            """);
+
+        var result = ReviewRunExecutor.ApplyFindingEvidenceGate([finding], preprocessed);
+
+        Assert.Empty(result);
+    }
+
+    [Fact]
+    public void SuppressContradictedByDiffFindings_RemovesSingletonWarningWhenDiffRegistersSingleton()
+    {
+        var finding = CreateFinding(
+            "Auth/ServiceToken/EsbTokenService.cs",
+            13,
+            FindingCategory.Architecture,
+            FindingSeverity.Medium,
+            "Требуется регистрация как Singleton",
+            "Сервис кэширует токен. Если регистрация будет Scoped или Transient, каждый экземпляр будет иметь собственный кэш.",
+            "public class EsbTokenService : IEsbTokenService");
+        var diff = """
+            diff --git a/Auth/Extensions/ServiceCollectionAuthExtensions.cs b/Auth/Extensions/ServiceCollectionAuthExtensions.cs
+            index 1111111..2222222 100644
+            --- a/Auth/Extensions/ServiceCollectionAuthExtensions.cs
+            +++ b/Auth/Extensions/ServiceCollectionAuthExtensions.cs
+            @@ -20,6 +20,7 @@ public static IServiceCollection AddEsbClientsAuth(...)
+            +    services.AddSingleton<IEsbTokenService, EsbTokenService>();
+            +    services.AddTransient<HttpEsbClientsAuthHandler>();
+            """;
+
+        var result = ReviewRunExecutor.SuppressContradictedByDiffFindings([finding], diff);
+
+        Assert.Empty(result);
+    }
+
     private static ReviewFinding CreateFinding(
         string file,
         int line,
@@ -459,5 +653,17 @@ public sealed class FindingNormalizationDeduplicationTests
             "Исправить контракт или запрос так, чтобы поведение соответствовало объявленному сценарию.",
             line,
             line);
+    }
+
+    private static PreprocessedDiff CreatePreprocessedDiff(string diff)
+    {
+        return new PreprocessedDiff
+        {
+            FilteredDiffText = diff,
+            ReviewContextDiffText = diff,
+            ChangedFiles = ["Auth/BaseServiceTokenService.cs"],
+            ReviewChunks = [diff],
+            Chunks = [diff]
+        };
     }
 }

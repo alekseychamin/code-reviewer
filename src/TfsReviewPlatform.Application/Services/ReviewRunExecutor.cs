@@ -31,12 +31,14 @@ public sealed class ReviewRunExecutor(
     IGraphAwareChunker graphAwareChunker,
     IReviewWorkspaceToolExecutor reviewWorkspaceToolExecutor,
     IExternalReviewEngine externalReviewEngine,
+    IDeepSeekTuiReviewEngine deepSeekTuiReviewEngine,
     IExternalReviewArtifactParser externalReviewArtifactParser,
     IFindingsComparisonService findingsComparisonService,
     IMarkdownReportBuilder markdownReportBuilder,
     IReviewPublisher reviewPublisher,
     IOptions<ReviewPipelineOptions> reviewPipelineOptions,
     IOptions<ExternalReviewOptions> externalReviewOptions,
+    IOptions<DeepSeekTuiReviewOptions> deepSeekTuiReviewOptions,
     ILogger<ReviewRunExecutor> logger)
     : IReviewRunExecutor
 {
@@ -176,18 +178,26 @@ public sealed class ReviewRunExecutor(
                     cancellationToken);
             }
 
+            var externalReviewInput = new ExternalReviewInput
+            {
+                DiffText = preprocessed.FilteredDiffText,
+                ChangedFiles = preprocessed.ChangedFiles,
+                RiskDomainsSummary = ReviewRiskDomainFormatter.BuildAllRiskDomainsBlock(preprocessed.RiskDomains),
+                RepositoryName = diffResult.RepositoryName,
+                ServiceName = diffResult.ServiceName,
+                PullRequestTitle = diffResult.PullRequestTitle,
+                PullRequestUrl = diffResult.PullRequestUrl ?? run.Target.PullRequestUrl,
+                RepositoryPath = diffResult.RepositoryPath,
+                RepositoryRemoteUrl = diffResult.RepositoryRemoteUrl,
+                GitFetchSourceRef = diffResult.GitFetchSourceRef,
+                GitFetchTargetRef = diffResult.GitFetchTargetRef,
+                GitHttpExtraHeader = diffResult.GitHttpExtraHeader,
+                SourceRef = diffResult.SourceRef,
+                TargetRef = diffResult.TargetRef
+            };
             externalReviewTask = StartExternalReviewAsync(
                 run,
-                new ExternalReviewInput
-                {
-                    DiffText = preprocessed.FilteredDiffText,
-                    ChangedFiles = preprocessed.ChangedFiles,
-                    RepositoryName = diffResult.RepositoryName,
-                    ServiceName = diffResult.ServiceName,
-                    PullRequestTitle = diffResult.PullRequestTitle,
-                    SourceRef = diffResult.SourceRef,
-                    TargetRef = diffResult.TargetRef
-                },
+                externalReviewInput,
                 cancellationToken);
             if (externalReviewTask is not null)
             {
@@ -233,16 +243,38 @@ public sealed class ReviewRunExecutor(
 
             ExternalReviewArtifact? externalReviewForFindings = null;
             var externalInsights = ExternalReviewInsights.Empty;
-            var externalScoutReview = await TryReviewExternalScoutMissingCriticsAsync(
-                reviewDescription,
-                reviewPreprocessed,
-                externalReviewTask,
-                request,
-                run,
-                reviewScope.IsIncremental && previousRun is not null ? previousRun.Findings : [],
-                cancellationToken);
+            DeepSeekTuiReviewResult? deepSeekTuiReview = null;
+            var useDeepSeekTuiPrimary = deepSeekTuiReviewOptions.Value.Enabled &&
+                                        deepSeekTuiReviewOptions.Value.UseAsPrimaryReviewer;
+            ExternalScoutReviewResult? externalScoutReview = null;
+            if (!useDeepSeekTuiPrimary)
+            {
+                externalScoutReview = await TryReviewExternalScoutMissingCriticsAsync(
+                    reviewDescription,
+                    reviewPreprocessed,
+                    externalReviewTask,
+                    request,
+                    run,
+                    reviewScope.IsIncremental && previousRun is not null ? previousRun.Findings : [],
+                    cancellationToken);
+            }
+
             IReadOnlyList<string> rawFindings;
-            if (externalScoutReview is not null)
+            if (useDeepSeekTuiPrimary)
+            {
+                deepSeekTuiReview = await TryRunDeepSeekTuiReviewAsync(
+                    run,
+                    CopyReviewInputForPrimaryDiff(externalReviewInput, reviewPreprocessed),
+                    cancellationToken);
+                rawFindings = deepSeekTuiReview.Succeeded ? [] : await RunPrimaryModelReviewAsync(
+                    reviewDescription,
+                    reviewPreprocessed,
+                    diffResult,
+                    request,
+                    run,
+                    cancellationToken);
+            }
+            else if (externalScoutReview is not null)
             {
                 rawFindings = externalScoutReview.RawResponses;
                 externalReviewForFindings = externalScoutReview.ExternalReview;
@@ -250,9 +282,13 @@ public sealed class ReviewRunExecutor(
             }
             else
             {
-                rawFindings = reviewPipelineOptions.Value.SinglePassFullDiffAndGraphPrimaryReview
-                    ? await ReviewSinglePassFullContextAsync(reviewDescription, reviewPreprocessed, diffResult, request, run, cancellationToken)
-                    : await ReviewChunksAsync(reviewDescription, reviewPreprocessed.ReviewChunks, diffResult, request, run, cancellationToken);
+                rawFindings = await RunPrimaryModelReviewAsync(
+                    reviewDescription,
+                    reviewPreprocessed,
+                    diffResult,
+                    request,
+                    run,
+                    cancellationToken);
             }
             await PersistAndPublishAsync(run, "Raw findings collected", ReviewPipelineStage.FindingsNormalization, 75, cancellationToken);
 
@@ -270,6 +306,21 @@ public sealed class ReviewRunExecutor(
                     run.Id,
                     seedFindings.Count,
                     externalInsights.Opportunities.Count);
+            }
+
+            if (deepSeekTuiReview is { Succeeded: true })
+            {
+                var seedFindings = reviewScope.IsIncremental && previousRun is not null
+                    ? FilterIncrementalCandidateFindings(deepSeekTuiReview.Findings, previousRun, reviewPreprocessed)
+                    : deepSeekTuiReview.Findings;
+                findings.AddRange(seedFindings);
+                opportunities.AddRange(deepSeekTuiReview.Opportunities);
+                logger.LogInformation(
+                    "Seeded DeepSeek-TUI review findings for run {RunId}: findings={Findings}, opportunities={Opportunities}, workspace={Workspace}",
+                    run.Id,
+                    seedFindings.Count,
+                    deepSeekTuiReview.Opportunities.Count,
+                    deepSeekTuiReview.WorkspacePath);
             }
 
             for (var index = 0; index < rawFindings.Count; index++)
@@ -388,6 +439,40 @@ public sealed class ReviewRunExecutor(
                     findings.Count,
                     precisionFilteredFindings.Count);
                 findings = precisionFilteredFindings.ToList();
+            }
+
+            if (reviewPipelineOptions.Value.EnableFindingEvidenceGate)
+            {
+                var evidenceGatedFindings = ApplyFindingEvidenceGate(findings, reviewPreprocessed);
+                await PersistAndPublishAsync(
+                    run,
+                    $"Evidence gate: оставлено {evidenceGatedFindings.Count} из {findings.Count} findings с diff-якорем",
+                    ReviewPipelineStage.FindingsNormalization,
+                    79,
+                    cancellationToken);
+
+                if (evidenceGatedFindings.Count != findings.Count)
+                {
+                    logger.LogInformation(
+                        "Finding evidence gate suppressed unsupported findings for run {RunId}: before={Before}, after={After}",
+                        run.Id,
+                        findings.Count,
+                        evidenceGatedFindings.Count);
+                    findings = evidenceGatedFindings.ToList();
+                }
+            }
+
+            var contradictionFilteredFindings = SuppressContradictedByDiffFindings(
+                findings,
+                reviewPreprocessed.FilteredDiffText);
+            if (contradictionFilteredFindings.Count != findings.Count)
+            {
+                logger.LogInformation(
+                    "Suppressed findings contradicted by diff evidence for run {RunId}: before={Before}, after={After}",
+                    run.Id,
+                    findings.Count,
+                    contradictionFilteredFindings.Count);
+                findings = contradictionFilteredFindings.ToList();
             }
 
             var precisionFilteredOpportunities = SuppressLowSignalOpportunities(opportunities);
@@ -700,6 +785,7 @@ public sealed class ReviewRunExecutor(
     private void LogReviewPipelineConfiguration(ReviewRun run, ReviewExecutionRequest request)
     {
         var o = reviewPipelineOptions.Value;
+        var deepSeek = deepSeekTuiReviewOptions.Value;
         logger.LogInformation(
             "Review pipeline configuration for run {RunId}: ProviderProfileId={ProviderProfileId}, ForceRerun={ForceRerun}, " +
             "MaxChunkCharacters={MaxChunkCharacters}, MaxPrimaryReviewChunkCharacters={MaxPrimaryReviewChunkCharacters}, " +
@@ -708,7 +794,8 @@ public sealed class ReviewRunExecutor(
             "SinglePassFullDiffAndGraphPrimaryReview={SinglePassPrimary}, SinglePassFullContextMaxCharacters={SinglePassMax}, " +
             "IncludeRoslynGraphInFullContextPayload={IncludeGraph}, FullContextMaxToolIterations={FullContextMaxToolIterations}, " +
             "EnableDeterministicCoverageCritic={EnableDeterministicCoverageCritic}, EnableFinalModelNormalizationPass={EnableFinalNormalization}, " +
-            "UseIncrementalReviewMode={UseIncrementalReviewMode}",
+            "EnableFindingEvidenceGate={EnableFindingEvidenceGate}, UseIncrementalReviewMode={UseIncrementalReviewMode}, " +
+            "DeepSeekTuiEnabled={DeepSeekTuiEnabled}, DeepSeekTuiUseAsPrimary={DeepSeekTuiUseAsPrimary}",
             run.Id,
             string.IsNullOrWhiteSpace(request.ProviderProfileId) ? "(routing default)" : request.ProviderProfileId,
             request.ForceRerun,
@@ -725,7 +812,10 @@ public sealed class ReviewRunExecutor(
             o.FullContextMaxToolIterations,
             o.EnableDeterministicCoverageCritic,
             o.EnableFinalModelNormalizationPass,
-            o.UseIncrementalReviewMode);
+            o.EnableFindingEvidenceGate,
+            o.UseIncrementalReviewMode,
+            deepSeek.Enabled,
+            deepSeek.UseAsPrimaryReviewer);
     }
 
     private Task<ExternalReviewArtifact>? StartExternalReviewAsync(
@@ -765,6 +855,121 @@ public sealed class ReviewRunExecutor(
             TaskScheduler.Default);
 
         return task;
+    }
+
+    private static ExternalReviewInput CopyReviewInputForPrimaryDiff(
+        ExternalReviewInput input,
+        PreprocessedDiff reviewPreprocessed)
+    {
+        return new ExternalReviewInput
+        {
+            DiffText = reviewPreprocessed.FilteredDiffText,
+            ChangedFiles = reviewPreprocessed.ChangedFiles,
+            RiskDomainsSummary = ReviewRiskDomainFormatter.BuildAllRiskDomainsBlock(reviewPreprocessed.RiskDomains),
+            RepositoryName = input.RepositoryName,
+            ServiceName = input.ServiceName,
+            PullRequestTitle = input.PullRequestTitle,
+            PullRequestUrl = input.PullRequestUrl,
+            RepositoryPath = input.RepositoryPath,
+            RepositoryRemoteUrl = input.RepositoryRemoteUrl,
+            GitFetchSourceRef = input.GitFetchSourceRef,
+            GitFetchTargetRef = input.GitFetchTargetRef,
+            GitHttpExtraHeader = input.GitHttpExtraHeader,
+            SourceRef = input.SourceRef,
+            TargetRef = input.TargetRef
+        };
+    }
+
+    private async Task<IReadOnlyList<string>> RunPrimaryModelReviewAsync(
+        string reviewDescription,
+        PreprocessedDiff reviewPreprocessed,
+        DiffAcquisitionResult diffResult,
+        ReviewExecutionRequest request,
+        ReviewRun run,
+        CancellationToken cancellationToken)
+    {
+        return reviewPipelineOptions.Value.SinglePassFullDiffAndGraphPrimaryReview
+            ? await ReviewSinglePassFullContextAsync(reviewDescription, reviewPreprocessed, diffResult, request, run, cancellationToken)
+            : await ReviewChunksAsync(reviewDescription, reviewPreprocessed.ReviewChunks, diffResult, request, run, cancellationToken);
+    }
+
+    private async Task<DeepSeekTuiReviewResult> TryRunDeepSeekTuiReviewAsync(
+        ReviewRun run,
+        ExternalReviewInput input,
+        CancellationToken cancellationToken)
+    {
+        var opts = deepSeekTuiReviewOptions.Value;
+        if (!opts.Enabled)
+        {
+            return DeepSeekTuiReviewResult.Empty;
+        }
+
+        await PersistAndPublishAsync(
+            run,
+            $"Ход выполнения пайплайна: {opts.EngineName} анализирует workspace",
+            ReviewPipelineStage.ChunkReview,
+            50,
+            cancellationToken);
+
+        using var progressGate = new SemaphoreSlim(1, 1);
+        var lastProgressPercent = 50;
+
+        async ValueTask PublishDeepSeekProgressAsync(DeepSeekTuiReviewProgress progress, CancellationToken token)
+        {
+            if (string.IsNullOrWhiteSpace(progress.Message))
+            {
+                return;
+            }
+
+            await progressGate.WaitAsync(token);
+            try
+            {
+                var nextPercent = Math.Clamp(Math.Max(progress.ProgressPercent, lastProgressPercent), 51, 70);
+                lastProgressPercent = nextPercent;
+                await PersistAndPublishAsync(
+                    run,
+                    progress.Message,
+                    ReviewPipelineStage.ChunkReview,
+                    nextPercent,
+                    token);
+            }
+            finally
+            {
+                progressGate.Release();
+            }
+        }
+
+        var result = await deepSeekTuiReviewEngine.RunAsync(
+            run,
+            input,
+            cancellationToken,
+            PublishDeepSeekProgressAsync);
+        if (result.Succeeded)
+        {
+            logger.LogInformation(
+                "DeepSeek-TUI review succeeded for run {RunId}: findings={Findings}, opportunities={Opportunities}, elapsedMs={ElapsedMs}, workspace={Workspace}",
+                run.Id,
+                result.Findings.Count,
+                result.Opportunities.Count,
+                result.ElapsedMilliseconds,
+                result.WorkspacePath);
+            return result;
+        }
+
+        logger.LogWarning(
+            "DeepSeek-TUI review was not used for run {RunId}: status={Status}, attempted={Attempted}, message={Message}, workspace={Workspace}",
+            run.Id,
+            result.Status,
+            result.Attempted,
+            result.Message,
+            result.WorkspacePath);
+        await PersistAndPublishAsync(
+            run,
+            $"{opts.EngineName} не вернул структурированное ревью, используем основной пайплайн",
+            ReviewPipelineStage.ChunkReview,
+            55,
+            cancellationToken);
+        return result;
     }
 
     private async Task<ExternalReviewArtifact> CompleteExternalReviewAsync(
@@ -2709,7 +2914,223 @@ public sealed class ReviewRunExecutor(
     {
         return kind is FindingFailureKind.NonNullableContractReturnsNull or
             FindingFailureKind.OptionsBindingSection or
+            FindingFailureKind.SqlBusinessFilter or
             FindingFailureKind.RestoreBuildFailure;
+    }
+
+    internal static IReadOnlyList<ReviewFinding> ApplyFindingEvidenceGate(
+        IReadOnlyList<ReviewFinding> findings,
+        PreprocessedDiff preprocessed)
+    {
+        if (findings.Count == 0 || string.IsNullOrWhiteSpace(preprocessed.FilteredDiffText))
+        {
+            return findings;
+        }
+
+        var diffEvidence = BuildDiffFindingEvidence(preprocessed.FilteredDiffText);
+        if (diffEvidence.Count == 0)
+        {
+            return findings;
+        }
+
+        return findings
+            .Where(finding => HasDiffEvidence(finding, diffEvidence))
+            .ToArray();
+    }
+
+    private static IReadOnlyList<DiffFindingEvidence> BuildDiffFindingEvidence(string diffText)
+    {
+        return ParseDiffSections(diffText)
+            .Select(section => new DiffFindingEvidence(
+                section.FilePath,
+                ExtractPatchEvidenceText(section.Patch),
+                ParseNewLineHunkRanges(section.Patch)))
+            .Where(evidence => !string.IsNullOrWhiteSpace(evidence.FilePath))
+            .ToArray();
+    }
+
+    private static bool HasDiffEvidence(
+        ReviewFinding finding,
+        IReadOnlyList<DiffFindingEvidence> diffEvidence)
+    {
+        if (ClassifyFinding(finding) == FindingFailureKind.RestoreBuildFailure)
+        {
+            return true;
+        }
+
+        if (string.IsNullOrWhiteSpace(finding.File))
+        {
+            return false;
+        }
+
+        var evidence = diffEvidence.FirstOrDefault(item => PathsMatch(item.FilePath, finding.File));
+        if (evidence is null)
+        {
+            return false;
+        }
+
+        if (FindingLineTouchesChangedHunk(finding, evidence.HunkRanges))
+        {
+            return true;
+        }
+
+        if (HasExistingCodeInDiffPatch(finding, evidence.NormalizedPatchText))
+        {
+            return true;
+        }
+
+        return HasKnownSemanticAnchorInDiff(finding, evidence.SemanticAnchors);
+    }
+
+    private static bool FindingLineTouchesChangedHunk(
+        ReviewFinding finding,
+        IReadOnlyList<DiffLineRange> hunkRanges)
+    {
+        if (finding.StartLine <= 0 || hunkRanges.Count == 0)
+        {
+            return false;
+        }
+
+        var start = finding.StartLine;
+        var end = Math.Max(start, finding.EndLine);
+        const int lineTolerance = 4;
+        return hunkRanges.Any(range =>
+            start <= range.End + lineTolerance &&
+            range.Start - lineTolerance <= end);
+    }
+
+    private static bool HasExistingCodeInDiffPatch(ReviewFinding finding, string normalizedPatchText)
+    {
+        if (string.IsNullOrWhiteSpace(finding.ExistingCode) ||
+            string.IsNullOrWhiteSpace(normalizedPatchText))
+        {
+            return false;
+        }
+
+        return ExtractCandidateEvidenceLines(finding.ExistingCode)
+            .Select(NormalizeEvidenceText)
+            .Where(candidate => candidate.Length >= 12)
+            .Any(normalizedPatchText.Contains);
+    }
+
+    private static bool HasKnownSemanticAnchorInDiff(
+        ReviewFinding finding,
+        IReadOnlySet<string> diffAnchors)
+    {
+        if (ClassifyFinding(finding) == FindingFailureKind.Unknown || diffAnchors.Count == 0)
+        {
+            return false;
+        }
+
+        var findingAnchors = ExtractSemanticAnchors(finding);
+        return findingAnchors.Count > 0 && findingAnchors.Overlaps(diffAnchors);
+    }
+
+    private static IReadOnlyList<string> ExtractCandidateEvidenceLines(string existingCode)
+    {
+        var lines = existingCode
+            .Split('\n', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries)
+            .Select(line => line.Trim().TrimStart('+', '-', ' '))
+            .Where(line => line.Length >= 8)
+            .Where(line => !line.All(character => character is '{' or '}' or ';' or ','))
+            .OrderByDescending(line => line.Length)
+            .Take(6)
+            .ToList();
+
+        if (existingCode.Length <= 600)
+        {
+            lines.Add(existingCode);
+        }
+
+        return lines;
+    }
+
+    private static string ExtractPatchEvidenceText(string patch)
+    {
+        var builder = new StringBuilder();
+        foreach (var rawLine in patch.Split('\n'))
+        {
+            var line = rawLine.TrimEnd('\r');
+            if (line.StartsWith("+++", StringComparison.Ordinal) ||
+                line.StartsWith("---", StringComparison.Ordinal) ||
+                line.StartsWith("@@", StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            if (line.StartsWith("+", StringComparison.Ordinal) ||
+                line.StartsWith("-", StringComparison.Ordinal) ||
+                line.StartsWith(" ", StringComparison.Ordinal))
+            {
+                builder.AppendLine(line[1..]);
+            }
+        }
+
+        return builder.ToString();
+    }
+
+    private static IReadOnlyList<DiffLineRange> ParseNewLineHunkRanges(string patch)
+    {
+        var ranges = new List<DiffLineRange>();
+        foreach (var rawLine in patch.Split('\n'))
+        {
+            var line = rawLine.TrimEnd('\r');
+            if (!line.StartsWith("@@", StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            var range = ParseNewLineRange(line);
+            if (range is not null)
+            {
+                ranges.Add(range);
+            }
+        }
+
+        return ranges;
+    }
+
+    private static DiffLineRange? ParseNewLineRange(string hunkHeader)
+    {
+        var plusIndex = hunkHeader.IndexOf('+');
+        if (plusIndex < 0)
+        {
+            return null;
+        }
+
+        var endIndex = hunkHeader.IndexOf(' ', plusIndex);
+        if (endIndex < 0)
+        {
+            endIndex = hunkHeader.IndexOf("@@", plusIndex, StringComparison.Ordinal);
+        }
+
+        if (endIndex < 0)
+        {
+            endIndex = hunkHeader.Length;
+        }
+
+        var segment = hunkHeader[plusIndex..endIndex].TrimStart('+');
+        var parts = segment.Split(',', 2);
+        if (!int.TryParse(parts[0], out var start))
+        {
+            return null;
+        }
+
+        var count = parts.Length == 2 && int.TryParse(parts[1], out var parsedCount)
+            ? parsedCount
+            : 1;
+        var end = Math.Max(start, start + Math.Max(0, count - 1));
+        return new DiffLineRange(start, end);
+    }
+
+    private static string NormalizeEvidenceText(string value)
+    {
+        return new string(value
+            .Trim()
+            .TrimStart('+', '-', ' ')
+            .Where(character => !char.IsWhiteSpace(character))
+            .ToArray())
+            .ToLowerInvariant();
     }
 
     internal static IReadOnlyList<ReviewFinding> SuppressLowPrecisionFindings(IReadOnlyList<ReviewFinding> findings)
@@ -2721,6 +3142,20 @@ public sealed class ReviewRunExecutor(
 
         return findings
             .Where(finding => !IsLowPrecisionFinding(finding))
+            .ToArray();
+    }
+
+    internal static IReadOnlyList<ReviewFinding> SuppressContradictedByDiffFindings(
+        IReadOnlyList<ReviewFinding> findings,
+        string diffText)
+    {
+        if (findings.Count == 0 || string.IsNullOrWhiteSpace(diffText))
+        {
+            return findings;
+        }
+
+        return findings
+            .Where(finding => !IsSingletonRegistrationSpeculationContradictedByDiff(finding, diffText))
             .ToArray();
     }
 
@@ -2738,12 +3173,80 @@ public sealed class ReviewRunExecutor(
 
     private static bool IsLowPrecisionFinding(ReviewFinding finding)
     {
-        return IsSemaphoreSlimDisposeOnlyFinding(finding) ||
+            return IsSemaphoreSlimDisposeOnlyFinding(finding) ||
+               IsLowSeverityCodeStyleFinding(finding) ||
                IsUiSchedulerSpeculationFinding(finding) ||
                IsTaskFactoryStartNewCleanupFinding(finding) ||
                IsReturnAfterExceptionWithoutCatchFinding(finding) ||
                IsHeaderDuplicateSpeculationFinding(finding) ||
+               IsHttpClientFactorySharedInstanceRaceFinding(finding) ||
+               IsHttpClientFactoryDefaultClientPolicyFinding(finding) ||
                IsStyleOrDocumentationOnlyFinding(finding);
+    }
+
+    private static bool IsLowSeverityCodeStyleFinding(ReviewFinding finding)
+        => finding.Category == FindingCategory.CodeStyle && finding.Severity == FindingSeverity.Low;
+
+    private static bool IsSingletonRegistrationSpeculationContradictedByDiff(ReviewFinding finding, string diffText)
+    {
+        var text = BuildFindingText(finding);
+        if (!ContainsAny(text, "singleton", "синглтон") ||
+            !ContainsAny(text, "регистрац", "registered", "lifetime") ||
+            !ContainsAny(text, "если", "может", "should", "требуется", "нужно") ||
+            !ContainsAny(text, "кэш", "cache", "token", "токен"))
+        {
+            return false;
+        }
+
+        var serviceNames = ExtractSemanticAnchors(finding)
+            .Where(anchor => anchor.EndsWith("service", StringComparison.OrdinalIgnoreCase))
+            .ToArray();
+        if (serviceNames.Length == 0)
+        {
+            return false;
+        }
+
+        return serviceNames.Any(serviceName =>
+            Regex.IsMatch(
+                diffText,
+                $@"AddSingleton\s*<[^>\n\r]*\b{Regex.Escape(serviceName)}\b[^>\n\r]*>",
+                RegexOptions.IgnoreCase | RegexOptions.CultureInvariant) ||
+            Regex.IsMatch(
+                diffText,
+                $@"AddSingleton\s*\([^;\n\r]*\b{Regex.Escape(serviceName)}\b",
+                RegexOptions.IgnoreCase | RegexOptions.CultureInvariant));
+    }
+
+    private static bool IsHttpClientFactorySharedInstanceRaceFinding(ReviewFinding finding)
+    {
+        var text = BuildFindingText(finding);
+        if (!ContainsAny(text, "baseaddress") ||
+            !ContainsAny(text, "createclient", "ihttpclientfactory") ||
+            !ContainsAny(text, "гонка", "race", "потокобезопас", "thread-safe", "shared", "общий", "default"))
+        {
+            return false;
+        }
+
+        var code = NormalizeMatchValue(finding.ExistingCode);
+        return code.Contains("createclient()", StringComparison.Ordinal) &&
+               code.Contains("baseaddress", StringComparison.Ordinal) &&
+               !code.Contains("static", StringComparison.Ordinal) &&
+               !code.Contains("readonlyhttpclient", StringComparison.Ordinal);
+    }
+
+    private static bool IsHttpClientFactoryDefaultClientPolicyFinding(ReviewFinding finding)
+    {
+        var text = BuildFindingText(finding);
+        if (!ContainsAny(text, "createclient", "ihttpclientfactory") ||
+            !ContainsAny(text, "именован", "named") ||
+            !ContainsAny(text, "пул", "pool", "политик", "policy", "policies"))
+        {
+            return false;
+        }
+
+        var code = NormalizeMatchValue(finding.ExistingCode);
+        return code.Contains("createclient()", StringComparison.Ordinal) &&
+               !code.Contains("createclient(\"", StringComparison.Ordinal);
     }
 
     private static bool IsSemaphoreSlimDisposeOnlyFinding(ReviewFinding finding)
@@ -4776,6 +5279,22 @@ public sealed class ReviewRunExecutor(
         int AddedLines,
         int DeletedLines,
         IReadOnlyList<int> ChangedLineNumbers);
+
+    private sealed record DiffFindingEvidence(
+        string FilePath,
+        string PatchText,
+        IReadOnlyList<DiffLineRange> HunkRanges)
+    {
+        public string NormalizedPatchText { get; } = NormalizeEvidenceText(PatchText);
+
+        public IReadOnlySet<string> SemanticAnchors { get; } = Regex.Matches(PatchText, @"[A-Za-z_][A-Za-z0-9_]{3,}")
+            .Select(match => match.Value)
+            .Where(IsMeaningfulAnchor)
+            .Select(value => value.ToLowerInvariant())
+            .ToHashSet(StringComparer.Ordinal);
+    }
+
+    private sealed record DiffLineRange(int Start, int End);
 
     private sealed record DiffHunk(int NewLineStart, int NewLineEnd, string Content, int OriginalStartIndex);
 }

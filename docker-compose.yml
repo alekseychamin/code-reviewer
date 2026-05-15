@@ -48,6 +48,7 @@ services:
       - ReviewPipeline__FullContextMaxToolIterations=${REVIEW_FULL_CONTEXT_MAX_TOOL_ITERATIONS:-2}
       - ReviewPipeline__EnableDeterministicCoverageCritic=${REVIEW_DETERMINISTIC_COVERAGE_CRITIC:-true}
       - ReviewPipeline__EnableFinalModelNormalizationPass=${REVIEW_FINAL_MODEL_NORMALIZATION:-true}
+      - ReviewPipeline__EnableFindingEvidenceGate=${REVIEW_FINDING_EVIDENCE_GATE:-true}
       - ReviewPipeline__UseExternalReviewScoutMode=${REVIEW_USE_EXTERNAL_SCOUT_MODE:-false}
       - ReviewPipeline__UseIncrementalReviewMode=${REVIEW_INCREMENTAL_MODE:-true}
       - ReviewPipeline__ExternalReviewScoutMaxCriticCharacters=${REVIEW_EXTERNAL_SCOUT_MAX_CRITIC_CHARS:-26000}
@@ -64,12 +65,24 @@ services:
       - ExternalReview__UseChangeSummary=${EXTERNAL_REVIEW_USE_CHANGE_SUMMARY:-true}
       - ExternalReview__ChangeSummaryWaitSeconds=${EXTERNAL_REVIEW_CHANGE_SUMMARY_WAIT_SECONDS:-45}
       - ExternalReview__UseReviewFindings=${EXTERNAL_REVIEW_USE_REVIEW_FINDINGS:-false}
+      - DEEPSEEK_API_KEY=${DEEPSEEK_API_KEY:-}
+      - DeepSeekTuiReview__Enabled=${DEEPSEEK_TUI_REVIEW_ENABLED:-false}
+      - DeepSeekTuiReview__UseAsPrimaryReviewer=${DEEPSEEK_TUI_USE_AS_PRIMARY:-false}
+      - DeepSeekTuiReview__ExecutablePath=${DEEPSEEK_TUI_EXECUTABLE:-deepseek}
+      - DeepSeekTuiReview__WorkspaceRoot=${DEEPSEEK_TUI_WORKSPACE_ROOT:-/review-workspaces}
+      - DeepSeekTuiReview__UsePersistentRepositoryWorkspace=${DEEPSEEK_TUI_USE_PERSISTENT_REPOSITORY_WORKSPACE:-true}
+      - DeepSeekTuiReview__RepositoryDirectoryName=${DEEPSEEK_TUI_REPOSITORY_DIRECTORY_NAME:-repositories}
+      - DeepSeekTuiReview__TimeoutSeconds=${DEEPSEEK_TUI_TIMEOUT_SECONDS:-900}
+      - DeepSeekTuiReview__Model=${DEEPSEEK_TUI_MODEL:-auto}
+      - DeepSeekTuiReview__AutoApproveTools=${DEEPSEEK_TUI_AUTO_APPROVE_TOOLS:-true}
     extra_hosts:
       - "host.docker.internal:host-gateway"
     ports:
       - "8080:8080"
     volumes:
       - ${HOST_REPOSITORIES_ROOT}:${CONTAINER_REPOSITORIES_ROOT:-/workspace/repos}:ro
+      - deepseek-tui-home:/root/.deepseek
+      - review-workspaces:/review-workspaces
 
   frontend:
     build:
@@ -116,3 +129,5 @@ services:
 volumes:
   postgres-data:
   qdrant-data:
+  deepseek-tui-home:
+  review-workspaces:

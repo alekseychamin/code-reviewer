@@ -14,6 +14,7 @@ public static class ApplicationServiceCollectionExtensions
         services.Configure<ReviewRoutingOptions>(configuration.GetSection(ReviewRoutingOptions.SectionName));
         services.Configure<ReviewPipelineOptions>(configuration.GetSection(ReviewPipelineOptions.SectionName));
         services.Configure<ExternalReviewOptions>(configuration.GetSection(ExternalReviewOptions.SectionName));
+        services.Configure<DeepSeekTuiReviewOptions>(configuration.GetSection(DeepSeekTuiReviewOptions.SectionName));
         services.Configure<AzureDevOpsOptions>(configuration.GetSection(AzureDevOpsOptions.SectionName));
 
         services.AddSingleton<IReviewRequestValidator, ReviewRequestValidator>();

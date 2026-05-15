@@ -95,6 +95,17 @@ Optional PR-Agent sidecar:
 - Set `EXTERNAL_REVIEW_INPUT_MODE=Diff` when the sidecar should receive prepared diff text from this backend instead of fetching the PR itself. This keeps platform PAT tokens in the backend.
 - `EXTERNAL_REVIEW_INPUT_MODE=PullRequestUrl` preserves the previous URL-only request shape.
 
+Optional DeepSeek-TUI agent reviewer:
+
+- The API Docker image includes the `deepseek` and `deepseek-tui` binaries copied from `ghcr.io/hmbown/deepseek-tui:latest`.
+- Set `DEEPSEEK_API_KEY`, `DEEPSEEK_TUI_REVIEW_ENABLED=true`, and `DEEPSEEK_TUI_USE_AS_PRIMARY=true` to run DeepSeek-TUI as the primary findings reviewer.
+- PR-Agent can remain enabled with only `describe`; the backend will still use PR-Agent for description/diagram while DeepSeek-TUI produces structured findings.
+- DeepSeek-TUI run artifacts are written to `/review-workspaces/runs/<run-id>` and persisted in the `review-workspaces` Docker volume for later inspection.
+- Repository snapshots are synchronized to a stable `/review-workspaces/repositories/<repo-key>` path by default, so SocratiCode can index a repository once and use incremental `codebase_update` on later reviews.
+- The agent receives `review-input.json`, `diff.patch`, and the stable repository snapshot when a local PR workspace is available.
+- `REVIEW_FINDING_EVIDENCE_GATE=true` keeps final findings anchored to changed diff files, hunks, or exact code evidence before they are shown in the UI.
+- MCP config lives in the `deepseek-tui-home` volume as `/root/.deepseek/mcp.json`; add a `socraticode` server there when repository-aware MCP search is needed from DeepSeek-TUI.
+
 Supported URL examples:
 
 - Azure DevOps / TFS: `https://tfs.example.local/tfs/Main/Project/_git/Repo/pullrequest/42`

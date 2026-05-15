@@ -86,6 +86,10 @@ internal sealed class GitLabPullRequestDiffProvider(
             tempDirectory,
             ["diff", "origin/__target__...origin/__source__"],
             cancellationToken);
+        await gitCommandRunner.RunAsync(
+            tempDirectory,
+            ["checkout", "--detach", "origin/__source__"],
+            cancellationToken);
 
         logger.LogInformation(
             "Fetched GitLab merge request diff for {Repository}!{MergeRequestIid}",

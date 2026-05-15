@@ -90,6 +90,10 @@ internal sealed class GitHubPullRequestDiffProvider(
             tempDirectory,
             ["diff", "origin/__target__...origin/__source__"],
             cancellationToken);
+        await gitCommandRunner.RunAsync(
+            tempDirectory,
+            ["checkout", "--detach", "origin/__source__"],
+            cancellationToken);
 
         logger.LogInformation(
             "Fetched GitHub pull request diff for {Repository}#{PullRequestNumber}",

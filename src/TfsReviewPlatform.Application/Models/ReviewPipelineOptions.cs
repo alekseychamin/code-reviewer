@@ -51,6 +51,11 @@ public sealed class ReviewPipelineOptions
     public bool EnableFinalModelNormalizationPass { get; init; } = true;
 
     /// <summary>
+    /// When true, suppress findings that cannot be anchored to the changed diff file, hunk, or code evidence.
+    /// </summary>
+    public bool EnableFindingEvidenceGate { get; init; } = true;
+
+    /// <summary>
     /// When true and external review is enabled, use PR-Agent as a fast scout and run focused missing-finding critics instead of the primary full/chunk review.
     /// </summary>
     public bool UseExternalReviewScoutMode { get; init; }
