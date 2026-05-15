@@ -73,6 +73,7 @@ public static class IntegrationServiceCollectionExtensions
         services.AddSingleton<IRepositoryFileContentService, GitRepositoryFileContentService>();
         services.AddSingleton<IReviewWorkspaceToolExecutor, GitReviewWorkspaceToolExecutor>();
         services.AddSingleton<IExternalReviewEngine, PrAgentExternalReviewEngine>();
+        services.AddSingleton<IDeepSeekTuiSocraticodePreflight, SocraticodeMcpPreflightService>();
         services.AddSingleton<IDeepSeekTuiReviewEngine, DeepSeekTuiReviewEngine>();
         services.AddSingleton<IBranchComparisonDiffService, BranchComparisonDiffService>();
         services.AddSingleton<IPullRequestDiffProvider, AzureDevOpsPullRequestDiffProvider>();

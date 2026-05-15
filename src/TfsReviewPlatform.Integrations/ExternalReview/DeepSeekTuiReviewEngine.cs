@@ -13,6 +13,7 @@ namespace TfsReviewPlatform.Integrations.ExternalReview;
 
 public sealed class DeepSeekTuiReviewEngine(
     IOptions<DeepSeekTuiReviewOptions> options,
+    IDeepSeekTuiSocraticodePreflight socraticodePreflight,
     ILogger<DeepSeekTuiReviewEngine> logger) : IDeepSeekTuiReviewEngine
 {
     private static readonly object RepositoryWorkspaceSyncLock = new();
@@ -51,6 +52,11 @@ public sealed class DeepSeekTuiReviewEngine(
         try
         {
             workspace = PrepareWorkspace(run, input, opts);
+            workspace = await PrepareSocraticodePreflightAsync(
+                workspace,
+                input,
+                cancellationToken,
+                progressCallback);
         }
         catch (Exception exception)
         {
@@ -313,14 +319,65 @@ public sealed class DeepSeekTuiReviewEngine(
             diffPath,
             repositoryWorkspace,
             input.ChangedFiles,
-            input.RiskDomainsSummary);
+            input.RiskDomainsSummary,
+            DeepSeekTuiSocraticodePreflightResult.NotAttempted);
         var promptPath = Path.Combine(runDirectory, "review-prompt.md");
         File.WriteAllText(promptPath, prompt, Encoding.UTF8);
 
         return new PreparedDeepSeekWorkspace(
             runDirectory,
             runDirectory,
-            prompt);
+            prompt,
+            promptPath,
+            metadataPath,
+            diffPath,
+            repositoryWorkspace,
+            input.ChangedFiles,
+            input.RiskDomainsSummary);
+    }
+
+    private async Task<PreparedDeepSeekWorkspace> PrepareSocraticodePreflightAsync(
+        PreparedDeepSeekWorkspace workspace,
+        ExternalReviewInput input,
+        CancellationToken cancellationToken,
+        Func<DeepSeekTuiReviewProgress, CancellationToken, ValueTask>? progressCallback)
+    {
+        var preflight = string.IsNullOrWhiteSpace(workspace.RepositoryWorkspace)
+            ? DeepSeekTuiSocraticodePreflightResult.NotAttempted
+            : await socraticodePreflight.EnsureReadyAsync(
+                workspace.RepositoryWorkspace,
+                workspace.RunDirectory,
+                cancellationToken,
+                progressCallback);
+
+        var prompt = BuildReviewPrompt(
+            workspace.MetadataPath,
+            workspace.DiffPath,
+            workspace.RepositoryWorkspace,
+            workspace.ChangedFiles,
+            workspace.RiskDomainsSummary,
+            preflight);
+        await File.WriteAllTextAsync(workspace.PromptPath, prompt, Encoding.UTF8, cancellationToken);
+
+        var metadata = new
+        {
+            socraticode_preflight = new
+            {
+                preflight.Status,
+                preflight.Ready,
+                preflight.StartedIndex,
+                preflight.UpdatedIndex,
+                preflight.Message
+            },
+            repository_path = workspace.RepositoryWorkspace
+        };
+        await File.WriteAllTextAsync(
+            Path.Combine(workspace.RunDirectory, "socraticode-preflight-summary.json"),
+            JsonSerializer.Serialize(metadata, JsonOptions),
+            Encoding.UTF8,
+            cancellationToken);
+
+        return workspace with { Prompt = prompt };
     }
 
     private static ProcessStartInfo BuildStartInfo(
@@ -362,7 +419,8 @@ public sealed class DeepSeekTuiReviewEngine(
         string diffPath,
         string? repositoryWorkspace,
         IReadOnlyList<string> changedFiles,
-        string riskDomainsSummary)
+        string riskDomainsSummary,
+        DeepSeekTuiSocraticodePreflightResult socraticodePreflight)
     {
         var files = changedFiles.Count == 0
             ? "(not provided)"
@@ -373,6 +431,7 @@ public sealed class DeepSeekTuiReviewEngine(
         var riskDomainsBlock = string.IsNullOrWhiteSpace(riskDomainsSummary)
             ? "No deterministic risk domain summary was provided. Infer active lenses from changed paths and diff content."
             : riskDomainsSummary.Trim();
+        var socraticodePreflightBlock = BuildSocraticodePreflightPromptBlock(repositoryWorkspace, socraticodePreflight);
 
         return $$"""
             You are a senior backend code reviewer for a .NET service.
@@ -385,7 +444,9 @@ public sealed class DeepSeekTuiReviewEngine(
             Runtime layout:
             - Your current working directory is the review run directory, not the repository.
             - Start by reading `diff.patch` and `review-input.json` from the current directory.
-            - Do not read files from the repository path until after calling SocratiCode status/update.
+
+            SocratiCode application preflight:
+            {{socraticodePreflightBlock}}
 
             Changed files:
             {{files}}
@@ -396,13 +457,10 @@ public sealed class DeepSeekTuiReviewEngine(
             Repository navigation tools:
             - SocratiCode MCP is the preferred tool for repository-wide evidence: semantic search, symbol lookup, callers/callees, impact/blast-radius, execution flow, dependency graph, and context artifacts.
             - Do not search the repository before understanding the diff. First read `diff.patch`, classify risk domains, and write concrete hypotheses.
-            - Mandatory SocratiCode preflight for any non-trivial review: after reading `diff.patch` and before reading any repository source file, call SocratiCode at least once.
             - DeepSeek-TUI exposes SocratiCode tools with single underscores, for example `mcp_socraticode_codebase_status`.
-            - First call `mcp_socraticode_codebase_status` or `codebase_status` for `{{repositoryWorkspace ?? "<repository path unavailable>"}}`.
-            - If status says "No index found", "not indexed", or "Run codebase_index", stop repository inspection and immediately call `mcp_socraticode_codebase_index`/`codebase_index` for the same project path. Then call status again before reading repository source files.
-            - If the project is already indexed, call `mcp_socraticode_codebase_update`/`codebase_update` before targeted search so the persistent repository workspace reflects the current PR checkout.
-            - Do not continue with broad `read_file`, `grep_files`, or `exec_shell` repository inspection after a "No index found" status until the index or update step has completed or failed explicitly.
-            - Then use at least one targeted SocratiCode evidence tool for the highest-risk hypothesis only after naming the exact symbol/file/behavior to verify: `mcp_socraticode_codebase_search`, `mcp_socraticode_codebase_symbols`, `mcp_socraticode_codebase_symbol`, `mcp_socraticode_codebase_impact`, or `mcp_socraticode_codebase_flow` (or the same names without the `mcp_socraticode_` prefix).
+            - If application preflight is ready, do not call `codebase_status`, `codebase_index`, or `codebase_update`; the application already completed that work before launching you.
+            - With ready preflight, use at least one targeted SocratiCode evidence tool before broad repository reads for the highest-risk hypothesis: `mcp_socraticode_codebase_search`, `mcp_socraticode_codebase_symbols`, `mcp_socraticode_codebase_symbol`, `mcp_socraticode_codebase_impact`, or `mcp_socraticode_codebase_flow` (or the same names without the `mcp_socraticode_` prefix).
+            - If application preflight is not ready, you may call status/index/update yourself once, but do not spend the review budget polling indefinitely.
             - Use SocratiCode to decide which files/symbols matter, then use direct file reads only to verify exact changed code and nearby implementation details. Do not rely only on `read_file`/`grep_files` for cross-file evidence when SocratiCode is available.
             - If SocratiCode is unavailable, stale, or fails, continue with direct file inspection and note that limitation in `review_trace`.
 
@@ -475,6 +533,36 @@ public sealed class DeepSeekTuiReviewEngine(
               ]
             }
             """;
+    }
+
+    private static string BuildSocraticodePreflightPromptBlock(
+        string? repositoryWorkspace,
+        DeepSeekTuiSocraticodePreflightResult preflight)
+    {
+        if (string.IsNullOrWhiteSpace(repositoryWorkspace))
+        {
+            return "- Full repository copy is unavailable, so SocratiCode repository indexing was skipped.";
+        }
+
+        if (preflight.Ready)
+        {
+            var action = preflight.StartedIndex
+                ? "created"
+                : preflight.UpdatedIndex
+                    ? "updated"
+                    : "checked";
+            return string.Join('\n',
+                $"- READY: the application already {action} the SocratiCode index for `{repositoryWorkspace}` before launching you.",
+                "- Start with `diff.patch`, classify risk domains, then use targeted SocratiCode search/symbol/impact/flow tools for hypotheses that need repository context.",
+                "- Do not call SocratiCode status/index/update again unless a targeted SocratiCode evidence tool reports that the index is unavailable.");
+        }
+
+        var status = string.IsNullOrWhiteSpace(preflight.Status) ? "not_ready" : preflight.Status;
+        var message = string.IsNullOrWhiteSpace(preflight.Message) ? "no message" : preflight.Message;
+        return string.Join('\n',
+            $"- NOT READY: application SocratiCode preflight status is `{status}` for `{repositoryWorkspace}`.",
+            $"- Reason: {message}",
+            "- You may try SocratiCode status/index/update once if repository context is essential; otherwise continue with focused direct file reads and mention the limitation in review_trace.");
     }
 
     private static HashSet<string> BuildExcludedDirectorySet(DeepSeekTuiReviewOptions opts)
@@ -1244,7 +1332,13 @@ public sealed class DeepSeekTuiReviewEngine(
     private sealed record PreparedDeepSeekWorkspace(
         string RunDirectory,
         string WorkingDirectory,
-        string Prompt);
+        string Prompt,
+        string PromptPath,
+        string MetadataPath,
+        string DiffPath,
+        string? RepositoryWorkspace,
+        IReadOnlyList<string> ChangedFiles,
+        string RiskDomainsSummary);
 
     public sealed record ParsedDeepSeekReview(
         IReadOnlyList<ReviewFinding> Findings,

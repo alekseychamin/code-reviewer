@@ -30,6 +30,18 @@ public sealed class DeepSeekTuiReviewOptions
 
     public string ApiKeyEnvironmentVariable { get; init; } = "DEEPSEEK_API_KEY";
 
+    public bool SocraticodePreflightEnabled { get; init; } = true;
+
+    public string SocraticodeMcpCommand { get; init; } = "npx";
+
+    public string SocraticodeMcpArguments { get; init; } = "-y --loglevel=error socraticode@latest";
+
+    public int SocraticodePreflightTimeoutSeconds { get; init; } = 1800;
+
+    public int SocraticodePreflightPollIntervalSeconds { get; init; } = 5;
+
+    public bool SocraticodePreflightUpdateExistingIndex { get; init; } = true;
+
     public int MaxStdoutCharacters { get; init; } = 300_000;
 
     public int MaxStderrCharacters { get; init; } = 80_000;

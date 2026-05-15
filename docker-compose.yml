@@ -25,6 +25,11 @@ services:
       - Qdrant__HistoricalFindingHalfLifeDays=${QDRANT_HISTORICAL_FINDING_HALF_LIFE_DAYS:-45}
       - Qdrant__EmbeddingBaseUrl=${QDRANT_EMBEDDING_BASE_URL:-http://host.docker.internal:11434}
       - Qdrant__EmbeddingModel=${QDRANT_EMBEDDING_MODEL:-bge-m3:latest}
+      - QDRANT_MODE=${SOCRATICODE_QDRANT_MODE:-external}
+      - OLLAMA_MODE=${SOCRATICODE_OLLAMA_MODE:-external}
+      - OLLAMA_URL=${QDRANT_EMBEDDING_BASE_URL:-http://host.docker.internal:11434}
+      - EMBEDDING_MODEL=${SOCRATICODE_EMBEDDING_MODEL:-bge-m3:latest}
+      - EMBEDDING_DIMENSIONS=${SOCRATICODE_EMBEDDING_DIMENSIONS:-1024}
       - Qdrant__CodeContextEnabled=${QDRANT_CODE_CONTEXT_ENABLED:-true}
       - Qdrant__CodeContextReuseExistingSnapshots=${QDRANT_CODE_CONTEXT_REUSE_EXISTING_SNAPSHOTS:-true}
       - Qdrant__CodeContextTimeoutSeconds=${QDRANT_CODE_CONTEXT_TIMEOUT_SECONDS:-90}
@@ -75,6 +80,12 @@ services:
       - DeepSeekTuiReview__TimeoutSeconds=${DEEPSEEK_TUI_TIMEOUT_SECONDS:-900}
       - DeepSeekTuiReview__Model=${DEEPSEEK_TUI_MODEL:-auto}
       - DeepSeekTuiReview__AutoApproveTools=${DEEPSEEK_TUI_AUTO_APPROVE_TOOLS:-true}
+      - DeepSeekTuiReview__SocraticodePreflightEnabled=${DEEPSEEK_TUI_SOCRATICODE_PREFLIGHT_ENABLED:-true}
+      - DeepSeekTuiReview__SocraticodeMcpCommand=${DEEPSEEK_TUI_SOCRATICODE_MCP_COMMAND:-npx}
+      - DeepSeekTuiReview__SocraticodeMcpArguments=${DEEPSEEK_TUI_SOCRATICODE_MCP_ARGUMENTS:--y --loglevel=error socraticode@latest}
+      - DeepSeekTuiReview__SocraticodePreflightTimeoutSeconds=${DEEPSEEK_TUI_SOCRATICODE_PREFLIGHT_TIMEOUT_SECONDS:-1800}
+      - DeepSeekTuiReview__SocraticodePreflightPollIntervalSeconds=${DEEPSEEK_TUI_SOCRATICODE_PREFLIGHT_POLL_INTERVAL_SECONDS:-5}
+      - DeepSeekTuiReview__SocraticodePreflightUpdateExistingIndex=${DEEPSEEK_TUI_SOCRATICODE_PREFLIGHT_UPDATE_EXISTING_INDEX:-true}
     extra_hosts:
       - "host.docker.internal:host-gateway"
     ports:
