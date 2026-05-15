@@ -27,7 +27,7 @@ public sealed class MarkdownReportBuilder : IMarkdownReportBuilder
         sb.AppendLine();
         sb.AppendLine($"**Замечания:** всего {findings.Count}, критичных {critical}, высоких {high}.");
         sb.AppendLine();
-        AppendComparisonSection(sb, comparison);
+        AppendComparisonSection(sb, comparison, findings);
 
         if (findings.Count == 0)
         {
@@ -100,14 +100,22 @@ public sealed class MarkdownReportBuilder : IMarkdownReportBuilder
         sb.AppendLine();
         if (comparison?.PreviousRunId is not null)
         {
-            sb.AppendLine("### Изменения относительно предыдущего ревью");
-            sb.AppendLine($"- Всё ещё актуальны: {comparison.StillRelevantFindingsCount}");
-            sb.AppendLine($"- Исправлены: {comparison.ResolvedFindingsCount}");
-            sb.AppendLine($"- Новые: {comparison.NewFindingsCount}");
             if (comparison.IsDiffUnchanged)
             {
-                sb.AppendLine("- Diff не изменился: это повторный запуск, без code delta.");
+                sb.AppendLine("### Повторный прогон без изменения diff");
+                sb.AppendLine($"- Замечаний в baseline: {comparison.PreviousFindingsCount}");
+                sb.AppendLine($"- Замечаний сейчас: {comparison.CurrentFindingsCount}");
+                sb.AppendLine($"- Совпали с baseline: {comparison.StillRelevantFindingsCount}");
+                sb.AppendLine("- Новые и исправленные замечания по коду не считаются: diff не изменился.");
             }
+            else
+            {
+                sb.AppendLine("### Изменения относительно предыдущего ревью");
+                sb.AppendLine($"- Всё ещё актуальны: {comparison.StillRelevantFindingsCount}");
+                sb.AppendLine($"- Исправлены: {comparison.ResolvedFindingsCount}");
+                sb.AppendLine($"- Новые: {comparison.NewFindingsCount}");
+            }
+
             sb.AppendLine();
         }
 
@@ -220,7 +228,10 @@ public sealed class MarkdownReportBuilder : IMarkdownReportBuilder
         };
     }
 
-    private static void AppendComparisonSection(StringBuilder sb, FindingsComparisonSnapshot? comparison)
+    private static void AppendComparisonSection(
+        StringBuilder sb,
+        FindingsComparisonSnapshot? comparison,
+        IReadOnlyList<ReviewFinding> currentFindings)
     {
         if (comparison?.PreviousRunId is null)
         {
@@ -229,19 +240,26 @@ public sealed class MarkdownReportBuilder : IMarkdownReportBuilder
 
         sb.AppendLine("## Изменения относительно предыдущего ревью");
         sb.AppendLine();
+
+        if (comparison.IsDiffUnchanged)
+        {
+            sb.AppendLine($"- Замечаний в baseline: {comparison.PreviousFindingsCount}");
+            sb.AppendLine($"- Замечаний сейчас: {comparison.CurrentFindingsCount}");
+            sb.AppendLine($"- Совпали с baseline: {comparison.StillRelevantFindingsCount}");
+            sb.AppendLine("- Новые и исправленные замечания по коду не считаются: diff не изменился.");
+            sb.AppendLine();
+            sb.AppendLine("> Это повторный запуск ревью на том же diff. Список ниже показывает текущий результат модели, а не code delta.");
+            sb.AppendLine();
+            AppendFindingList(sb, "Замечания текущего повторного ревью", currentFindings);
+            AppendFindingList(sb, "Совпали с baseline", comparison.StillRelevantFindings);
+            return;
+        }
+
         sb.AppendLine($"- Замечаний раньше: {comparison.PreviousFindingsCount}");
         sb.AppendLine($"- Всё ещё актуальны: {comparison.StillRelevantFindingsCount}");
         sb.AppendLine($"- Исправлены: {comparison.ResolvedFindingsCount}");
         sb.AppendLine($"- Новые: {comparison.NewFindingsCount}");
         sb.AppendLine();
-
-        if (comparison.IsDiffUnchanged)
-        {
-            sb.AppendLine("> Diff не изменился относительно baseline. Блок delta показывает повторный запуск ревью, поэтому новые и исправленные замечания не считаются code delta.");
-            sb.AppendLine();
-            AppendFindingList(sb, "Замечания текущего повторного ревью", comparison.StillRelevantFindings);
-            return;
-        }
 
         AppendFindingList(sb, "Новые замечания в этом ревью", comparison.NewFindings);
         AppendFindingList(sb, "Всё ещё актуальны с прошлого ревью", comparison.StillRelevantFindings);

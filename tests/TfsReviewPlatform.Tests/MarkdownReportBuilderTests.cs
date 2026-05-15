@@ -85,9 +85,10 @@ public sealed class MarkdownReportBuilderTests
 
         var report = sut.BuildFullReport("demo", "desc", findings, comparison);
 
-        Assert.Contains("- Исправлены: 0", report);
-        Assert.Contains("- Новые: 0", report);
-        Assert.Contains("Diff не изменился относительно baseline", report);
+        Assert.Contains("- Замечаний в baseline: 2", report);
+        Assert.Contains("- Замечаний сейчас: 1", report);
+        Assert.Contains("- Совпали с baseline: 1", report);
+        Assert.Contains("повторный запуск ревью на том же diff", report);
         Assert.DoesNotContain("Новые замечания в этом ревью", report);
         Assert.DoesNotContain("Исправлены с прошлого ревью", report);
     }

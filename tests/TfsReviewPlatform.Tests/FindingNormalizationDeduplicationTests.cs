@@ -182,6 +182,102 @@ public sealed class FindingNormalizationDeduplicationTests
     }
 
     [Fact]
+    public void SuppressLowPrecisionFindings_DemotesTestMaintainabilityOnlyFinding()
+    {
+        var finding = CreateFinding(
+            "Tele2.Crm.CustomerRepresentService.Tests/CustomerMarkersServiceTests.cs",
+            423,
+            FindingCategory.Architecture,
+            FindingSeverity.Medium,
+            "Дублирование ручных реализаций async EF helpers при наличии MockQueryable.Moq",
+            "CustomerMarkersServiceTests.cs содержит собственные реализации TestAsyncQueryProvider, TestAsyncEnumerable и TestAsyncEnumerator. В том же проекте CustomerServiceTests.cs уже используется MockQueryable.Moq, поэтому два подхода увеличивают поддержку.",
+            "internal class TestAsyncQueryProvider<TEntity> : IAsyncQueryProvider");
+
+        var findingsResult = ReviewRunExecutor.SuppressLowPrecisionFindings([finding]);
+        var opportunities = ReviewRunExecutor.BuildOpportunitiesFromDemotableFindings([finding]);
+
+        Assert.Empty(findingsResult);
+        var opportunity = Assert.Single(opportunities);
+        Assert.Equal("Tele2.Crm.CustomerRepresentService.Tests/CustomerMarkersServiceTests.cs", opportunity.File);
+        Assert.Equal(finding.Title, opportunity.Title);
+        Assert.Equal(423, opportunity.StartLine);
+    }
+
+    [Fact]
+    public void SuppressLowPrecisionFindings_KeepsProductionPackageFinding()
+    {
+        var finding = CreateFinding(
+            "Tele2.Crm.CustomerRepresentService/Tele2.Crm.CustomerRepresentService.Domain/Tele2.Crm.CustomerRepresentService.Domain.csproj",
+            16,
+            FindingCategory.Bug,
+            FindingSeverity.High,
+            "Moq добавлен в production-зависимости Domain проекта",
+            "Пакет Moq добавлен в production-проект, хотя тестовый проект уже содержит отдельный PackageReference.",
+            "<PackageReference Include=\"Moq\" Version=\"4.20.72\" />");
+
+        var findingsResult = ReviewRunExecutor.SuppressLowPrecisionFindings([finding]);
+        var opportunities = ReviewRunExecutor.BuildOpportunitiesFromDemotableFindings([finding]);
+
+        Assert.Single(findingsResult);
+        Assert.Empty(opportunities);
+    }
+
+    [Fact]
+    public void NormalizeFindingSeverities_DowngradesCriticalTestPackageInProductionProject()
+    {
+        var finding = CreateFinding(
+            "Tele2.Crm.CustomerRepresentService/Tele2.Crm.CustomerRepresentService.Domain/Tele2.Crm.CustomerRepresentService.Domain.csproj",
+            16,
+            FindingCategory.Architecture,
+            FindingSeverity.Critical,
+            "Moq в production-проекте Domain.csproj",
+            "Пакет Moq добавлен в production-проект и попадёт в production-сборку вместе с Castle.Core.",
+            "<PackageReference Include=\"Moq\" Version=\"4.20.72\" />");
+
+        var result = ReviewRunExecutor.NormalizeFindingSeverities([finding]);
+
+        var normalized = Assert.Single(result);
+        Assert.Equal(FindingSeverity.High, normalized.Severity);
+    }
+
+    [Fact]
+    public void NormalizeFindingSeverities_KeepsCriticalSecurityFinding()
+    {
+        var finding = CreateFinding(
+            "Tele2.Crm.Service/Auth/TokenService.cs",
+            42,
+            FindingCategory.Security,
+            FindingSeverity.Critical,
+            "Refresh token is logged",
+            "Refresh token value is written to application logs.",
+            "logger.LogInformation(\"refresh {Token}\", token);");
+
+        var result = ReviewRunExecutor.NormalizeFindingSeverities([finding]);
+
+        var normalized = Assert.Single(result);
+        Assert.Equal(FindingSeverity.Critical, normalized.Severity);
+    }
+
+    [Fact]
+    public void SuppressLowPrecisionFindings_KeepsConcreteFlakyTestFinding()
+    {
+        var finding = CreateFinding(
+            "Tele2.Crm.Service.Tests/RegionCacheBackgroundServiceTests.cs",
+            27,
+            FindingCategory.Reliability,
+            FindingSeverity.Medium,
+            "Нестабильный тест: фиксированная задержка вместо опроса флага загрузки кэша",
+            "Тест использует Task.Delay(1000). На перегруженном CI-агенте тест может падать flaky, когда фоновой загрузке нужно больше секунды.",
+            "await Task.Delay(1000, CancellationToken.None);");
+
+        var findingsResult = ReviewRunExecutor.SuppressLowPrecisionFindings([finding]);
+        var opportunities = ReviewRunExecutor.BuildOpportunitiesFromDemotableFindings([finding]);
+
+        Assert.Single(findingsResult);
+        Assert.Empty(opportunities);
+    }
+
+    [Fact]
     public void SuppressLowSignalOpportunities_KeepsTaskFactoryStartNewAsyncIoConcern()
     {
         var opportunities = new[]

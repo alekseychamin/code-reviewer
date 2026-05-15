@@ -430,6 +430,38 @@ public sealed class ReviewRunExecutor(
                     findings.Count - normalized.Findings.Count);
             }
 
+            var severityNormalizedFindings = NormalizeFindingSeverities(findings);
+            if (!ReferenceEquals(severityNormalizedFindings, findings))
+            {
+                logger.LogInformation(
+                    "Normalized finding severities for run {RunId}: adjusted={Adjusted}",
+                    run.Id,
+                    CountSeverityChanges(findings, severityNormalizedFindings));
+                findings = severityNormalizedFindings.ToList();
+            }
+
+            var demotedFindingOpportunities = BuildOpportunitiesFromDemotableFindings(findings);
+            if (demotedFindingOpportunities.Count > 0)
+            {
+                var demotedAdded = 0;
+                foreach (var opportunity in demotedFindingOpportunities)
+                {
+                    if (opportunities.Any(existing => AreEquivalentOpportunities(existing, opportunity)))
+                    {
+                        continue;
+                    }
+
+                    opportunities.Add(opportunity);
+                    demotedAdded++;
+                }
+
+                logger.LogInformation(
+                    "Demoted low-precision findings to opportunities for run {RunId}: demoted={Demoted}, addedOpportunities={AddedOpportunities}",
+                    run.Id,
+                    demotedFindingOpportunities.Count,
+                    demotedAdded);
+            }
+
             var precisionFilteredFindings = SuppressLowPrecisionFindings(findings);
             if (precisionFilteredFindings.Count != findings.Count)
             {
@@ -3145,6 +3177,49 @@ public sealed class ReviewRunExecutor(
             .ToArray();
     }
 
+    internal static IReadOnlyList<ReviewFinding> NormalizeFindingSeverities(IReadOnlyList<ReviewFinding> findings)
+    {
+        if (findings.Count == 0)
+        {
+            return findings;
+        }
+
+        ReviewFinding[]? normalized = null;
+        for (var index = 0; index < findings.Count; index++)
+        {
+            var finding = findings[index];
+            var normalizedFinding = NormalizeFindingSeverity(finding);
+            if (normalizedFinding == finding && normalized is null)
+            {
+                continue;
+            }
+
+            normalized ??= findings.ToArray();
+            normalized[index] = normalizedFinding;
+        }
+
+        return normalized ?? findings;
+    }
+
+    internal static IReadOnlyList<ReviewOpportunityItem> BuildOpportunitiesFromDemotableFindings(IReadOnlyList<ReviewFinding> findings)
+    {
+        if (findings.Count == 0)
+        {
+            return [];
+        }
+
+        return findings
+            .Where(IsDemotableTestMaintainabilityFinding)
+            .Select(finding => new ReviewOpportunityItem(
+                NormalizeOpportunityPath(finding.File),
+                finding.LineHint,
+                finding.Title,
+                finding.Description,
+                finding.Suggestion,
+                finding.StartLine))
+            .ToArray();
+    }
+
     internal static IReadOnlyList<ReviewFinding> SuppressContradictedByDiffFindings(
         IReadOnlyList<ReviewFinding> findings,
         string diffText)
@@ -3171,9 +3246,77 @@ public sealed class ReviewRunExecutor(
             .ToArray();
     }
 
+    private static ReviewFinding NormalizeFindingSeverity(ReviewFinding finding)
+    {
+        if (ShouldDowngradeCriticalTestPackageInProductionProject(finding))
+        {
+            return finding with { Severity = FindingSeverity.High };
+        }
+
+        return finding;
+    }
+
+    private static bool ShouldDowngradeCriticalTestPackageInProductionProject(ReviewFinding finding)
+    {
+        if (finding.Severity != FindingSeverity.Critical ||
+            !IsProjectFile(finding.File) ||
+            IsTestOnlyLocation(finding.File))
+        {
+            return false;
+        }
+
+        var text = BuildFindingText(finding);
+        return ContainsAny(text, "packagereference", "package reference", "пакет", "зависим") &&
+               ContainsAny(
+                   text,
+                   "moq",
+                   "mockqueryable",
+                   "xunit",
+                   "nunit",
+                   "fluentassertions",
+                   "shouldly",
+                   "autofixture",
+                   "coverlet",
+                   "microsoft.net.test.sdk",
+                   "test.sdk") &&
+               ContainsAny(
+                   text,
+                   "production",
+                   "prod",
+                   "боев",
+                   "продак",
+                   "не тестов",
+                   "production-проект",
+                   "production-завис",
+                   "production-сбор");
+    }
+
+    private static bool IsProjectFile(string file)
+    {
+        return NormalizePath(file).EndsWith(".csproj", StringComparison.Ordinal);
+    }
+
+    private static int CountSeverityChanges(
+        IReadOnlyList<ReviewFinding> before,
+        IReadOnlyList<ReviewFinding> after)
+    {
+        var count = Math.Min(before.Count, after.Count);
+        var changes = 0;
+        for (var index = 0; index < count; index++)
+        {
+            if (before[index].Severity != after[index].Severity)
+            {
+                changes++;
+            }
+        }
+
+        return changes;
+    }
+
     private static bool IsLowPrecisionFinding(ReviewFinding finding)
     {
-            return IsSemaphoreSlimDisposeOnlyFinding(finding) ||
+        return IsDemotableTestMaintainabilityFinding(finding) ||
+               IsSemaphoreSlimDisposeOnlyFinding(finding) ||
                IsLowSeverityCodeStyleFinding(finding) ||
                IsUiSchedulerSpeculationFinding(finding) ||
                IsTaskFactoryStartNewCleanupFinding(finding) ||
@@ -3186,6 +3329,120 @@ public sealed class ReviewRunExecutor(
 
     private static bool IsLowSeverityCodeStyleFinding(ReviewFinding finding)
         => finding.Category == FindingCategory.CodeStyle && finding.Severity == FindingSeverity.Low;
+
+    private static bool IsDemotableTestMaintainabilityFinding(ReviewFinding finding)
+    {
+        if (!IsTestOnlyLocation(finding.File))
+        {
+            return false;
+        }
+
+        var text = BuildFindingText(finding);
+        if (LooksLikeConcreteTestFailureOrBuildRisk(text))
+        {
+            return false;
+        }
+
+        return ContainsAny(
+                   text,
+                   "testasyncqueryprovider",
+                   "testasyncenumerable",
+                   "testasyncenumerator",
+                   "mockqueryable",
+                   "ручн",
+                   "самопис",
+                   "дублирован",
+                   "унифиц",
+                   "helper",
+                   "вспомогатель",
+                   "reflection",
+                   "private method",
+                   "private-метод",
+                   "приватн",
+                   "рефактор",
+                   "поддержк",
+                   "не покрыт",
+                   "не покрывает",
+                   "coverage") &&
+               ContainsAny(
+                   text,
+                   "test",
+                   "тест",
+                   "xunit",
+                   "moq",
+                   "mock",
+                   "assert",
+                   "fact",
+                   "theory",
+                   "helper",
+                   "reflection",
+                   "private");
+    }
+
+    private static bool IsTestOnlyLocation(string file)
+    {
+        var normalized = NormalizePath(file);
+        return normalized.Contains("/tests/", StringComparison.Ordinal) ||
+               normalized.Contains(".tests/", StringComparison.Ordinal) ||
+               normalized.Contains("testcontainers", StringComparison.Ordinal) ||
+               normalized.EndsWith("tests.csproj", StringComparison.Ordinal) ||
+               normalized.EndsWith("test.csproj", StringComparison.Ordinal);
+    }
+
+    private static bool LooksLikeConcreteTestFailureOrBuildRisk(string text)
+    {
+        return ContainsAny(
+            text,
+            "не компилиру",
+            "не собира",
+            "compile",
+            "build",
+            "restore",
+            "nu110",
+            "netsdk",
+            "cs0",
+            "падает",
+            "не проходит",
+            "assertionexception",
+            "expected",
+            "actual",
+            "seed",
+            "fixture",
+            "task.delay",
+            "thread.sleep",
+            "flaky",
+            "нестабильн",
+            "race",
+            "гонка");
+    }
+
+    private static bool AreEquivalentOpportunities(ReviewOpportunityItem existing, ReviewOpportunityItem candidate)
+    {
+        if (!NormalizePath(existing.File).Equals(NormalizePath(candidate.File), StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        var existingTitle = NormalizeMatchValue(existing.Title);
+        var candidateTitle = NormalizeMatchValue(candidate.Title);
+        if (existingTitle.Length > 0 &&
+            existingTitle.Equals(candidateTitle, StringComparison.Ordinal))
+        {
+            return true;
+        }
+
+        var existingText = NormalizeMatchValue($"{existing.Title} {existing.Description}");
+        var candidateText = NormalizeMatchValue($"{candidate.Title} {candidate.Description}");
+        return existingText.Length >= 24 &&
+               candidateText.Length >= 24 &&
+               (existingText.Contains(candidateText, StringComparison.Ordinal) ||
+                candidateText.Contains(existingText, StringComparison.Ordinal));
+    }
+
+    private static string NormalizeOpportunityPath(string file)
+    {
+        return file.Trim().Replace('\\', '/').TrimStart('/');
+    }
 
     private static bool IsSingletonRegistrationSpeculationContradictedByDiff(ReviewFinding finding, string diffText)
     {

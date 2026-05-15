@@ -12,16 +12,17 @@ public sealed class FindingsComparisonService : IFindingsComparisonService
         IReadOnlyList<ReviewFinding> previousFindings,
         IReadOnlyList<ReviewFinding> currentFindings)
     {
+        var matchedSnapshot = Compare(previousRunId, previousFindings, currentFindings);
         return new FindingsComparisonSnapshot
         {
             PreviousRunId = previousRunId,
             PreviousFindingsCount = previousFindings.Count,
             CurrentFindingsCount = currentFindings.Count,
             NewFindingsCount = 0,
-            StillRelevantFindingsCount = currentFindings.Count,
+            StillRelevantFindingsCount = matchedSnapshot.StillRelevantFindingsCount,
             ResolvedFindingsCount = 0,
             IsDiffUnchanged = true,
-            StillRelevantFindings = Order(currentFindings)
+            StillRelevantFindings = matchedSnapshot.StillRelevantFindings
         };
     }
 

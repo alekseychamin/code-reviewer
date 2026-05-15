@@ -482,6 +482,7 @@ public sealed class DeepSeekTuiReviewEngine(
             - Every finding must name the changed behavior/regression risk, cite concrete changed file/symbol evidence, and explain why it is not merely a preference.
             - Deduplicate by root cause. If several files show the same defect, keep the strongest finding and mention affected siblings in its description.
             - If evidence is uncertain, move it to opportunities or omit it.
+            - Test-only maintainability concerns belong in opportunities, not findings: manual test helpers, reflection on private methods, duplicated test setup, inconsistent test style, or missing edge-case tests are not findings unless the diff shows a concrete compile failure, failing/flaky test, wrong assertion, or production behavior risk.
             - If there are no concrete issues, return an empty findings array.
 
             Return only one JSON object. Do not include markdown outside JSON.

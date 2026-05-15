@@ -137,6 +137,41 @@ public sealed class FindingsComparisonServiceTests
         Assert.Single(comparison.StillRelevantFindings);
     }
 
+    [Fact]
+    public void CompareUnchangedDiff_CountsOnlyMatchedFindingsAsStillRelevant()
+    {
+        var sut = new FindingsComparisonService();
+        var previous = new[]
+        {
+            CreateFinding(
+                "src/App/Service.cs",
+                "Possible null dereference",
+                "return request.Value.Length;",
+                FindingSeverity.High)
+        };
+        var current = new[]
+        {
+            CreateFinding(
+                "src/App/Service.cs",
+                "Possible null dereference",
+                "return request.Value.Length;",
+                FindingSeverity.High),
+            CreateFinding(
+                "src/App/Options.cs",
+                "Options are not validated",
+                "services.Configure<AppOptions>(configuration);",
+                FindingSeverity.Medium)
+        };
+
+        var comparison = sut.CompareUnchangedDiff(Guid.NewGuid(), previous, current);
+
+        Assert.True(comparison.IsDiffUnchanged);
+        Assert.Equal(0, comparison.NewFindingsCount);
+        Assert.Equal(1, comparison.StillRelevantFindingsCount);
+        Assert.Equal(0, comparison.ResolvedFindingsCount);
+        Assert.Single(comparison.StillRelevantFindings);
+    }
+
     private static ReviewFinding CreateFinding(
         string file,
         string title,
