@@ -108,4 +108,48 @@ public sealed class ConfirmedDeterministicFindingTests
         Assert.Contains("CPU-bound", finding.Description, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("base(taskFactory)", finding.Suggestion, StringComparison.Ordinal);
     }
+
+    [Fact]
+    public void BuildConfirmedDeterministicFindings_UsesOnlySupplementalHighSignalRules_WhenExternalPrimarySucceeded()
+    {
+        var hints = new[]
+        {
+            new ReviewHint
+            {
+                RuleId = "SQL_JOIN_ALIAS_ONLY_USED_IN_JOIN",
+                Category = "SQL/DataIntegrity",
+                FilePath = "Infrastructure/Db/GetOrderListForExcelFile.sql",
+                StartLine = 39,
+                Message = "Join alias is only used in the join itself.",
+                Evidence = "left join \"ReplicBranch\" rb on o.\"RegionCode\" = rb.\"RegionIsoCode\""
+            },
+            new ReviewHint
+            {
+                RuleId = "OPTIONS_BOUND_WITHOUT_VALIDATION",
+                Category = "Configuration/DI",
+                FilePath = "Api/DI/AddDependencies.cs",
+                StartLine = 104,
+                Message = "Options are registered without ValidateOnStart.",
+                Evidence = "services.Configure<CacheOptions>(configuration.GetSection(\"CacheOptions\"));"
+            },
+            new ReviewHint
+            {
+                RuleId = "NON_NULLABLE_CONTRACT_RETURNS_NULL",
+                Category = "Contract",
+                FilePath = "Infrastructure/Repositories/RegionCacheRepository.cs",
+                StartLine = 40,
+                Message = "A visible non-nullable method signature is close to a return null path.",
+                Evidence = "public string GetRegionName(string regionCode) ... return null;"
+            }
+        };
+
+        var findings = ReviewRunExecutor.BuildConfirmedDeterministicFindings(
+            hints,
+            [],
+            externalPrimarySucceeded: true);
+
+        var finding = Assert.Single(findings);
+        Assert.Equal("Infrastructure/Db/GetOrderListForExcelFile.sql", finding.File);
+        Assert.Contains("join", finding.Title, StringComparison.OrdinalIgnoreCase);
+    }
 }

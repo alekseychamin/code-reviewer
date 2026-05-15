@@ -139,6 +139,17 @@ public sealed class DeepSeekTuiReviewEngine(
             var errorOutput = stderr.ToString();
             WriteProcessArtifacts(workspace.RunDirectory, rawOutput, errorOutput);
             var parsed = ParseReviewPayload(rawOutput);
+            if (parsed is null)
+            {
+                parsed = ParseReviewPayloadArtifact(workspace.RunDirectory);
+                if (parsed is not null)
+                {
+                    logger.LogInformation(
+                        "DeepSeek-TUI review recovered structured result from artifact for run {RunId}: workspace={Workspace}",
+                        run.Id,
+                        workspace.RunDirectory);
+                }
+            }
             var succeeded = process.ExitCode == 0 && parsed is not null;
             if (!succeeded)
             {
@@ -231,6 +242,52 @@ public sealed class DeepSeekTuiReviewEngine(
             if (parsed is not null)
             {
                 return parsed;
+            }
+        }
+
+        return null;
+    }
+
+    public static ParsedDeepSeekReview? ParseReviewPayloadArtifact(string runDirectory)
+    {
+        if (string.IsNullOrWhiteSpace(runDirectory))
+        {
+            return null;
+        }
+
+        var candidates = new[]
+        {
+            "review-result.json",
+            "review_result.json"
+        };
+
+        foreach (var fileName in candidates)
+        {
+            var path = Path.Combine(runDirectory, fileName);
+            if (!File.Exists(path))
+            {
+                continue;
+            }
+
+            try
+            {
+                var fileInfo = new FileInfo(path);
+                if (fileInfo.Length <= 0 || fileInfo.Length > 1_000_000)
+                {
+                    continue;
+                }
+
+                var parsed = TryParseCandidate(File.ReadAllText(path, Encoding.UTF8));
+                if (parsed is not null)
+                {
+                    return parsed;
+                }
+            }
+            catch (IOException)
+            {
+            }
+            catch (UnauthorizedAccessException)
+            {
             }
         }
 
@@ -451,42 +508,51 @@ public sealed class DeepSeekTuiReviewEngine(
             Changed files:
             {{files}}
 
-            Deterministic risk domain summary:
+            Deterministic risk domain summary (hints, not rails):
             {{riskDomainsBlock}}
 
             Repository navigation tools:
-            - SocratiCode MCP is the preferred tool for repository-wide evidence: semantic search, symbol lookup, callers/callees, impact/blast-radius, execution flow, dependency graph, and context artifacts.
-            - Do not search the repository before understanding the diff. First read `diff.patch`, classify risk domains, and write concrete hypotheses.
+            - SocratiCode MCP is available for repository-wide evidence: semantic search, symbol lookup, callers/callees, impact/blast-radius, execution flow, dependency graph, and context artifacts.
+            - Do not search the repository before understanding the diff. First read enough of `diff.patch` to form your own review concerns.
             - DeepSeek-TUI exposes SocratiCode tools with single underscores, for example `mcp_socraticode_codebase_status`.
             - If application preflight is ready, do not call `codebase_status`, `codebase_index`, or `codebase_update`; the application already completed that work before launching you.
-            - With ready preflight, use at least one targeted SocratiCode evidence tool before broad repository reads for the highest-risk hypothesis: `mcp_socraticode_codebase_search`, `mcp_socraticode_codebase_symbols`, `mcp_socraticode_codebase_symbol`, `mcp_socraticode_codebase_impact`, or `mcp_socraticode_codebase_flow` (or the same names without the `mcp_socraticode_` prefix).
             - If application preflight is not ready, you may call status/index/update yourself once, but do not spend the review budget polling indefinitely.
-            - Use SocratiCode to decide which files/symbols matter, then use direct file reads only to verify exact changed code and nearby implementation details. Do not rely only on `read_file`/`grep_files` for cross-file evidence when SocratiCode is available.
+            - Use tools only when they can materially change your verdict. If the diff already proves or disproves a concern, do not spend budget proving the obvious.
+            - For cross-file uncertainty, prefer one targeted SocratiCode search/symbol/impact/flow call over broad manual grep/read_file loops. Then read exact files only to verify concrete lines.
             - If SocratiCode is unavailable, stale, or fails, continue with direct file inspection and note that limitation in `review_trace`.
 
-            Required two-phase review protocol:
+            Flexible review protocol:
 
-            Phase 1 — classify and plan:
-            - Read `diff.patch` before using repository search. Select active risk lenses from the deterministic summary and from the diff itself. Do not treat a lens as a finding.
-            - For each active lens, create 1-4 concrete hypotheses about changed behavior that could regress.
-            - Each hypothesis must name: changed file/symbol, old-vs-new behavior to verify, and exact repository evidence needed.
-            - Prefer high-signal domains when applicable: config/DI/options, SQL/EF/data integrity, cache/state/TTL, background jobs/concurrency, HTTP/integration, API contract/validation, serialization/mapping, observability/operability, build/deploy, tests/fixtures, auth/token/security.
+            Phase 1 — free diff reading:
+            - Read `diff.patch` first and make your own short concern list before following any deterministic lens. The risk domain summary is a set of hints, not a mandatory route.
+            - You may ignore, merge, rename, or add lenses when the diff suggests a better senior-review path.
+            - For large diffs, avoid mechanically reading every line. Use changed files and the deterministic summary to identify high-risk sections; then read full hunks only for selected concerns.
+            - Create 5-10 candidate concerns in your working notes when the diff is non-trivial. Mix concrete regression risks with likely future-defect risks.
+            - Include design and maintainability concerns when they can realistically cause future bugs: duplicated enrichment/mapping/business-rule logic, parallel overloads that must evolve together, repeated null/fallback semantics, hidden model mapping, or logic split across SQL and application code.
+            - For each concern you choose to verify, name the changed file/symbol, old-vs-new behavior, and the smallest evidence that would confirm or reject it.
 
-            Phase 2 — verify:
-            - Use SocratiCode and direct file reads only to confirm or reject Phase 1 hypotheses that need caller/callee/config/test evidence.
-            - For cross-file evidence, prefer SocratiCode over broad manual grep/read_file loops; avoid broad wandering.
-            - Mark each hypothesis as confirmed, rejected, or uncertain. Only confirmed hypotheses may become findings.
-            - Do not report style preferences, missing tests, or nice-to-have improvements as findings unless they cause a concrete regression risk.
+            Phase 2 — verify what matters:
+            - Verify the highest-impact concerns first. It is better to deeply verify 3-6 important concerns than to mechanically touch every lens.
+            - Use SocratiCode and direct file reads only for concerns that need caller/callee/config/test evidence.
+            - Mark each checked concern as confirmed, rejected, or uncertain in `review_trace.hypotheses`.
+            - Confirmed current behavior regressions may become findings.
+            - Confirmed future-defect risks should become opportunities, or Low findings only when the diff already shows divergent behavior or a concrete likely bug path.
 
             Quality gate before returning:
             - Every finding must name the changed behavior/regression risk, cite concrete changed file/symbol evidence, and explain why it is not merely a preference.
             - Deduplicate by root cause. If several files show the same defect, keep the strongest finding and mention affected siblings in its description.
             - If evidence is uncertain, move it to opportunities or omit it.
+            - Duplication in new enrichment/mapping/business-rule code belongs at least in opportunities when a future change must update several copies consistently. Do not dismiss it as style if the duplicated logic controls user-visible data, cache values, SQL result enrichment, auth, money, time, or external contracts.
             - Test-only maintainability concerns belong in opportunities, not findings: manual test helpers, reflection on private methods, duplicated test setup, inconsistent test style, or missing edge-case tests are not findings unless the diff shows a concrete compile failure, failing/flaky test, wrong assertion, or production behavior risk.
+            - Before final JSON, do a short self-review: which important concern from your own concern list did you omit, and why? Put that audit in `review_trace.omitted_concerns`.
             - If there are no concrete issues, return an empty findings array.
 
-            Return only one JSON object. Do not include markdown outside JSON.
-            Keep review_trace concise; it is an audit summary, not private chain-of-thought.
+            Output contract:
+            - The final assistant message must be exactly one raw JSON object that starts with `{` and ends with `}`.
+            - Do not include markdown, prose, bullets, headings, or code fences outside the final JSON.
+            - If you use validation or create `review-result.json`, still emit the same validated JSON object as the final assistant message.
+            - JSON must be valid: no comments, no trailing commas, no unescaped newlines inside strings.
+            - Keep `review_trace` concise: at most 6 active lenses, 8 hypotheses, and 5 omitted concerns. It is an audit summary, not private chain-of-thought.
             Schema:
             {
               "summary": "short Russian summary",
@@ -505,6 +571,12 @@ public sealed class DeepSeekTuiReviewEngine(
                     "evidence": "changed line/context checked",
                     "verdict": "confirmed|rejected|uncertain",
                     "finding_title": "title when confirmed, otherwise empty"
+                  }
+                ],
+                "omitted_concerns": [
+                  {
+                    "concern": "specific concern considered but not reported",
+                    "reason": "rejected|uncertain|duplicate|too minor|covered by another finding/opportunity"
                   }
                 ]
               },
@@ -554,7 +626,7 @@ public sealed class DeepSeekTuiReviewEngine(
                     : "checked";
             return string.Join('\n',
                 $"- READY: the application already {action} the SocratiCode index for `{repositoryWorkspace}` before launching you.",
-                "- Start with `diff.patch`, classify risk domains, then use targeted SocratiCode search/symbol/impact/flow tools for hypotheses that need repository context.",
+                "- Start with `diff.patch`, form your own concern list, then use targeted SocratiCode search/symbol/impact/flow tools only for concerns that need repository context.",
                 "- Do not call SocratiCode status/index/update again unless a targeted SocratiCode evidence tool reports that the index is unavailable.");
         }
 

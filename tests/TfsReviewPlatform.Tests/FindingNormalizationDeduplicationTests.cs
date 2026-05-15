@@ -182,6 +182,40 @@ public sealed class FindingNormalizationDeduplicationTests
     }
 
     [Fact]
+    public void SuppressLowPrecisionFindings_KeepsSqlBusinessFilterEvenWhenSuggestionMentionsComment()
+    {
+        var finding = CreateFinding(
+            "Infrastructure/Db/GetOrderList.sql",
+            64,
+            FindingCategory.Logic,
+            FindingSeverity.Medium,
+            "Удаление бизнес-фильтров IsBasic/IsBcAllowed из SQL-запросов меняет состав результатов",
+            "В SQL удалены WHERE-условия rb.IsBasic и rb.IsBcAllowed. Если это намеренное изменение, нужен комментарий с бизнес-обоснованием.",
+            "where rb.\"IsBasic\" is true and rb.\"IsBcAllowed\" is true");
+
+        var result = ReviewRunExecutor.SuppressLowPrecisionFindings([finding]);
+
+        Assert.Single(result);
+    }
+
+    [Fact]
+    public void SuppressLowPrecisionFindings_RemovesDefensiveNullGuardOnlyFinding()
+    {
+        var finding = CreateFinding(
+            "Domain/Extensions/RegionCacheExtensions.cs",
+            132,
+            FindingCategory.Reliability,
+            FindingSeverity.Low,
+            "Методы EnrichWithRegionData не проверяют regionCacheRepository на null",
+            "Параметр regionCacheRepository не проверяется на null. Хотя в штатном режиме DI гарантирует передачу экземпляра, защитная проверка улучшит диагностику.",
+            "order.OrderRegionName ??= regionCacheRepository.GetRegionName(order.OrderRegionCode);");
+
+        var result = ReviewRunExecutor.SuppressLowPrecisionFindings([finding]);
+
+        Assert.Empty(result);
+    }
+
+    [Fact]
     public void SuppressLowPrecisionFindings_DemotesTestMaintainabilityOnlyFinding()
     {
         var finding = CreateFinding(
@@ -294,6 +328,38 @@ public sealed class FindingNormalizationDeduplicationTests
         var result = ReviewRunExecutor.SuppressLowSignalOpportunities(opportunities);
 
         Assert.Single(result);
+    }
+
+    [Fact]
+    public void SuppressLowSignalOpportunities_KeepsBusinessRuleDuplicationOpportunity()
+    {
+        var opportunity = new ReviewOpportunityItem(
+            "Domain/Extensions/RegionCacheExtensions.cs",
+            "EnrichWithRegionData overloads",
+            "Дублирование логики обогащения в трёх перегрузках EnrichWithRegionData",
+            "Три метода повторяют lookup региона и заполнение user-visible read model полей. При изменении business-rule нужно править несколько копий.",
+            "Вынести общий enrichment contract или generic helper.",
+            114);
+
+        var result = ReviewRunExecutor.SuppressLowSignalOpportunities([opportunity]);
+
+        Assert.Single(result);
+    }
+
+    [Fact]
+    public void SuppressLowSignalOpportunities_RemovesFutureRecordEqualityOnlyOpportunity()
+    {
+        var opportunity = new ReviewOpportunityItem(
+            "Domain/ReadModels/RegionCacheItem.cs",
+            "RegionCacheItem",
+            "RegionCacheItem не переопределяет Equals/GetHashCode для будущего HashSet",
+            "Сейчас корректность группировки не страдает, но в будущем reference equality может дать неожиданные результаты при использовании как ключа словаря.",
+            "Преобразовать класс в record.",
+            1);
+
+        var result = ReviewRunExecutor.SuppressLowSignalOpportunities([opportunity]);
+
+        Assert.Empty(result);
     }
 
     [Fact]
@@ -561,6 +627,34 @@ public sealed class FindingNormalizationDeduplicationTests
     }
 
     [Fact]
+    public void RestoreDroppedDistinctFindings_PrefersExternalAgentWordingForSameRootCause()
+    {
+        var agentFinding = CreateFinding(
+            "Infrastructure/Repositories/RegionCacheRepository.cs",
+            634,
+            FindingCategory.Bug,
+            FindingSeverity.Medium,
+            "Недетерминированная загрузка кэша: GroupBy + First() без OrderBy",
+            "Агент проверил контекст и объяснил, что при нескольких ReplicBranch на один RegionIsoCode кэш может выбрать разные RegionName/TimeZone/MacroRegionName.",
+            "var newCache = regions.GroupBy(r => r.RegionCode).ToFrozenDictionary(g => g.Key, g => g.First());",
+            ReviewFindingSource.ExternalReview);
+        var deterministicFinding = CreateFinding(
+            "Infrastructure/Repositories/RegionCacheRepository.cs",
+            634,
+            FindingCategory.Logic,
+            FindingSeverity.Medium,
+            "GroupBy выбирает первый регион недетерминированно",
+            "Код группирует записи и берёт First() без явного порядка.",
+            ".GroupBy(r => r.RegionCode) | g.First()");
+
+        var result = ReviewRunExecutor.RestoreDroppedDistinctFindings([], [agentFinding, deterministicFinding]);
+
+        var finding = Assert.Single(result);
+        Assert.Equal(ReviewFindingSource.ExternalReview, finding.Source);
+        Assert.Contains("Агент проверил контекст", finding.Description, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void RestoreDroppedDistinctFindings_DeduplicatesGroupByEvenWhenSuggestionMentionsBusinessFilters()
     {
         var normalizedFindings = new[]
@@ -703,6 +797,57 @@ public sealed class FindingNormalizationDeduplicationTests
     }
 
     [Fact]
+    public void ApplyFindingEvidenceGate_KeepsSqlJoinAndGroupByFindingsAnchoredToDiff()
+    {
+        var joinFinding = CreateFinding(
+            "Infrastructure/Db/GetOrderListForExcelFile.sql",
+            41,
+            FindingCategory.Bug,
+            FindingSeverity.High,
+            "Мёртвый LEFT JOIN ReplicBranch вызывает дублирование строк",
+            "JOIN больше не поставляет данные в SELECT, но может размножить строки при дублях RegionIsoCode.",
+            "left join \"ReplicBranch\" rb\n          on o.\"RegionCode\" = rb.\"RegionIsoCode\"");
+        var groupByFinding = CreateFinding(
+            "Infrastructure/Repositories/RegionCacheRepository.cs",
+            634,
+            FindingCategory.Bug,
+            FindingSeverity.High,
+            "Недетерминированная загрузка кэша: GroupBy + First() без OrderBy",
+            "GroupBy по RegionCode берёт g.First() без явной сортировки.",
+            "GroupBy(r => r.RegionCode, StringComparer.OrdinalIgnoreCase)");
+        var preprocessed = CreatePreprocessedDiff("""
+            diff --git a/Infrastructure/Db/GetOrderListForExcelFile.sql b/Infrastructure/Db/GetOrderListForExcelFile.sql
+            index 1111111..2222222 100644
+            --- a/Infrastructure/Db/GetOrderListForExcelFile.sql
+            +++ b/Infrastructure/Db/GetOrderListForExcelFile.sql
+            @@ -39,8 +39,6 @@ from "Order" o
+                      left join "ReplicBranch" rb
+                                on o."RegionCode" = rb."RegionIsoCode"
+            -where rb."IsBasic" is true
+            -  and rb."IsBcAllowed" is true
+            +where (@orderId is null or o."OrderId" = @orderId)
+            diff --git a/Infrastructure/Repositories/RegionCacheRepository.cs b/Infrastructure/Repositories/RegionCacheRepository.cs
+            new file mode 100644
+            index 0000000..3333333
+            --- /dev/null
+            +++ b/Infrastructure/Repositories/RegionCacheRepository.cs
+            @@ -0,0 +630,12 @@
+            +            var newCache = regions
+            +                .GroupBy(r => r.RegionCode, StringComparer.OrdinalIgnoreCase)
+            +                .ToFrozenDictionary(
+            +                    g => g.Key,
+            +                    g => g.First(),
+            +                    StringComparer.OrdinalIgnoreCase);
+            """);
+
+        var result = ReviewRunExecutor.ApplyFindingEvidenceGate([joinFinding, groupByFinding], preprocessed);
+
+        var titles = string.Join(" | ", result.Select(finding => finding.Title));
+        Assert.True(result.Any(finding => finding.Title.Contains("JOIN", StringComparison.OrdinalIgnoreCase)), titles);
+        Assert.True(result.Any(finding => finding.Title.Contains("GroupBy", StringComparison.OrdinalIgnoreCase)), titles);
+    }
+
+    [Fact]
     public void SuppressContradictedByDiffFindings_RemovesSingletonWarningWhenDiffRegistersSingleton()
     {
         var finding = CreateFinding(
@@ -735,14 +880,15 @@ public sealed class FindingNormalizationDeduplicationTests
         FindingSeverity severity,
         string title,
         string description,
-        string existingCode)
+        string existingCode,
+        ReviewFindingSource source = ReviewFindingSource.InitialReview)
     {
         return new ReviewFinding(
             file,
             $"line {line}",
             category,
             severity,
-            ReviewFindingSource.InitialReview,
+            source,
             title,
             description,
             existingCode,

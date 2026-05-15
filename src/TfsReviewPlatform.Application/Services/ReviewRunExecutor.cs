@@ -364,13 +364,18 @@ public sealed class ReviewRunExecutor(
 
             var confirmedDeterministicFindings = BuildConfirmedDeterministicFindings(
                 reviewPreprocessed.ReviewHints,
-                findings);
+                findings,
+                deepSeekTuiReview is { Succeeded: true });
             findings.AddRange(confirmedDeterministicFindings);
             if (confirmedDeterministicFindings.Count > 0)
             {
+                var deterministicMode = deepSeekTuiReview is { Succeeded: true }
+                    ? "supplemental"
+                    : "confirmed";
                 logger.LogInformation(
-                    "Added {FindingCount} confirmed deterministic findings for run {RunId}",
+                    "Added {FindingCount} {DeterministicMode} deterministic findings for run {RunId}",
                     confirmedDeterministicFindings.Count,
+                    deterministicMode,
                     run.Id);
             }
 
@@ -2472,14 +2477,26 @@ public sealed class ReviewRunExecutor(
 
     internal static IReadOnlyList<ReviewFinding> BuildConfirmedDeterministicFindings(
         IReadOnlyList<ReviewHint> hints,
-        IReadOnlyList<ReviewFinding> existingFindings)
+        IReadOnlyList<ReviewFinding> existingFindings,
+        bool externalPrimarySucceeded = false)
     {
         return hints
+            .Where(hint => !externalPrimarySucceeded || IsHighSignalDeterministicSupplement(hint))
             .Select(BuildConfirmedDeterministicFinding)
             .Where(finding => finding is not null)
             .Cast<ReviewFinding>()
             .Where(finding => existingFindings.All(existing => !CoversFinding(existing, finding)))
             .ToArray();
+    }
+
+    private static bool IsHighSignalDeterministicSupplement(ReviewHint hint)
+    {
+        return hint.RuleId switch
+        {
+            "OPTIONS_BOUND_WITHOUT_VALIDATION" => false,
+            "NON_NULLABLE_CONTRACT_RETURNS_NULL" => false,
+            _ => true
+        };
     }
 
     private static ReviewFinding? BuildConfirmedDeterministicFinding(ReviewHint hint)
@@ -2840,6 +2857,11 @@ public sealed class ReviewRunExecutor(
     private static int ComputeFindingSpecificityScore(ReviewFinding finding)
     {
         var score = 0;
+        if (finding.Source == ReviewFindingSource.ExternalReview)
+        {
+            score += 10;
+        }
+
         if (finding.StartLine > 0)
         {
             score += 10;
@@ -3011,7 +3033,26 @@ public sealed class ReviewRunExecutor(
             return true;
         }
 
-        return HasKnownSemanticAnchorInDiff(finding, evidence.SemanticAnchors);
+        return HasKnownSemanticAnchorInDiff(finding, evidence.SemanticAnchors) ||
+               HasHighSignalKnownDiffKeyword(finding, evidence.PatchText);
+    }
+
+    private static bool HasHighSignalKnownDiffKeyword(ReviewFinding finding, string patchText)
+    {
+        var normalizedPatch = NormalizeMatchValue(patchText);
+        return ClassifyFinding(finding) switch
+        {
+            FindingFailureKind.SqlBusinessFilter =>
+                normalizedPatch.Contains("isbasic", StringComparison.Ordinal) ||
+                normalizedPatch.Contains("isbcallowed", StringComparison.Ordinal),
+            FindingFailureKind.SqlRowMultiplication =>
+                normalizedPatch.Contains("join", StringComparison.Ordinal) &&
+                normalizedPatch.Contains("replicbranch", StringComparison.Ordinal),
+            FindingFailureKind.GroupByFirstWithoutOrder =>
+                normalizedPatch.Contains("groupby", StringComparison.Ordinal) &&
+                normalizedPatch.Contains("first", StringComparison.Ordinal),
+            _ => false
+        };
     }
 
     private static bool FindingLineTouchesChangedHunk(
@@ -3324,6 +3365,7 @@ public sealed class ReviewRunExecutor(
                IsHeaderDuplicateSpeculationFinding(finding) ||
                IsHttpClientFactorySharedInstanceRaceFinding(finding) ||
                IsHttpClientFactoryDefaultClientPolicyFinding(finding) ||
+               IsDefensiveNullGuardOnlyFinding(finding) ||
                IsStyleOrDocumentationOnlyFinding(finding);
     }
 
@@ -3554,6 +3596,11 @@ public sealed class ReviewRunExecutor(
 
     private static bool IsStyleOrDocumentationOnlyFinding(ReviewFinding finding)
     {
+        if (ClassifyFinding(finding) != FindingFailureKind.Unknown)
+        {
+            return false;
+        }
+
         var text = BuildFindingText(finding);
         return ContainsAny(
             text,
@@ -3568,10 +3615,28 @@ public sealed class ReviewRunExecutor(
             "назван");
     }
 
+    private static bool IsDefensiveNullGuardOnlyFinding(ReviewFinding finding)
+    {
+        var text = BuildFindingText(finding);
+        if (!ContainsAny(text, "не проверяет", "не проверяют", "missing null check", "argumentnullexception") ||
+            !ContainsAny(text, "параметр", "parameter", "regioncacherepository"))
+        {
+            return false;
+        }
+
+        return finding.Severity == FindingSeverity.Low ||
+               ContainsAny(text, "штатном режиме", "di гарантирует", "защитн", "диагност", "informative");
+    }
+
     private static bool IsLowSignalOpportunity(ReviewOpportunityItem opportunity)
     {
         var text = $"{opportunity.File} {opportunity.LineHint} {opportunity.Title} {opportunity.Description} {opportunity.Suggestion}";
         if (LooksLikeTaskFactoryStartNewAsyncIoConcern(text))
+        {
+            return false;
+        }
+
+        if (IsHighSignalDuplicationOpportunity(text))
         {
             return false;
         }
@@ -3591,6 +3656,7 @@ public sealed class ReviewRunExecutor(
                IsNullableAnnotationOnlyOpportunity(text) ||
                IsDateTimeReadabilityOnlyOpportunity(text) ||
                IsFutureSerializerCompatibilityOpportunity(text) ||
+               IsFutureEqualityOnlyOpportunity(text) ||
                ContainsAny(
             text,
             "<returns>",
@@ -3620,6 +3686,24 @@ public sealed class ReviewRunExecutor(
                    "exception",
                    "исключ",
                    "cpu-bound");
+    }
+
+    private static bool IsHighSignalDuplicationOpportunity(string text)
+    {
+        return ContainsAny(text, "дублирован", "дублируется", "duplicate", "повторяющ", "идентичн") &&
+               ContainsAny(
+                   text,
+                   "enrich",
+                   "обогащ",
+                   "mapping",
+                   "мапп",
+                   "business-rule",
+                   "бизнес",
+                   "readmodel",
+                   "sql",
+                   "cache",
+                   "кэш",
+                   "контракт");
     }
 
     private static bool LooksLikeTaskFactoryStartNewCleanup(string text)
@@ -3723,6 +3807,13 @@ public sealed class ReviewRunExecutor(
     {
         return ContainsAny(text, "system.text.json", "jsonpropertyname") &&
                ContainsAny(text, "в будущем", "совместимост", "если потребуется", "newtonsoft");
+    }
+
+    private static bool IsFutureEqualityOnlyOpportunity(string text)
+    {
+        return ContainsAny(text, "equals/gethashcode", "equals", "gethashcode", "record") &&
+               ContainsAny(text, "в будущем", "future", "hashset", "ключа словаря", "reference equality") &&
+               ContainsAny(text, "корректность", "не страдает", "может дать неожиданные", "future");
     }
 
     private static FindingFailureKind ClassifyFinding(ReviewFinding finding)
@@ -5074,13 +5165,14 @@ public sealed class ReviewRunExecutor(
 
     private static string ExtractPath(string header, string marker)
     {
-        var start = header.IndexOf(marker, StringComparison.Ordinal);
+        var tokenMarker = " " + marker;
+        var start = header.IndexOf(tokenMarker, StringComparison.Ordinal);
         if (start < 0)
         {
             return string.Empty;
         }
 
-        start += marker.Length;
+        start += tokenMarker.Length;
         var end = header.IndexOf(' ', start);
         return (end > start ? header[start..end] : header[start..]).Trim();
     }
