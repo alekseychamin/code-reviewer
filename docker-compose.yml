@@ -77,7 +77,7 @@ services:
       - DeepSeekTuiReview__WorkspaceRoot=${DEEPSEEK_TUI_WORKSPACE_ROOT:-/review-workspaces}
       - DeepSeekTuiReview__UsePersistentRepositoryWorkspace=${DEEPSEEK_TUI_USE_PERSISTENT_REPOSITORY_WORKSPACE:-true}
       - DeepSeekTuiReview__RepositoryDirectoryName=${DEEPSEEK_TUI_REPOSITORY_DIRECTORY_NAME:-repositories}
-      - DeepSeekTuiReview__TimeoutSeconds=${DEEPSEEK_TUI_TIMEOUT_SECONDS:-900}
+      - DeepSeekTuiReview__TimeoutSeconds=${DEEPSEEK_TUI_TIMEOUT_SECONDS:-2400}
       - DeepSeekTuiReview__Model=${DEEPSEEK_TUI_MODEL:-auto}
       - DeepSeekTuiReview__AutoApproveTools=${DEEPSEEK_TUI_AUTO_APPROVE_TOOLS:-true}
       - DeepSeekTuiReview__SocraticodePreflightEnabled=${DEEPSEEK_TUI_SOCRATICODE_PREFLIGHT_ENABLED:-true}

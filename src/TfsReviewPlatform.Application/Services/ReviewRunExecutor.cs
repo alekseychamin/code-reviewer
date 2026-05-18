@@ -1026,9 +1026,12 @@ public sealed class ReviewRunExecutor(
             result.Attempted,
             result.Message,
             result.WorkspacePath);
+        var fallbackMessage = result.TimedOut || result.Status == "timed_out"
+            ? $"{opts.EngineName} превысил таймаут {opts.TimeoutSeconds} с, используем основной пайплайн"
+            : $"{opts.EngineName} не вернул структурированное ревью, используем основной пайплайн";
         await PersistAndPublishAsync(
             run,
-            $"{opts.EngineName} не вернул структурированное ревью, используем основной пайплайн",
+            fallbackMessage,
             ReviewPipelineStage.ChunkReview,
             55,
             cancellationToken);

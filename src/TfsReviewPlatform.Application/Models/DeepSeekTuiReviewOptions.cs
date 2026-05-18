@@ -22,7 +22,7 @@ public sealed class DeepSeekTuiReviewOptions
 
     public string RepositoryDirectoryName { get; init; } = "repositories";
 
-    public int TimeoutSeconds { get; init; } = 900;
+    public int TimeoutSeconds { get; init; } = 2400;
 
     public string Model { get; init; } = "auto";
 
